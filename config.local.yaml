@@ -1,0 +1,14 @@
+# 本地调试（无需 Docker / Postgres / Redis）
+# 从 backend 目录启动时会自动读到这份文件
+listen: ":8080"
+admin_token: "dev-admin"
+encrypt_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+database_url: "sqlite://data/local.db"
+redis_url: ""
+jobs:
+  balance_interval: 1m
+  billing_interval: 1m
+  probe_interval: 1m
+  catalog_interval: 24h
+  log_retention: 24h
+  log_retention_interval: 1h

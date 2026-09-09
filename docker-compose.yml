@@ -1,0 +1,44 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sum
+      POSTGRES_PASSWORD: sum
+      POSTGRES_DB: simple_up_manage
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sum -d simple_up_manage"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  backend:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      LISTEN: ":8080"
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-change-me-admin-token}
+      APP_ENCRYPT_KEY: ${APP_ENCRYPT_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+      DATABASE_URL: postgres://sum:sum@postgres:5432/simple_up_manage?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      STATIC_DIR: /app/web
+      CONFIG_FILE: ""
+
+volumes:
+  pgdata:

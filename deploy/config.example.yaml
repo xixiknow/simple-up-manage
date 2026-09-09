@@ -1,0 +1,12 @@
+listen: ":8080"
+admin_token: "change-me-admin-token"
+encrypt_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+database_url: "postgres://sum:sum@postgres:5432/simple_up_manage?sslmode=disable"
+redis_url: "redis://redis:6379/0"
+jobs:
+  balance_interval: 1m
+  billing_interval: 1m
+  probe_interval: 1m
+  catalog_interval: 24h
+  log_retention: 24h
+  log_retention_interval: 1h

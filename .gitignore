@@ -1,0 +1,34 @@
+# binaries
+backend/server
+backend/server.exe
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# go
+backend/vendor/
+
+# config secrets
+config.yaml
+backend/config.yaml
+deploy/config.yaml
+.env
+.env.*
+
+# ide / os
+.idea/
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
+.DS_Store
+Thumbs.db
+
+# frontend (owned by another agent; ignore build artifacts if present)
+frontend/node_modules/
+frontend/dist/
+
+# docker volumes
+data/
+pgdata/
