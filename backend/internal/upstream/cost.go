@@ -14,6 +14,7 @@ const (
 //   - OpenAI-style: input_tokens already includes cached_tokens → subtract before
 //     billing the uncached remainder at full input price.
 //   - Anthropic-style: input_tokens is uncached → keep it, add cache tokens.
+//
 // Cache read is billed at 10% of input; cache write at 125% (Anthropic / common
 // aggregator convention). rate is the platform key multiplier (0.08 = 8%).
 func EstimateCostUSD(inputPerMillion, outputPerMillion, rate float64, u TokenUsage) *float64 {

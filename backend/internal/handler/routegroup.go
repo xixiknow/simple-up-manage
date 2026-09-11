@@ -533,11 +533,11 @@ func (h *Admin) RouteGroupCandidates(c *gin.Context) {
 	out := make([]routeCandidateDTO, 0, len(keys))
 	for _, k := range keys {
 		d := routeCandidateDTO{
-			ID:            k.ID,
-			Name:          k.Name,
-			KeyPreview:    k.KeyPreview,
-			Status:        k.Status,
-			HealthStatus:  k.HealthStatus,
+			ID:             k.ID,
+			Name:           k.Name,
+			KeyPreview:     k.KeyPreview,
+			Status:         k.Status,
+			HealthStatus:   k.HealthStatus,
 			LastBalance:    k.LastBalance,
 			UpstreamID:     k.UpstreamID,
 			Protocols:      []string{},

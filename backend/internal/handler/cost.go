@@ -104,7 +104,7 @@ func (h *Admin) attachLogCosts(out []logDTO) {
 		out[i].CostUSD = upstream.EstimateCostUSD(p[0], p[1], rate, upstream.TokenUsage{
 			InputTokens:         out[i].InputTokens,
 			OutputTokens:        out[i].OutputTokens,
-			CacheReadTokens:    out[i].CacheReadTokens,
+			CacheReadTokens:     out[i].CacheReadTokens,
 			CacheCreationTokens: out[i].CacheCreationTokens,
 		})
 	}

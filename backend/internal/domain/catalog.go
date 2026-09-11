@@ -13,10 +13,10 @@ const (
 
 // CatalogModel is one chat model synced from the public models.dev library.
 type CatalogModel struct {
-	ID         uint      `gorm:"primaryKey" json:"-"`
-	Vendor     string    `gorm:"size:32;uniqueIndex:idx_catalog_vendor_model;not null" json:"vendor"`
-	ModelID    string    `gorm:"size:128;uniqueIndex:idx_catalog_vendor_model;not null" json:"id"`
-	Name       string    `gorm:"size:256" json:"name"`
+	ID          uint      `gorm:"primaryKey" json:"-"`
+	Vendor      string    `gorm:"size:32;uniqueIndex:idx_catalog_vendor_model;not null" json:"vendor"`
+	ModelID     string    `gorm:"size:128;uniqueIndex:idx_catalog_vendor_model;not null" json:"id"`
+	Name        string    `gorm:"size:256" json:"name"`
 	Protocol    string    `gorm:"size:16;not null" json:"protocol"`
 	InputCost   float64   `gorm:"type:decimal(16,8)" json:"input_cost"`
 	OutputCost  float64   `gorm:"type:decimal(16,8)" json:"output_cost"`
