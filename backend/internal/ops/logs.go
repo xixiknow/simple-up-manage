@@ -29,6 +29,7 @@ func (s *Service) FinalizeStaleInFlightLogs(ctx context.Context) (int64, error) 
 		Where("in_flight = ? AND created_at < ?", true, cut).
 		Updates(map[string]any{
 			"in_flight":     false,
+			"completed_at":  time.Now().UTC(),
 			"success":       false,
 			"error_message": "stale in-flight request",
 			"duration_ms":   int(staleInFlightAge / time.Millisecond),

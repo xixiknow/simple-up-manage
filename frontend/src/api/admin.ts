@@ -33,7 +33,7 @@ function stripEmptyKey(payload: PlatformKeyPayload): PlatformKeyPayload {
   return next
 }
 
-export function listUpstreams(params?: ListParams) {
+export function listUpstreams(params?: ListParams & { include_summary?: boolean }) {
   return getList<Upstream>('/upstreams', params)
 }
 
@@ -53,12 +53,33 @@ export function deleteUpstream(id: number) {
   return del(`/upstreams/${id}`)
 }
 
-export function listKeys(params?: ListParams & { upstream_id?: number; route_group_id?: number }) {
+export function listKeys(params?: ListParams & { upstream_id?: number; upstream_ids?: number[]; route_group_id?: number }) {
   if (params?.upstream_id && params.route_group_id === undefined) {
     const { upstream_id, ...rest } = params
     return getList<PlatformKey>(`/upstreams/${upstream_id}/keys`, rest)
   }
   return getList<PlatformKey>('/keys', params)
+}
+
+export type KeyOption = Pick<PlatformKey, 'id' | 'upstream_id' | 'name' | 'key_preview'>
+export type KeyRate = Pick<PlatformKey, 'id' | 'upstream_id' | 'name' | 'rate_multiplier' | 'upstream_name'>
+
+export function listKeyOptions(params?: ListParams) {
+  return getList<KeyOption>('/keys', { ...params, view: 'options' })
+}
+
+export function listKeyRates(params?: ListParams) {
+  return getList<KeyRate>('/keys', { ...params, view: 'rates' })
+}
+
+export async function allPages<T>(loader: (params: ListParams) => Promise<ListResult<T>>): Promise<T[]> {
+  const items: T[] = []
+  for (let page = 1; ; page++) {
+    const result = await loader({ page, page_size: 100 })
+    items.push(...result.items)
+    if (items.length >= result.total) return items
+    if (!result.items.length) throw new Error('分页数据不完整，请刷新重试')
+  }
 }
 
 export function createKey(upstreamId: number, payload: PlatformKeyPayload) {
@@ -86,7 +107,7 @@ export function refreshUpstreamBalance(id: number) {
 }
 
 export function refreshKeyBilling(id: number) {
-  return post<unknown>(`/keys/${id}/refresh-billing`)
+  return post<PlatformKey>(`/keys/${id}/refresh-billing`)
 }
 
 export function fetchKeyModels(id: number) {
@@ -172,7 +193,7 @@ export function runProbes(body?: { deep?: boolean; upstream_id?: number; key_id?
 }
 
 export function listRequestLogs(params?: RequestLogQuery) {
-  return getList<RequestLog>('/request-logs', params as Record<string, unknown>)
+  return get<ListResult<RequestLog> & { snapshot_id: number; snapshot_at: string }>('/request-logs', params as Record<string, unknown>)
 }
 
 export function getRequestLog(id: number) {

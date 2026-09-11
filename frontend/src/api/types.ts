@@ -13,6 +13,12 @@ export type HealthStatus =
   | 'disabled'
 
 export type Upstream = {
+  summary?: {
+    key_count: number
+    abnormal_count: number
+    health_counts: Partial<Record<HealthStatus, number>>
+    last_request_at?: string | null
+  }
   id: number
   name: string
   base_url: string
@@ -75,6 +81,7 @@ export type PlatformKey = {
   rate_multiplier: number
   /** Set when the rate was last synced from sub2api / new-api; null after a manual edit. */
   rate_synced_at?: string | null
+  billing_unsupported?: boolean
   /** new-api only: the token's group name used to look up group_ratio. */
   billing_group?: string
   route_groups?: RouteGroupRef[]
@@ -195,6 +202,7 @@ export type RequestLog = {
   duration_ms: number
   in_flight?: boolean
   stream?: boolean
+  stream_known?: boolean
   cost_usd?: number
   error_message?: string
   created_at: string
@@ -366,6 +374,8 @@ export type SchedulerExplain = {
 }
 
 export type RequestLogQuery = ListParams & {
+  snapshot_id?: number
+  snapshot_at?: string
   upstream_id?: number
   key_id?: number
   success?: boolean

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -77,6 +78,9 @@ func AutoMigrate(db *gorm.DB) error {
 	); err != nil {
 		return err
 	}
+	if err := migrateRequestLogState(db); err != nil {
+		return err
+	}
 	if err := db.Migrator().DropTable("price_thresholds"); err != nil {
 		return err
 	}
@@ -91,6 +95,51 @@ func AutoMigrate(db *gorm.DB) error {
 		return err
 	}
 	return migrateUpstreamGroupsToKeys(db)
+}
+
+func migrateRequestLogState(db *gorm.DB) error {
+	if err := db.Model(&domain.RequestLog{}).Where("in_flight IS NULL").Update("in_flight", false).Error; err != nil {
+		return err
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		var after uint
+		for {
+			var rows []domain.RequestLog
+			if err := tx.Select("id", "request_body", "request_headers", "request_body_trunc", "stream_known", "completed_at", "in_flight", "created_at", "duration_ms").Where("id > ? AND (stream_known = ? OR (completed_at IS NULL AND in_flight = ?))", after, false, false).Order("id").Limit(100).Find(&rows).Error; err != nil {
+				return err
+			}
+			if len(rows) == 0 {
+				return nil
+			}
+			for _, row := range rows {
+				after = row.ID
+				if row.CompletedAt == nil && !row.InFlight {
+					ended := row.CreatedAt.Add(time.Duration(row.DurationMs) * time.Millisecond).UTC()
+					if err := tx.Model(&domain.RequestLog{}).Where("id = ?", row.ID).Update("completed_at", ended).Error; err != nil {
+						return err
+					}
+				}
+				if row.StreamKnown {
+					continue
+				}
+				if row.RequestBodyTrunc {
+					continue
+				}
+				var headers map[string]json.RawMessage
+				_ = json.Unmarshal([]byte(row.RequestHeaders), &headers)
+				var contentType string
+				for name, value := range headers {
+					if strings.EqualFold(name, "content-type") {
+						_ = json.Unmarshal(value, &contentType)
+					}
+				}
+				stream, known := domain.RequestStream(contentType, []byte(row.RequestBody))
+				if err := tx.Model(&domain.RequestLog{}).Where("id = ?", row.ID).Updates(map[string]any{"stream": stream, "stream_known": known}).Error; err != nil {
+					return err
+				}
+			}
+		}
+	})
 }
 
 // migrateKeyConcurrencyBalanceToUpstream copies per-key concurrency / balance

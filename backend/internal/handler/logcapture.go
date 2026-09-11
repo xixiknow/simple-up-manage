@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 	"unicode/utf8"
+
+	"simple-up-manage/internal/domain"
 )
 
 // maxLogBodyBytes caps stored request/response bodies so a single log row
@@ -23,6 +26,9 @@ var redactHeaderKeys = map[string]struct{}{
 }
 
 type ioCapture struct {
+	StartedAt   time.Time
+	ReqStream   bool
+	StreamKnown bool
 	ReqHeaders  string
 	ReqBody     string
 	ReqTrunc    bool
@@ -36,10 +42,13 @@ func captureInbound(r *http.Request, body []byte) ioCapture {
 		return ioCapture{}
 	}
 	bodyStr, trunc := captureBody(r.Header.Get("Content-Type"), body, len(body))
+	stream, known := domain.RequestStream(r.Header.Get("Content-Type"), body)
 	return ioCapture{
-		ReqHeaders: headersJSON(r.Header, r.Method, requestURI(r)),
-		ReqBody:    bodyStr,
-		ReqTrunc:   trunc,
+		ReqStream:   stream,
+		StreamKnown: known,
+		ReqHeaders:  headersJSON(r.Header, r.Method, requestURI(r)),
+		ReqBody:     bodyStr,
+		ReqTrunc:    trunc,
 	}
 }
 
@@ -98,7 +107,8 @@ func captureBody(contentType string, body []byte, total int) (string, bool) {
 		}
 		return fmt.Sprintf("[%s %d bytes omitted]", mt, total), true
 	}
-	return clipBody(body, maxLogBodyBytes)
+	text, truncated := clipBody(body, maxLogBodyBytes)
+	return text, truncated || total > len(body)
 }
 
 func mediaType(contentType string) string {

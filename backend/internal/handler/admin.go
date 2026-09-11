@@ -49,7 +49,54 @@ func (h *Admin) ListUpstreams(c *gin.Context) {
 	for _, u := range items {
 		out = append(out, toUpstreamDTO(u))
 	}
+	if c.Query("include_summary") == "true" {
+		if err := h.attachUpstreamSummaries(out); err != nil {
+			httpx.Internal(c, err.Error())
+			return
+		}
+	}
 	httpx.List(c, out, total, page, pageSize)
+}
+
+func (h *Admin) attachUpstreamSummaries(items []upstreamDTO) error {
+	ids := make([]uint, 0, len(items))
+	byID := make(map[uint]*upstreamSummary, len(items))
+	for i := range items {
+		items[i].Summary = &upstreamSummary{HealthCounts: map[string]int{}}
+		byID[items[i].ID] = items[i].Summary
+		ids = append(ids, items[i].ID)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	var rows []struct {
+		UpstreamID    uint
+		Status        string
+		HealthStatus  string
+		Count         int
+		LastRequestAt domain.LooseTime
+	}
+	if err := h.DB.Model(&domain.PlatformKey{}).Select("upstream_id, status, health_status, COUNT(*) AS count, MAX(last_request_at) AS last_request_at").
+		Where("upstream_id IN ?", ids).Group("upstream_id, status, health_status").Scan(&rows).Error; err != nil {
+		return err
+	}
+	for _, row := range rows {
+		s := byID[row.UpstreamID]
+		s.KeyCount += row.Count
+		health := row.HealthStatus
+		if row.Status == domain.StatusDisabled {
+			health = domain.HealthDisabled
+		}
+		s.HealthCounts[health] += row.Count
+		if row.Status == domain.StatusEnabled && health != domain.HealthHealthy {
+			s.AbnormalCount += row.Count
+		}
+		t := row.LastRequestAt.Time()
+		if !t.IsZero() && (s.LastRequestAt == nil || t.After(*s.LastRequestAt)) {
+			s.LastRequestAt = &t
+		}
+	}
+	return nil
 }
 
 type upstreamBody struct {
@@ -501,9 +548,27 @@ func (h *Admin) DeleteKey(c *gin.Context) {
 
 func (h *Admin) ListAllKeys(c *gin.Context) {
 	page, pageSize := httpx.PageParams(c)
+	var upstreamIDs []uint
+	if raw := strings.TrimSpace(c.Query("upstream_ids")); raw != "" {
+		for _, value := range strings.Split(raw, ",") {
+			id, err := strconv.ParseUint(strings.TrimSpace(value), 10, 32)
+			if err != nil || id == 0 {
+				httpx.BadRequest(c, "invalid upstream_ids")
+				return
+			}
+			upstreamIDs = append(upstreamIDs, uint(id))
+		}
+		if len(upstreamIDs) > 100 {
+			httpx.BadRequest(c, "at most 100 upstream_ids")
+			return
+		}
+	}
 	// routeFilter: "" = any, "0" = unassigned, "<id>" = member of that route group.
 	routeFilter := strings.TrimSpace(c.Query("route_group_id"))
 	applyFilters := func(q *gorm.DB) *gorm.DB {
+		if len(upstreamIDs) > 0 {
+			q = q.Where("upstream_id IN ?", upstreamIDs)
+		}
 		if uid := strings.TrimSpace(c.Query("upstream_id")); uid != "" {
 			q = q.Where("upstream_id = ?", uid)
 		}
@@ -520,6 +585,33 @@ func (h *Admin) ListAllKeys(c *gin.Context) {
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
 		httpx.Internal(c, err.Error())
+		return
+	}
+	if c.Query("view") == "options" {
+		var items []struct {
+			ID         uint   `json:"id"`
+			UpstreamID uint   `json:"upstream_id"`
+			Name       string `json:"name"`
+			KeyPreview string `json:"key_preview"`
+		}
+		if err := q.Select("id", "upstream_id", "name", "key_preview").Order("id ASC").Offset((page - 1) * pageSize).Limit(pageSize).Scan(&items).Error; err != nil {
+			httpx.Internal(c, err.Error())
+			return
+		}
+		httpx.List(c, items, total, page, pageSize)
+		return
+	}
+	if c.Query("view") == "rates" {
+		items := make([]keyRateDTO, 0)
+		if err := h.DB.Model(&domain.PlatformKey{}).
+			Select("platform_keys.id, platform_keys.upstream_id, upstreams.name AS upstream_name, platform_keys.name, platform_keys.rate_multiplier").
+			Joins("LEFT JOIN upstreams ON upstreams.id = platform_keys.upstream_id").
+			Where("platform_keys.id IN (?)", q.Select("platform_keys.id")).
+			Order("platform_keys.id ASC").Offset((page - 1) * pageSize).Limit(pageSize).Scan(&items).Error; err != nil {
+			httpx.Internal(c, err.Error())
+			return
+		}
+		httpx.List(c, items, total, page, pageSize)
 		return
 	}
 	var items []domain.PlatformKey
@@ -905,6 +997,15 @@ func (h *Admin) RunProbes(c *gin.Context) {
 
 func (h *Admin) ListRequestLogs(c *gin.Context) {
 	page, pageSize := httpx.PageParams(c)
+	snapshotAt := time.Now().UTC()
+	if raw := c.Query("snapshot_at"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil {
+			httpx.BadRequest(c, "invalid snapshot_at")
+			return
+		}
+		snapshotAt = parsed.UTC()
+	}
 	q := h.DB.Model(&domain.RequestLog{})
 	if v := strings.TrimSpace(c.Query("upstream_id")); v != "" {
 		q = q.Where("upstream_id = ?", v)
@@ -913,6 +1014,7 @@ func (h *Admin) ListRequestLogs(c *gin.Context) {
 		q = q.Where("platform_key_id = ?", v)
 	}
 	if v := strings.TrimSpace(c.Query("success")); v != "" {
+		q = q.Where("completed_at <= ?", snapshotAt)
 		if v == "true" || v == "1" {
 			q = q.Where("in_flight = ? AND success = ?", false, true)
 		} else if v == "false" || v == "0" {
@@ -932,6 +1034,21 @@ func (h *Admin) ListRequestLogs(c *gin.Context) {
 			q = q.Where("created_at <= ?", t)
 		}
 	}
+	var snapshotID uint64
+	if raw, exists := c.GetQuery("snapshot_id"); exists {
+		var err error
+		snapshotID, err = strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			httpx.BadRequest(c, "invalid snapshot_id")
+			return
+		}
+	} else {
+		if err := q.Session(&gorm.Session{}).Select("COALESCE(MAX(id), 0)").Scan(&snapshotID).Error; err != nil {
+			httpx.Internal(c, err.Error())
+			return
+		}
+	}
+	q = q.Where("id <= ?", snapshotID)
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
 		httpx.Internal(c, err.Error())
@@ -973,7 +1090,7 @@ func (h *Admin) ListRequestLogs(c *gin.Context) {
 		out = append(out, toLogDTO(l, un, cn))
 	}
 	h.attachLogCosts(out)
-	httpx.List(c, out, total, page, pageSize)
+	httpx.OK(c, gin.H{"items": out, "total": total, "page": page, "page_size": pageSize, "snapshot_id": snapshotID, "snapshot_at": snapshotAt})
 }
 
 func (h *Admin) GetRequestLog(c *gin.Context) {

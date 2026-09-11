@@ -235,34 +235,37 @@ type ConsumerRouteGroup struct {
 }
 
 type RequestLog struct {
-	ID                  uint      `gorm:"primaryKey" json:"id"`
-	RequestID           string    `gorm:"size:64;index" json:"request_id"`
-	ConsumerKeyID       *uint     `gorm:"index" json:"consumer_key_id"`
-	UpstreamID          *uint     `gorm:"index" json:"upstream_id"`
-	PlatformKeyID       *uint     `gorm:"index" json:"platform_key_id"`
-	Protocol            string    `gorm:"size:16;index" json:"protocol"`
-	Model               string    `gorm:"size:128;index" json:"model"`
-	Path                string    `gorm:"size:256" json:"path"`
-	ClientIP            string    `gorm:"size:64;index" json:"client_ip"`
-	StatusCode          int       `json:"status_code"`
-	Success             bool      `gorm:"index" json:"success"`
-	InputTokens         int64     `json:"input_tokens"`
-	OutputTokens        int64     `json:"output_tokens"`
-	CacheReadTokens     int64     `json:"cache_read_tokens"`
-	CacheCreationTokens int64     `json:"cache_creation_tokens"`
-	TTFTMs              int       `json:"ttft_ms"`
-	DurationMs          int       `json:"duration_ms"`
-	InFlight            bool      `gorm:"index" json:"in_flight"`
-	Stream              bool      `json:"stream"`
-	CostUSD             *float64  `gorm:"type:decimal(20,8)" json:"cost_usd"`
-	ErrorMessage        string    `gorm:"type:text" json:"error_message"`
-	RequestHeaders      string    `gorm:"type:text" json:"request_headers"`
-	RequestBody         string    `gorm:"type:text" json:"request_body"`
-	RequestBodyTrunc    bool      `json:"request_body_truncated"`
-	ResponseHeaders     string    `gorm:"type:text" json:"response_headers"`
-	ResponseBody        string    `gorm:"type:text" json:"response_body"`
-	ResponseBodyTrunc   bool      `json:"response_body_truncated"`
-	CreatedAt           time.Time `gorm:"index" json:"created_at"`
+	ID                  uint       `gorm:"primaryKey" json:"id"`
+	RequestID           string     `gorm:"size:64;index" json:"request_id"`
+	ConsumerKeyID       *uint      `gorm:"index" json:"consumer_key_id"`
+	UpstreamID          *uint      `gorm:"index" json:"upstream_id"`
+	PlatformKeyID       *uint      `gorm:"index" json:"platform_key_id"`
+	Protocol            string     `gorm:"size:16;index" json:"protocol"`
+	Model               string     `gorm:"size:128;index" json:"model"`
+	Path                string     `gorm:"size:256" json:"path"`
+	ClientIP            string     `gorm:"size:64;index" json:"client_ip"`
+	StatusCode          int        `json:"status_code"`
+	Success             bool       `gorm:"index" json:"success"`
+	InputTokens         int64      `json:"input_tokens"`
+	OutputTokens        int64      `json:"output_tokens"`
+	CacheReadTokens     int64      `json:"cache_read_tokens"`
+	CacheCreationTokens int64      `json:"cache_creation_tokens"`
+	TTFTMs              int        `json:"ttft_ms"`
+	DurationMs          int        `json:"duration_ms"`
+	InFlight            bool       `gorm:"index" json:"in_flight"`
+	Stream              bool       `json:"stream"`
+	StreamKnown         bool       `gorm:"not null;default:false" json:"stream_known"`
+	LogRevision         uint64     `gorm:"not null;default:0" json:"-"`
+	CompletedAt         *time.Time `gorm:"index" json:"completed_at"`
+	CostUSD             *float64   `gorm:"type:decimal(20,8)" json:"cost_usd"`
+	ErrorMessage        string     `gorm:"type:text" json:"error_message"`
+	RequestHeaders      string     `gorm:"type:text" json:"request_headers"`
+	RequestBody         string     `gorm:"type:text" json:"request_body"`
+	RequestBodyTrunc    bool       `json:"request_body_truncated"`
+	ResponseHeaders     string     `gorm:"type:text" json:"response_headers"`
+	ResponseBody        string     `gorm:"type:text" json:"response_body"`
+	ResponseBodyTrunc   bool       `json:"response_body_truncated"`
+	CreatedAt           time.Time  `gorm:"index" json:"created_at"`
 }
 
 type ProbeLog struct {
