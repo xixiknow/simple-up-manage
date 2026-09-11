@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { NButton, NDropdown, NSpace, NTag, NTooltip, useDialog, useMessage } from 'naive-ui'
+import { NButton, NDropdown, NSpace, NSwitch, NTag, NTooltip, useDialog, useMessage } from 'naive-ui'
 import type { DataTableColumns, DropdownOption, FormInst, FormRules } from 'naive-ui'
 import {
   actionMessage,
@@ -412,6 +412,24 @@ async function saveKey() {
   }
 }
 
+async function toggleKeyStatus(row: PlatformKey, enabled: boolean) {
+  const next: EnableStatus = enabled ? 'enabled' : 'disabled'
+  if (row.status === next) return
+  busy.value = `status-${row.id}`
+  try {
+    await updateKey(row.id, {
+      name_tag: row.name_tag || inferNameTag(row.name, row.upstream_name),
+      status: next,
+    })
+    row.status = next
+    message.success(next === 'enabled' ? '已启用' : '已停用')
+  } catch (e) {
+    message.error(errText(e, '更新状态失败'))
+  } finally {
+    busy.value = null
+  }
+}
+
 function confirmDeleteKey(row: PlatformKey) {
   dialog.warning({
     title: '删除 Key',
@@ -476,15 +494,6 @@ const keyColumns: DataTableColumns<PlatformKey> = [
           default: () => synced + extra,
         },
       )
-    },
-  },
-  {
-    title: '探测间隔',
-    key: 'probe_interval_sec',
-    width: 96,
-    render(row) {
-      const label = formatProbeInterval(row.probe_interval_sec)
-      return h('span', { class: label === '默认' ? 'muted' : undefined }, label)
     },
   },
   {
@@ -574,13 +583,14 @@ const keyColumns: DataTableColumns<PlatformKey> = [
   {
     title: '操作',
     key: 'actions',
-    width: 196,
+    width: 268,
     align: 'right',
     render(row) {
       const rowBusy =
         busy.value === `probe-${row.id}` ||
         busy.value === `rate-${row.id}` ||
         busy.value === `models-${row.id}`
+      const statusBusy = busy.value === `status-${row.id}`
       const more: DropdownOption[] = [
         { label: '探测', key: 'probe', disabled: rowBusy },
         { label: '获取模型', key: 'models', disabled: rowBusy },
@@ -590,9 +600,20 @@ const keyColumns: DataTableColumns<PlatformKey> = [
       }
       return h(
         NSpace,
-        { size: 4, wrap: false, justify: 'end' },
+        { size: 4, wrap: false, justify: 'end', align: 'center' },
         {
           default: () => [
+            h(
+              NSwitch,
+              {
+                size: 'small',
+                value: row.status === 'enabled',
+                loading: statusBusy,
+                disabled: statusBusy,
+                onUpdateValue: (on: boolean) => void toggleKeyStatus(row, on),
+              },
+              { checked: () => '启用', unchecked: () => '停用' },
+            ),
             h(NButton, { size: 'tiny', quaternary: true, onClick: () => openEditKey(row) }, { default: () => '编辑' }),
             h(
               NButton,
@@ -634,13 +655,6 @@ function healthSummary(counts: Partial<Record<HealthStatus, number>>) {
 function concLabel(n?: number | null) {
   const v = Number(n) || 0
   return v > 0 ? String(v) : '不限制'
-}
-
-function formatProbeInterval(sec?: number | null) {
-  const n = Number(sec) || 0
-  if (n <= 0) return '默认'
-  if (n % 60 === 0 && n >= 60) return `${n / 60} 分`
-  return `${n} 秒`
 }
 
 function providerHref(url?: string | null) {

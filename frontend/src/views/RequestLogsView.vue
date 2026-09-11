@@ -4,9 +4,10 @@ import { NTag, useMessage } from 'naive-ui'
 import type { DataTableColumns, SelectOption } from 'naive-ui'
 import { getRequestLog, listKeys, listRequestLogs, listUpstreams } from '@/api/admin'
 import type { RequestLog, RequestLogDetail } from '@/api/types'
-import { copyText, errText, formatMoney, formatNumber, formatTime, formatTokenCount } from '@/utils/format'
+import { copyText, errText, formatMoney, formatNumber, formatSeconds, formatTime, formatTokenCount, formatTps } from '@/utils/format'
 
 const LIVE_MS = 4000
+const IN_FLIGHT_CAP_MS = 6 * 60 * 1000
 const message = useMessage()
 
 const loading = ref(false)
@@ -55,6 +56,33 @@ const activeIoRaw = computed(() => {
 })
 
 let timer: number | undefined
+const clock = ref(Date.now())
+let clockTimer: number | undefined
+
+function rowElapsedMs(row: RequestLog) {
+  if (row.in_flight) {
+    const start = new Date(row.created_at).getTime()
+    if (!Number.isNaN(start)) {
+      return Math.min(IN_FLIGHT_CAP_MS, Math.max(row.duration_ms || 0, clock.value - start))
+    }
+  }
+  return row.duration_ms
+}
+
+function startClock() {
+  if (clockTimer != null) return
+  clock.value = Date.now()
+  clockTimer = window.setInterval(() => {
+    clock.value = Date.now()
+  }, 250)
+}
+
+function stopClock() {
+  if (clockTimer != null) {
+    window.clearInterval(clockTimer)
+    clockTimer = undefined
+  }
+}
 
 async function loadOptions() {
   const [up, keys] = await Promise.all([
@@ -159,7 +187,9 @@ async function copySection(label: string, raw?: string | null) {
   else message.error('复制失败')
 }
 
-const columns: DataTableColumns<RequestLog> = [
+const columns = computed<DataTableColumns<RequestLog>>(() => {
+  clock.value
+  return [
   {
     title: '时间',
     key: 'created_at',
@@ -198,6 +228,18 @@ const columns: DataTableColumns<RequestLog> = [
   { title: '模型', key: 'model', width: 140, ellipsis: { tooltip: true } },
   { title: '协议', key: 'protocol', width: 90 },
   {
+    title: '类型',
+    key: 'stream',
+    width: 72,
+    render(row) {
+      return h(
+        NTag,
+        { size: 'small', bordered: false, type: row.stream ? 'info' : 'default' },
+        { default: () => (row.stream ? '流式' : '同步') },
+      )
+    },
+  },
+  {
     title: 'Tokens / Cache',
     key: 'tokens',
     width: 148,
@@ -220,19 +262,16 @@ const columns: DataTableColumns<RequestLog> = [
     },
   },
   {
-    title: 'TTFT',
-    key: 'ttft_ms',
-    width: 80,
+    title: 'TTFT / 耗时',
+    key: 'timing',
+    width: 132,
     render(row) {
-      return `${formatNumber(row.ttft_ms)}ms`
-    },
-  },
-  {
-    title: '耗时',
-    key: 'duration_ms',
-    width: 80,
-    render(row) {
-      return `${formatNumber(row.duration_ms)}ms`
+      const dur = rowElapsedMs(row)
+      const ttft = row.ttft_ms > 0 ? formatSeconds(row.ttft_ms) : '—'
+      return h('div', { class: 'tok-cell', title: `TTFT ${ttft} · 总耗时 ${formatSeconds(dur)}` }, [
+        h('div', { class: 'tok-line' }, `${ttft} / ${formatSeconds(dur)}`),
+        h('div', { class: 'tok-line tok-cache' }, formatTps(row.output_tokens, dur, row.ttft_ms)),
+      ])
     },
   },
   {
@@ -248,6 +287,9 @@ const columns: DataTableColumns<RequestLog> = [
     key: 'success',
     width: 80,
     render(row) {
+      if (row.in_flight) {
+        return h(NTag, { type: 'warning', size: 'small', bordered: false }, { default: () => '进行中' })
+      }
       return h(
         NTag,
         { type: row.success ? 'success' : 'error', size: 'small', bordered: false },
@@ -256,6 +298,7 @@ const columns: DataTableColumns<RequestLog> = [
     },
   },
 ]
+})
 
 function rowProps(row: RequestLog) {
   return {
@@ -272,6 +315,11 @@ function rowClassName(row: RequestLog) {
   return showDetail.value && detail.value?.id === row.id ? 'log-row-active' : ''
 }
 
+watch(items, (rows) => {
+  if (rows.some((r) => r.in_flight)) startClock()
+  else stopClock()
+})
+
 watch(live, (on) => {
   if (on) startLive()
   else stopLive()
@@ -287,7 +335,10 @@ onMounted(async () => {
   if (live.value) startLive()
 })
 
-onUnmounted(stopLive)
+onUnmounted(() => {
+  stopLive()
+  stopClock()
+})
 </script>
 
 <template>
@@ -340,7 +391,7 @@ onUnmounted(stopLive)
         :columns="columns"
         :data="items"
         :loading="loading"
-        :scroll-x="1360"
+        :scroll-x="1280"
         :row-key="rowKey"
         :row-props="rowProps"
         :row-class-name="rowClassName"
@@ -386,14 +437,20 @@ onUnmounted(stopLive)
               </div>
               <div><span class="meta-k">模型</span>{{ detail.model || '—' }}</div>
               <div>
+                <span class="meta-k">类型</span>{{ detail.stream ? '流式' : '同步' }}
+              </div>
+              <div>
                 <span class="meta-k">路径</span><span class="mono">{{ detail.path || '—' }}</span>
               </div>
               <div>
-                <span class="meta-k">状态</span>{{ detail.status_code || '—' }} · {{ detail.success ? '成功' : '失败' }}
+                <span class="meta-k">状态</span>
+                <template v-if="detail.in_flight">进行中</template>
+                <template v-else>{{ detail.status_code || '—' }} · {{ detail.success ? '成功' : '失败' }}</template>
               </div>
               <div>
-                <span class="meta-k">耗时</span>{{ formatNumber(detail.duration_ms) }}ms / TTFT
-                {{ formatNumber(detail.ttft_ms) }}ms
+                <span class="meta-k">耗时</span>{{ detail.ttft_ms > 0 ? formatSeconds(detail.ttft_ms) : '—' }} /
+                {{ formatSeconds(rowElapsedMs(detail)) }}
+                <span class="muted"> · {{ formatTps(detail.output_tokens, rowElapsedMs(detail), detail.ttft_ms) }}</span>
               </div>
               <div>
                 <span class="meta-k">Tokens</span>{{ formatNumber(detail.input_tokens) }} /

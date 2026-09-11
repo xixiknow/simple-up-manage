@@ -1,4 +1,4 @@
-# 南向提供商管理 · 管理控制台
+# 供货商管理 · 管理控制台
 
 Vue 3 + Vite + TypeScript + Vue Router + Pinia + Naive UI 前端。对接 `/api/v1/admin/*`，通过 Vite 代理到 `http://localhost:8080`。
 

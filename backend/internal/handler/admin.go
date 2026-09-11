@@ -357,10 +357,10 @@ func (h *Admin) CreateUpstreamKey(c *gin.Context) {
 		UpstreamID:       id,
 		Name:             domain.ComposeKeyName(up.Name, tag, rate),
 		NameTag:          tag,
-		EncryptedKey:    enc,
+		EncryptedKey:     enc,
 		KeyPreview:       crypto.KeyPreview(raw),
 		RateMultiplier:   rate,
-		BillingGroup:    billingGroup,
+		BillingGroup:     billingGroup,
 		Status:           status,
 		HealthStatus:     domain.HealthHealthy,
 		ProbeIntervalSec: probeSec,
@@ -414,7 +414,9 @@ func (h *Admin) UpdateKey(c *gin.Context) {
 		httpx.BadRequest(c, "name_tag is too long")
 		return
 	}
+	oldRate := k.RateMultiplier
 	rate := k.RateMultiplier
+	rateEdited := false
 	if body.RateMultiplier != nil {
 		if !validRate(*body.RateMultiplier) {
 			httpx.BadRequest(c, "rate_multiplier must be between 0 and 1000")
@@ -424,6 +426,7 @@ func (h *Admin) UpdateKey(c *gin.Context) {
 			rate = *body.RateMultiplier
 			updates["rate_multiplier"] = rate
 			updates["rate_synced_at"] = nil
+			rateEdited = true
 		}
 	}
 	if tag != "" {
@@ -465,6 +468,10 @@ func (h *Admin) UpdateKey(c *gin.Context) {
 			httpx.Internal(c, err.Error())
 			return
 		}
+	}
+	if rateEdited && h.Ops != nil {
+		k.Upstream = &up
+		_ = h.Ops.RecordRateChange(c.Request.Context(), &k, oldRate, rate, domain.RateChangeManual)
 	}
 	_ = h.Ops.RefreshKeyHealth(c.Request.Context(), k.ID)
 	if strings.TrimSpace(body.APIKey) != "" {
@@ -907,9 +914,9 @@ func (h *Admin) ListRequestLogs(c *gin.Context) {
 	}
 	if v := strings.TrimSpace(c.Query("success")); v != "" {
 		if v == "true" || v == "1" {
-			q = q.Where("success = ?", true)
+			q = q.Where("in_flight = ? AND success = ?", false, true)
 		} else if v == "false" || v == "0" {
-			q = q.Where("success = ?", false)
+			q = q.Where("in_flight = ? AND success = ?", false, false)
 		}
 	}
 	if v := strings.TrimSpace(c.Query("model")); v != "" {

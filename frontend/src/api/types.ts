@@ -193,6 +193,8 @@ export type RequestLog = {
   cache_creation_tokens: number
   ttft_ms: number
   duration_ms: number
+  in_flight?: boolean
+  stream?: boolean
   cost_usd?: number
   error_message?: string
   created_at: string
@@ -207,6 +209,27 @@ export type RequestLogDetail = RequestLog & {
   response_headers?: string
   response_body?: string
   response_body_truncated?: boolean
+}
+
+export type RateChangeDirection = 'up' | 'down'
+export type RateChangeSource = 'billing' | 'manual'
+
+export type RateChangeNotice = {
+  id: number
+  platform_key_id: number
+  upstream_id: number
+  key_name: string
+  upstream_name: string
+  old_rate: number
+  new_rate: number
+  direction: RateChangeDirection
+  source: RateChangeSource
+  read_at?: string | null
+  created_at: string
+}
+
+export type RateNoticeUnreadCount = {
+  unread: number
 }
 
 export type ListResult<T> = {
@@ -391,3 +414,8 @@ export const STATUS_OPTIONS = (Object.keys(STATUS_LABEL) as EnableStatus[]).map(
   label: STATUS_LABEL[value],
   value,
 }))
+
+export const RATE_CHANGE_SOURCE_LABEL: Record<RateChangeSource, string> = {
+  billing: '同步',
+  manual: '手动',
+}

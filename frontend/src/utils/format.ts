@@ -65,6 +65,28 @@ export function formatPercent(value?: number | null, digits = 1) {
   return `${(value * 100).toFixed(digits)}%`
 }
 
+/** Milliseconds to seconds, always suffixed with s. */
+export function formatSeconds(ms?: number | null) {
+  if (ms == null || ms < 0 || Number.isNaN(ms)) return '—'
+  const s = ms / 1000
+  if (s < 10) return `${s.toFixed(2)}s`
+  return `${s.toFixed(1)}s`
+}
+
+/** Output tokens per second over generation time (duration − TTFT). */
+export function formatTps(outputTokens?: number | null, durationMs?: number | null, ttftMs?: number | null) {
+  const out = Number(outputTokens) || 0
+  const dur = Number(durationMs) || 0
+  if (out <= 0 || dur <= 0) return '—'
+  const ttft = Number(ttftMs) || 0
+  const gen = ttft > 0 ? dur - ttft : dur
+  if (gen <= 0) return '—'
+  const v = out / (gen / 1000)
+  if (!Number.isFinite(v) || v <= 0) return '—'
+  const text = v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2)
+  return `${text} tps`
+}
+
 export function errText(e: unknown, fallback = '请求失败') {
   if (e instanceof Error && e.message) return e.message
   return fallback

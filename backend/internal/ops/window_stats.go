@@ -41,7 +41,7 @@ func (s *Service) KeyWindowStatsMap(ctx context.Context, keyIDs []uint, window t
 	var reqs []domain.RequestLog
 	_ = s.DB.WithContext(ctx).
 		Select("platform_key_id, success, ttft_ms, duration_ms, input_tokens, cache_read_tokens, cache_creation_tokens, created_at").
-		Where("platform_key_id IN ? AND created_at >= ?", keyIDs, since).
+		Where("platform_key_id IN ? AND created_at >= ? AND in_flight = ?", keyIDs, since, false).
 		Find(&reqs).Error
 	for _, r := range reqs {
 		if r.PlatformKeyID == nil {

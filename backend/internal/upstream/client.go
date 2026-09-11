@@ -25,8 +25,10 @@ func NewClient() *Client {
 }
 
 func NewStreamingClient() *Client {
+	// Slightly above the gateway's 300s overall deadline so the request
+	// context (sync 300s / stream first-token 30s) wins.
 	return &Client{
-		http: &http.Client{Timeout: 10 * time.Minute},
+		http: &http.Client{Timeout: 305 * time.Second},
 	}
 }
 

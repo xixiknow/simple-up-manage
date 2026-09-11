@@ -10,6 +10,7 @@ import {
   ShuffleOutline,
   ServerOutline,
 } from '@vicons/ionicons5'
+import RateNoticeInbox from '@/components/RateNoticeInbox.vue'
 import { useAuthStore } from '@/stores/auth'
 
 function renderIcon(icon: Component) {
@@ -77,7 +78,7 @@ function logout() {
       <div class="brand" :class="{ collapsed }">
         <span class="mark" />
         <div v-if="!collapsed">
-          <strong>南向提供商</strong>
+          <strong>供货商管理</strong>
           <small>Admin Console</small>
         </div>
       </div>
@@ -95,12 +96,15 @@ function logout() {
     <n-layout>
       <n-layout-header bordered class="topbar">
         <div class="crumb">{{ pageTitle }}</div>
-        <n-button quaternary size="small" @click="logout">
-          <template #icon>
-            <n-icon><LogOutOutline /></n-icon>
-          </template>
-          退出
-        </n-button>
+        <div class="top-actions">
+          <RateNoticeInbox />
+          <n-button quaternary size="small" @click="logout">
+            <template #icon>
+              <n-icon><LogOutOutline /></n-icon>
+            </template>
+            退出
+          </n-button>
+        </div>
       </n-layout-header>
       <n-layout-content class="content" :native-scrollbar="false">
         <router-view />
@@ -156,6 +160,11 @@ function logout() {
 .crumb {
   font-size: 14px;
   font-weight: 600;
+}
+.top-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .content {
   padding: 16px 18px 24px;

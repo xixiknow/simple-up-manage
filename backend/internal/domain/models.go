@@ -29,6 +29,10 @@ const (
 	ProbeBalance        = "balance"
 	ProbeBilling        = "billing"
 	ProbeModels         = "models"
+	RateChangeUp        = "up"
+	RateChangeDown      = "down"
+	RateChangeBilling   = "billing"
+	RateChangeManual    = "manual"
 )
 
 type Upstream struct {
@@ -79,18 +83,18 @@ type PlatformKey struct {
 	RateSyncedAt   *time.Time `json:"rate_synced_at"`
 	// BillingGroup is the new-api group the token belongs to (e.g. "default",
 	// "vip"); used to look up group_ratio when syncing. Empty means "default".
-	BillingGroup        string      `gorm:"size:128" json:"billing_group"`
-	Status string `gorm:"size:16;not null;default:enabled" json:"status"`
+	BillingGroup string `gorm:"size:128" json:"billing_group"`
+	Status       string `gorm:"size:16;not null;default:enabled" json:"status"`
 	// Concurrency / LastBalance / LastBalanceAt remain on the table for older
 	// databases; live values live on Upstream. All keys of a provider share one
 	// concurrency cap and one balance.
-	Concurrency         int         `gorm:"not null;default:0" json:"concurrency"`
-	LastBalance         *float64    `gorm:"type:decimal(20,8)" json:"last_balance"`
-	LastBalanceAt       *time.Time  `json:"last_balance_at"`
-	LastRequestAt       *time.Time  `json:"last_request_at"`
-	LastError           string      `gorm:"type:text" json:"last_error"`
-	CooldownUntil       *time.Time  `json:"cooldown_until"`
-	HealthStatus        string      `gorm:"size:32;not null;default:healthy" json:"health_status"`
+	Concurrency   int        `gorm:"not null;default:0" json:"concurrency"`
+	LastBalance   *float64   `gorm:"type:decimal(20,8)" json:"last_balance"`
+	LastBalanceAt *time.Time `json:"last_balance_at"`
+	LastRequestAt *time.Time `json:"last_request_at"`
+	LastError     string     `gorm:"type:text" json:"last_error"`
+	CooldownUntil *time.Time `json:"cooldown_until"`
+	HealthStatus  string     `gorm:"size:32;not null;default:healthy" json:"health_status"`
 	// ProbeIntervalSec is this key's scheduled probe cadence. 0 follows the
 	// global jobs.probe_interval.
 	ProbeIntervalSec    int         `gorm:"not null;default:0" json:"probe_interval_sec"`
@@ -248,6 +252,8 @@ type RequestLog struct {
 	CacheCreationTokens int64     `json:"cache_creation_tokens"`
 	TTFTMs              int       `json:"ttft_ms"`
 	DurationMs          int       `json:"duration_ms"`
+	InFlight            bool      `gorm:"index" json:"in_flight"`
+	Stream              bool      `json:"stream"`
 	CostUSD             *float64  `gorm:"type:decimal(20,8)" json:"cost_usd"`
 	ErrorMessage        string    `gorm:"type:text" json:"error_message"`
 	RequestHeaders      string    `gorm:"type:text" json:"request_headers"`
@@ -269,6 +275,22 @@ type ProbeLog struct {
 	ErrorMessage  string    `gorm:"type:text" json:"error_message"`
 	Extra         string    `gorm:"type:text" json:"extra"`
 	CreatedAt     time.Time `gorm:"index" json:"created_at"`
+}
+
+// RateChangeNotice is a durable record of a key's rate_multiplier going up or
+// down, so operators can review price moves after the console toast is gone.
+type RateChangeNotice struct {
+	ID            uint       `gorm:"primaryKey" json:"id"`
+	PlatformKeyID uint       `gorm:"index;not null" json:"platform_key_id"`
+	UpstreamID    uint       `gorm:"index;not null" json:"upstream_id"`
+	KeyName       string     `gorm:"size:256;not null" json:"key_name"`
+	UpstreamName  string     `gorm:"size:128;not null" json:"upstream_name"`
+	OldRate       float64    `gorm:"type:decimal(12,6);not null" json:"old_rate"`
+	NewRate       float64    `gorm:"type:decimal(12,6);not null" json:"new_rate"`
+	Direction     string     `gorm:"size:8;not null" json:"direction"`
+	Source        string     `gorm:"size:16;not null;index" json:"source"`
+	ReadAt        *time.Time `json:"read_at"`
+	CreatedAt     time.Time  `gorm:"index" json:"created_at"`
 }
 
 type JSONStrings []string

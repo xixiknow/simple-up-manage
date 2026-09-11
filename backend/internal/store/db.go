@@ -70,6 +70,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&domain.ConsumerRouteGroup{},
 		&domain.RequestLog{},
 		&domain.ProbeLog{},
+		&domain.RateChangeNotice{},
 		&domain.SchedulerSettings{},
 		&domain.CatalogModel{},
 		&domain.CatalogMeta{},

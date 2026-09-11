@@ -683,7 +683,7 @@ func (s *Service) refreshNewAPIBilling(ctx context.Context, key *domain.Platform
 	extra, _ := json.Marshal(map[string]any{"group": name, "group_ratio": mult})
 	plog.Extra = string(extra)
 	_ = s.DB.WithContext(ctx).Create(&plog).Error
-	if err := s.DB.WithContext(ctx).Model(key).Updates(billingSyncedUpdates(key, mult, now)).Error; err != nil {
+	if err := s.applyBillingRate(ctx, key, mult, now); err != nil {
 		return err
 	}
 	return s.RefreshKeyHealth(ctx, key.ID)
@@ -745,7 +745,7 @@ func (s *Service) RefreshBilling(ctx context.Context, keyID uint) error {
 	}
 	plog.Success = true
 	_ = s.DB.WithContext(ctx).Create(&plog).Error
-	if err := s.DB.WithContext(ctx).Model(&key).Updates(billingSyncedUpdates(&key, mult, now)).Error; err != nil {
+	if err := s.applyBillingRate(ctx, &key, mult, now); err != nil {
 		return err
 	}
 	return s.RefreshKeyHealth(ctx, key.ID)
@@ -980,7 +980,7 @@ func (s *Service) HealthPulses(ctx context.Context, keyIDs []uint) map[uint][]Pu
 	var reqs []domain.RequestLog
 	_ = s.DB.WithContext(ctx).
 		Select("platform_key_id, success, duration_ms, created_at").
-		Where("platform_key_id IN ? AND created_at >= ?", keyIDs, start).
+		Where("platform_key_id IN ? AND created_at >= ? AND in_flight = ?", keyIDs, start, false).
 		Find(&reqs).Error
 	for _, r := range reqs {
 		if r.PlatformKeyID == nil {
@@ -1020,7 +1020,7 @@ func (s *Service) KeyCacheRates(ctx context.Context, keyIDs []uint) map[uint]Key
 	var rows []domain.RequestLog
 	_ = s.DB.WithContext(ctx).
 		Select("platform_key_id, input_tokens, cache_read_tokens, cache_creation_tokens").
-		Where("platform_key_id IN ? AND created_at >= ?", keyIDs, time.Now().Add(-CacheWindow)).
+		Where("platform_key_id IN ? AND created_at >= ? AND in_flight = ?", keyIDs, time.Now().Add(-CacheWindow), false).
 		Find(&rows).Error
 	type acc struct {
 		in, cr, cc int64

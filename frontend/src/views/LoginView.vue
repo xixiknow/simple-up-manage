@@ -35,7 +35,7 @@ async function submit() {
       <div class="logo-row">
         <span class="mark" />
         <div>
-          <h1>南向提供商管理</h1>
+          <h1>供货商管理</h1>
           <p>使用后端静态 ADMIN_TOKEN 登录</p>
         </div>
       </div>

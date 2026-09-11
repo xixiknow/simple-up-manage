@@ -40,6 +40,11 @@ var hopByHop = map[string]struct{}{
 	"content-length":      {},
 }
 
+const (
+	proxyOverallTimeout = 300 * time.Second
+	proxyFirstTokenWait = 30 * time.Second
+)
+
 type Gateway struct {
 	DB     *gorm.DB
 	Enc    *crypto.AESGCM
@@ -146,6 +151,22 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 		reqID = uuid.NewString()
 	}
 	reqSnap := captureInbound(c.Request, body)
+	path := c.Request.URL.Path
+	clientIP := requestClientIP(c)
+	reqStart := time.Now()
+	lg := h.beginLog(ck, protocol, model, path, reqID, clientIP, reqSnap)
+	lastMsg := "no enabled upstream for protocol"
+	var settled bool
+	defer func() {
+		if settled {
+			return
+		}
+		msg := lastMsg
+		if msg == "" {
+			msg = "request ended"
+		}
+		h.finishLog(lg, ck, nil, nil, protocol, model, path, reqID, clientIP, 0, false, upstream.TokenUsage{}, 0, int(time.Since(reqStart).Milliseconds()), msg, reqSnap)
+	}()
 
 	attempts := 2
 	retries := 1
@@ -160,15 +181,16 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 	}
 	allow, drift, bound, err := ops.ResolveAllowKeys(c.Request.Context(), h.DB, ck.ID, protocol, model)
 	if err != nil {
+		lastMsg = err.Error()
 		gatewayError(c, http.StatusInternalServerError, "api_error", err.Error())
 		return
 	}
 	if bound && len(allow) == 0 {
-		msg := "route group has no available key for this protocol/model"
+		lastMsg = "route group has no available key for this protocol/model"
 		if len(drift) > 0 {
-			msg = "route group members' rate multipliers are all outside the group's rate range"
+			lastMsg = "route group members' rate multipliers are all outside the group's rate range"
 		}
-		gatewayError(c, http.StatusServiceUnavailable, "api_error", msg)
+		gatewayError(c, http.StatusServiceUnavailable, "api_error", lastMsg)
 		return
 	}
 	if !bound {
@@ -176,7 +198,6 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 	}
 
 	var exclude []uint
-	var lastMsg = "no enabled upstream for protocol"
 	for attempt := 0; attempt < attempts; attempt++ {
 		pk, up, err := h.Picker.Pick(c.Request.Context(), picker.Request{
 			Protocol:  protocol,
@@ -189,23 +210,25 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 		if err != nil {
 			if errors.Is(err, picker.ErrNoUpstream) {
 				if attempt == 0 {
-					msg := "no enabled upstream for protocol"
+					lastMsg = "no enabled upstream for protocol"
 					if bound {
-						msg = "no healthy key in bound route groups"
+						lastMsg = "no healthy key in bound route groups"
 					}
-					gatewayError(c, http.StatusServiceUnavailable, "api_error", msg)
+					gatewayError(c, http.StatusServiceUnavailable, "api_error", lastMsg)
 					return
 				}
 				gatewayError(c, http.StatusBadGateway, "api_error", lastMsg)
 				return
 			}
+			lastMsg = err.Error()
 			gatewayError(c, http.StatusInternalServerError, "api_error", err.Error())
 			return
 		}
 		var outcome forwardOutcome
 		for r := 0; r <= retries; r++ {
-			outcome = h.forwardOnce(c, ck, pk, up, protocol, model, session, reqID, body, reqSnap)
+			outcome = h.forwardOnce(c, ck, pk, up, protocol, model, session, reqID, body, reqSnap, lg, reqStart)
 			if outcome.ok {
+				settled = true
 				return
 			}
 			lastMsg = outcome.msg
@@ -274,23 +297,32 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
-func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain.PlatformKey, up *domain.Upstream, protocol, model, session, reqID string, body []byte, reqSnap ioCapture) forwardOutcome {
+func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain.PlatformKey, up *domain.Upstream, protocol, model, session, reqID string, body []byte, reqSnap ioCapture, lg *liveLog, reqStart time.Time) forwardOutcome {
 	if up != nil {
 		if !h.conc.Acquire(up.ID, up.Concurrency) {
 			return forwardOutcome{failOver: true, concBusy: true, msg: "upstream concurrency exceeded"}
 		}
 		defer h.conc.Release(up.ID, up.Concurrency)
 	}
+	lg.attachRoute(h, pk, up)
 
 	apiKey, err := h.Enc.Decrypt(pk.EncryptedKey)
 	if err != nil {
 		return forwardOutcome{msg: "failed to decrypt platform key"}
 	}
+	started := reqStart
+	if started.IsZero() {
+		started = time.Now()
+	}
+	deadline := started.Add(proxyOverallTimeout)
+	attemptCtx, cancelAttempt := context.WithDeadline(c.Request.Context(), deadline)
+	defer cancelAttempt()
+
 	target := upstream.JoinEndpoint(up.BaseURL, c.Request.URL.Path)
 	if c.Request.URL.RawQuery != "" {
 		target += "?" + c.Request.URL.RawQuery
 	}
-	upReq, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, target, bytes.NewReader(body))
+	upReq, err := http.NewRequestWithContext(attemptCtx, c.Request.Method, target, bytes.NewReader(body))
 	if err != nil {
 		return forwardOutcome{msg: err.Error()}
 	}
@@ -305,20 +337,30 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 		}
 	}
 
-	started := time.Now()
 	path := c.Request.URL.Path
 	clientIP := requestClientIP(c)
+	wantStream := peekStream(body)
+	firstWatch := &firstTokenWatch{}
+	if wantStream {
+		firstWatch.start(cancelAttempt, proxyFirstTokenWait, deadline)
+	}
+	defer firstWatch.stop()
+
 	resp, err := h.Client.DoRaw(upReq)
 	if err != nil {
-		h.recordAttempt(ck, pk, up, protocol, model, path, reqID, clientIP, 0, false, upstream.TokenUsage{}, 0, int(time.Since(started).Milliseconds()), err.Error(), reqSnap)
-		return forwardOutcome{failOver: true, retrySame: true, msg: "upstream request failed"}
+		dur := int(time.Since(started).Milliseconds())
+		msg := proxyTimeoutMessage(err, firstWatch.timedOut())
+		h.observeAttempt(pk, model, false, upstream.TokenUsage{}, 0)
+		h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, 0, false, upstream.TokenUsage{}, 0, dur, msg, reqSnap, true, true)
+		return forwardOutcome{failOver: true, retrySame: !firstWatch.timedOut() && !isTimeoutErr(err), msg: msg}
 	}
 
 	if shouldFailoverStatus(resp.StatusCode) && !c.Writer.Written() {
 		peek, _ := io.ReadAll(io.LimitReader(resp.Body, maxLogBodyBytes+1))
 		_ = resp.Body.Close()
 		snap := reqSnap.withResponse(resp.Header, resp.Header.Get("Content-Type"), peek, len(peek))
-		h.recordAttempt(ck, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, int(time.Since(started).Milliseconds()), http.StatusText(resp.StatusCode), snap)
+		h.observeAttempt(pk, model, false, upstream.TokenUsage{}, 0)
+		h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, int(time.Since(started).Milliseconds()), http.StatusText(resp.StatusCode), snap, true, true)
 		low := resp.StatusCode == http.StatusPaymentRequired
 		return forwardOutcome{
 			failOver:   true,
@@ -336,7 +378,8 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 			_ = resp.Body.Close()
 			msg := "upstream quota exhausted"
 			snap := reqSnap.withResponse(resp.Header, resp.Header.Get("Content-Type"), peek, len(peek))
-			h.recordAttempt(ck, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, int(time.Since(started).Milliseconds()), msg, snap)
+			h.observeAttempt(pk, model, false, upstream.TokenUsage{}, 0)
+			h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, int(time.Since(started).Milliseconds()), msg, snap, true, true)
 			return forwardOutcome{failOver: true, lowBalance: true, msg: msg}
 		}
 		// Not a quota error: stitch the peeked prefix back and pass through as-is.
@@ -348,27 +391,58 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 	}
 
 	defer resp.Body.Close()
-	for k, vs := range resp.Header {
-		if _, skip := hopByHop[strings.ToLower(k)]; skip {
-			continue
-		}
-		for _, v := range vs {
-			c.Writer.Header().Add(k, v)
-		}
-	}
-	c.Writer.Header().Set("X-Request-Id", reqID)
-	c.Status(resp.StatusCode)
 
-	collector := &streamCollector{start: started}
+	collector := &streamCollector{start: started, onProgress: func(ttft, dur int, usage upstream.TokenUsage) {
+		h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, usage, ttft, dur, "", ioCapture{}, true, false)
+	}}
 	ct := strings.ToLower(resp.Header.Get("Content-Type"))
-	streaming := strings.Contains(ct, "text/event-stream") || strings.Contains(ct, "text/stream")
+	streaming := isSSEContentType(ct)
+	if streaming {
+		h.writeLog(lg.id, map[string]any{"stream": true})
+		elapsed := time.Since(started)
+		if !firstWatch.running() {
+			remain := proxyFirstTokenWait - elapsed
+			firstWatch.start(cancelAttempt, remain, deadline)
+		}
+	} else {
+		firstWatch.stop()
+	}
+
+	var committed bool
+	commitHeaders := func() {
+		if committed || c.Writer.Written() {
+			return
+		}
+		committed = true
+		firstWatch.stop()
+		for k, vs := range resp.Header {
+			if _, skip := hopByHop[strings.ToLower(k)]; skip {
+				continue
+			}
+			for _, v := range vs {
+				c.Writer.Header().Add(k, v)
+			}
+		}
+		c.Writer.Header().Set("X-Request-Id", reqID)
+		c.Status(resp.StatusCode)
+	}
+
 	var respPrefix []byte
 	var respTotal int
 	if streaming {
-		err = copySSE(c.Writer, resp.Body, collector)
+		err = copySSE(c.Writer, resp.Body, collector, true, commitHeaders)
 		respPrefix = collector.prefix
 		respTotal = collector.total
+		if err != nil && !c.Writer.Written() {
+			dur := int(time.Since(started).Milliseconds())
+			msg := proxyTimeoutMessage(err, firstWatch.timedOut())
+			snap := reqSnap.withResponse(resp.Header, resp.Header.Get("Content-Type"), respPrefix, respTotal)
+			h.observeAttempt(pk, model, false, upstream.TokenUsage{}, 0)
+			h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, collector.ttftMs, dur, msg, snap, true, true)
+			return forwardOutcome{failOver: true, retrySame: false, msg: msg}
+		}
 	} else {
+		commitHeaders()
 		// Stream the body through untouched (image responses with b64_json can be
 		// tens of MB) while capturing a bounded prefix for usage parsing.
 		capture := &usageCapture{limit: 16 << 20}
@@ -384,6 +458,14 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 		if f, ok := c.Writer.(http.Flusher); ok {
 			f.Flush()
 		}
+		if err != nil && !c.Writer.Written() {
+			dur := int(time.Since(started).Milliseconds())
+			msg := proxyTimeoutMessage(err, false)
+			snap := reqSnap.withResponse(resp.Header, resp.Header.Get("Content-Type"), respPrefix, respTotal)
+			h.observeAttempt(pk, model, false, upstream.TokenUsage{}, 0)
+			h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, dur, msg, snap, true, true)
+			return forwardOutcome{failOver: true, retrySame: !isTimeoutErr(err), msg: msg}
+		}
 	}
 
 	success := resp.StatusCode >= 200 && resp.StatusCode < 400 && err == nil
@@ -398,7 +480,8 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 	if collector.usage.CostUSD == nil {
 		collector.usage.CostUSD = estimateRequestCost(h.DB, model, pk, collector.usage)
 	}
-	h.recordAttempt(ck, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, success, collector.usage, collector.ttftMs, dur, errMsg, snap)
+	h.observeAttempt(pk, model, success, collector.usage, collector.ttftMs)
+	h.finishLog(lg, ck, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, success, collector.usage, collector.ttftMs, dur, errMsg, snap)
 	if success {
 		h.Picker.SetSticky(c.Request.Context(), protocol, session, pk.ID)
 		if collector.usage.CostUSD != nil {
@@ -515,62 +598,217 @@ func (h *Gateway) Usage(c *gin.Context) {
 	})
 }
 
-func (h *Gateway) recordAttempt(ck *domain.ConsumerKey, pk *domain.PlatformKey, up *domain.Upstream, protocol, model, path, reqID, clientIP string, status int, success bool, usage upstream.TokenUsage, ttft, dur int, errMsg string, snap ioCapture) {
-	if pk != nil && h.Picker != nil {
+func (h *Gateway) observeAttempt(pk *domain.PlatformKey, model string, success bool, usage upstream.TokenUsage, ttft int) {
+	if pk == nil {
+		return
+	}
+	if h.Picker != nil {
 		h.Picker.Observe(context.Background(), pk.ID, model, success, usage.InputTokens, usage.CacheReadTokens, usage.CacheCreationTokens, ttft)
 	}
-	h.recordLog(ck, pk, up, protocol, model, path, reqID, clientIP, status, success, usage, ttft, dur, errMsg, snap)
+	if h.Ops != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			h.Ops.ObserveRequest(ctx, pk.ID, success, 0, "")
+		}()
+	}
 }
 
-func (h *Gateway) recordLog(ck *domain.ConsumerKey, pk *domain.PlatformKey, up *domain.Upstream, protocol, model, path, reqID, clientIP string, status int, success bool, usage upstream.TokenUsage, ttft, dur int, errMsg string, snap ioCapture) {
-	logRow := domain.RequestLog{
-		RequestID:           reqID,
-		Protocol:            protocol,
-		Model:               model,
-		Path:                path,
-		ClientIP:            clientIP,
-		StatusCode:          status,
-		Success:             success,
-		InputTokens:         usage.InputTokens,
-		OutputTokens:        usage.OutputTokens,
-		CacheReadTokens:     usage.CacheReadTokens,
-		CacheCreationTokens: usage.CacheCreationTokens,
-		TTFTMs:              ttft,
-		DurationMs:          dur,
-		CostUSD:             usage.CostUSD,
-		ErrorMessage:        truncateErr(errMsg),
-		RequestHeaders:      snap.ReqHeaders,
-		RequestBody:         snap.ReqBody,
-		RequestBodyTrunc:    snap.ReqTrunc,
-		ResponseHeaders:     snap.RespHeaders,
-		ResponseBody:        snap.RespBody,
-		ResponseBodyTrunc:   snap.RespTrunc,
+type liveLog struct {
+	id        uint
+	mu        sync.Mutex
+	lastFlush time.Time
+	ttftSent  bool
+}
+
+func (h *Gateway) beginLog(ck *domain.ConsumerKey, protocol, model, path, reqID, clientIP string, snap ioCapture) *liveLog {
+	row := domain.RequestLog{
+		RequestID:        reqID,
+		Protocol:         protocol,
+		Model:            model,
+		Path:             path,
+		ClientIP:         clientIP,
+		InFlight:         true,
+		Stream:           peekStream([]byte(snap.ReqBody)),
+		RequestHeaders:   snap.ReqHeaders,
+		RequestBody:      snap.ReqBody,
+		RequestBodyTrunc: snap.ReqTrunc,
 	}
 	if ck != nil {
 		id := ck.ID
-		logRow.ConsumerKeyID = &id
+		row.ConsumerKeyID = &id
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := h.DB.WithContext(ctx).Create(&row).Error; err != nil {
+		return nil
+	}
+	return &liveLog{id: row.ID}
+}
+
+func (lg *liveLog) attachRoute(h *Gateway, pk *domain.PlatformKey, up *domain.Upstream) {
+	if lg == nil || lg.id == 0 {
+		return
+	}
+	updates := map[string]any{}
 	if pk != nil {
-		id := pk.ID
-		logRow.PlatformKeyID = &id
+		updates["platform_key_id"] = pk.ID
 	}
 	if up != nil {
-		id := up.ID
-		logRow.UpstreamID = &id
+		updates["upstream_id"] = up.ID
 	}
+	if len(updates) == 0 {
+		return
+	}
+	h.writeLog(lg.id, updates)
+}
+
+func (h *Gateway) patchLog(lg *liveLog, pk *domain.PlatformKey, up *domain.Upstream, protocol, model, path, reqID, clientIP string, status int, success bool, usage upstream.TokenUsage, ttft, dur int, errMsg string, snap ioCapture, inFlight, force bool) {
+	if lg == nil || lg.id == 0 {
+		return
+	}
+	lg.mu.Lock()
+	if ttft > 0 && !lg.ttftSent {
+		force = true
+	}
+	if !force && !lg.lastFlush.IsZero() && time.Since(lg.lastFlush) < 500*time.Millisecond {
+		lg.mu.Unlock()
+		return
+	}
+	if ttft > 0 {
+		lg.ttftSent = true
+	}
+	lg.lastFlush = time.Now()
+	id := lg.id
+	lg.mu.Unlock()
+	h.writeLog(id, logUpdates(ckIDs{pk: pk, up: up}, protocol, model, path, reqID, clientIP, status, success, usage, ttft, dur, errMsg, snap, inFlight))
+}
+
+type ckIDs struct {
+	pk *domain.PlatformKey
+	up *domain.Upstream
+}
+
+func (h *Gateway) finishLog(lg *liveLog, ck *domain.ConsumerKey, pk *domain.PlatformKey, up *domain.Upstream, protocol, model, path, reqID, clientIP string, status int, success bool, usage upstream.TokenUsage, ttft, dur int, errMsg string, snap ioCapture) {
+	updates := logUpdates(ckIDs{pk: pk, up: up}, protocol, model, path, reqID, clientIP, status, success, usage, ttft, dur, errMsg, snap, false)
+	if peekStream([]byte(snap.ReqBody)) || responseLooksStream(snap) {
+		updates["stream"] = true
+	}
+	if lg == nil || lg.id == 0 {
+		row := domain.RequestLog{
+			RequestID:           reqID,
+			Protocol:            protocol,
+			Model:               model,
+			Path:                path,
+			ClientIP:            clientIP,
+			StatusCode:          status,
+			Success:             success,
+			InputTokens:         usage.InputTokens,
+			OutputTokens:        usage.OutputTokens,
+			CacheReadTokens:     usage.CacheReadTokens,
+			CacheCreationTokens: usage.CacheCreationTokens,
+			TTFTMs:              ttft,
+			DurationMs:          dur,
+			InFlight:            false,
+			Stream:              peekStream([]byte(snap.ReqBody)) || responseLooksStream(snap),
+			CostUSD:             usage.CostUSD,
+			ErrorMessage:        truncateErr(errMsg),
+			RequestHeaders:      snap.ReqHeaders,
+			RequestBody:         snap.ReqBody,
+			RequestBodyTrunc:    snap.ReqTrunc,
+			ResponseHeaders:     snap.RespHeaders,
+			ResponseBody:        snap.RespBody,
+			ResponseBodyTrunc:   snap.RespTrunc,
+		}
+		if ck != nil {
+			id := ck.ID
+			row.ConsumerKeyID = &id
+		}
+		if pk != nil {
+			id := pk.ID
+			row.PlatformKeyID = &id
+		}
+		if up != nil {
+			id := up.ID
+			row.UpstreamID = &id
+		}
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = h.DB.WithContext(ctx).Create(&row).Error
+			h.touchConsumer(ctx, ck)
+		}()
+		return
+	}
+	id := lg.id
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = h.DB.WithContext(ctx).Create(&logRow).Error
-		if ck != nil {
-			now := time.Now()
-			_ = h.DB.WithContext(ctx).Model(&domain.ConsumerKey{}).Where("id = ?", ck.ID).
-				Update("last_used_at", now).Error
-		}
-		if pk != nil && h.Ops != nil {
-			h.Ops.ObserveRequest(ctx, pk.ID, success, status, errMsg)
-		}
+		_ = h.DB.WithContext(ctx).Model(&domain.RequestLog{}).Where("id = ?", id).Updates(updates).Error
+		h.touchConsumer(ctx, ck)
 	}()
+}
+
+func logUpdates(ids ckIDs, protocol, model, path, reqID, clientIP string, status int, success bool, usage upstream.TokenUsage, ttft, dur int, errMsg string, snap ioCapture, inFlight bool) map[string]any {
+	updates := map[string]any{
+		"protocol":              protocol,
+		"model":                 model,
+		"path":                  path,
+		"request_id":            reqID,
+		"client_ip":             clientIP,
+		"status_code":           status,
+		"success":               success,
+		"input_tokens":          usage.InputTokens,
+		"output_tokens":         usage.OutputTokens,
+		"cache_read_tokens":     usage.CacheReadTokens,
+		"cache_creation_tokens": usage.CacheCreationTokens,
+		"duration_ms":           dur,
+		"in_flight":             inFlight,
+		"error_message":         truncateErr(errMsg),
+	}
+	if ttft > 0 {
+		updates["ttft_ms"] = ttft
+	}
+	if usage.CostUSD != nil {
+		updates["cost_usd"] = *usage.CostUSD
+	}
+	if snap.ReqHeaders != "" {
+		updates["request_headers"] = snap.ReqHeaders
+		updates["request_body"] = snap.ReqBody
+		updates["request_body_truncated"] = snap.ReqTrunc
+	}
+	if snap.RespHeaders != "" || snap.RespBody != "" {
+		updates["response_headers"] = snap.RespHeaders
+		updates["response_body"] = snap.RespBody
+		updates["response_body_truncated"] = snap.RespTrunc
+	}
+	if ids.pk != nil {
+		updates["platform_key_id"] = ids.pk.ID
+	}
+	if ids.up != nil {
+		updates["upstream_id"] = ids.up.ID
+	}
+	return updates
+}
+
+func (h *Gateway) writeLog(id uint, updates map[string]any) {
+	if id == 0 || len(updates) == 0 {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = h.DB.WithContext(ctx).Model(&domain.RequestLog{}).Where("id = ?", id).Updates(updates).Error
+	}()
+}
+
+func (h *Gateway) touchConsumer(ctx context.Context, ck *domain.ConsumerKey) {
+	if ck == nil {
+		return
+	}
+	now := time.Now()
+	_ = h.DB.WithContext(ctx).Model(&domain.ConsumerKey{}).Where("id = ?", ck.ID).
+		Update("last_used_at", now).Error
 }
 
 func (h *Gateway) addQuotaUsed(id uint, delta float64) {
@@ -625,6 +863,25 @@ func peekModel(body []byte) string {
 	}
 	_ = json.Unmarshal(body, &peek)
 	return strings.TrimSpace(peek.Model)
+}
+
+func peekStream(body []byte) bool {
+	var peek struct {
+		Stream *bool `json:"stream"`
+	}
+	if json.Unmarshal(body, &peek) != nil || peek.Stream == nil {
+		return false
+	}
+	return *peek.Stream
+}
+
+func isSSEContentType(ct string) bool {
+	ct = strings.ToLower(ct)
+	return strings.Contains(ct, "text/event-stream") || strings.Contains(ct, "text/stream")
+}
+
+func responseLooksStream(snap ioCapture) bool {
+	return isSSEContentType(snap.RespHeaders)
 }
 
 // peekModelFrom extracts the model id from either a JSON body or a
@@ -691,24 +948,42 @@ func (u *usageCapture) Bytes() []byte {
 }
 
 type streamCollector struct {
-	start   time.Time
-	firstAt time.Time
-	ttftMs  int
-	buf     []byte
-	prefix  []byte
-	total   int
-	usage   upstream.TokenUsage
+	start      time.Time
+	firstAt    time.Time
+	ttftMs     int
+	buf        []byte
+	prefix     []byte
+	total      int
+	usage      upstream.TokenUsage
+	onProgress func(ttft, dur int, usage upstream.TokenUsage)
+}
+
+func (s *streamCollector) markTTFT() {
+	if s.ttftMs > 0 {
+		return
+	}
+	s.firstAt = time.Now()
+	s.ttftMs = int(s.firstAt.Sub(s.start).Milliseconds())
+	if s.ttftMs <= 0 {
+		s.ttftMs = 1
+	}
+	s.emitProgress()
+}
+
+func (s *streamCollector) emitProgress() {
+	if s.onProgress == nil {
+		return
+	}
+	s.onProgress(s.ttftMs, int(time.Since(s.start).Milliseconds()), s.usage)
 }
 
 func (s *streamCollector) noteBytes(n int) {
-	if n > 0 && s.firstAt.IsZero() {
-		s.firstAt = time.Now()
-		s.ttftMs = int(s.firstAt.Sub(s.start).Milliseconds())
+	if n > 0 && s.ttftMs == 0 {
+		s.markTTFT()
 	}
 }
 
 func (s *streamCollector) feed(p []byte) {
-	s.noteBytes(len(p))
 	s.total += len(p)
 	if room := maxLogBodyBytes - len(s.prefix); room > 0 {
 		if len(p) > room {
@@ -724,37 +999,166 @@ func (s *streamCollector) feed(p []byte) {
 			if len(s.buf) > 1<<20 {
 				s.buf = s.buf[len(s.buf)-64:]
 			}
-			return
+			break
 		}
 		line := string(s.buf[:i])
 		s.buf = s.buf[i+1:]
+		if s.ttftMs == 0 && upstream.SSELineHasText(line) {
+			s.markTTFT()
+		}
 		u := upstream.ParseSSEUsageLine(line)
 		upstream.MergeUsage(&s.usage, u)
 	}
+	s.emitProgress()
 }
 
-func copySSE(w gin.ResponseWriter, r io.Reader, col *streamCollector) error {
+func copySSE(w gin.ResponseWriter, r io.Reader, col *streamCollector, hold bool, onRelease func()) error {
 	flusher, _ := w.(http.Flusher)
 	br := bufio.NewReaderSize(r, 32*1024)
 	buf := make([]byte, 32*1024)
+	var pending []byte
+	released := !hold
+	var releaseErr error
+	release := func() {
+		if released {
+			return
+		}
+		released = true
+		if onRelease != nil {
+			onRelease()
+		}
+		if len(pending) == 0 {
+			return
+		}
+		_, releaseErr = w.Write(pending)
+		pending = nil
+		if releaseErr == nil && flusher != nil {
+			flusher.Flush()
+		}
+	}
 	for {
 		n, err := br.Read(buf)
 		if n > 0 {
-			col.feed(buf[:n])
-			if _, werr := w.Write(buf[:n]); werr != nil {
-				return werr
-			}
-			if flusher != nil {
-				flusher.Flush()
+			chunk := buf[:n]
+			col.feed(chunk)
+			if !released {
+				pending = append(pending, chunk...)
+				if col.ttftMs > 0 {
+					release()
+					if releaseErr != nil {
+						return releaseErr
+					}
+				}
+			} else {
+				if _, werr := w.Write(chunk); werr != nil {
+					return werr
+				}
+				if flusher != nil {
+					flusher.Flush()
+				}
 			}
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return nil
+				release()
+				return releaseErr
 			}
 			return err
 		}
 	}
+}
+
+type firstTokenWatch struct {
+	mu      sync.Mutex
+	timer   *time.Timer
+	fired   bool
+	stopped bool
+	started bool
+}
+
+func (w *firstTokenWatch) start(cancel context.CancelFunc, wait time.Duration, deadline time.Time) {
+	if w == nil || cancel == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.started || w.stopped {
+		return
+	}
+	if rem := time.Until(deadline); wait > rem {
+		wait = rem
+	}
+	w.started = true
+	if wait <= 0 {
+		w.fired = true
+		go cancel()
+		return
+	}
+	w.timer = time.AfterFunc(wait, func() {
+		w.mu.Lock()
+		if w.stopped {
+			w.mu.Unlock()
+			return
+		}
+		w.fired = true
+		w.mu.Unlock()
+		cancel()
+	})
+}
+
+func (w *firstTokenWatch) stop() {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.stopped = true
+	if w.timer != nil {
+		w.timer.Stop()
+		w.timer = nil
+	}
+}
+
+func (w *firstTokenWatch) running() bool {
+	if w == nil {
+		return false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.started && !w.stopped
+}
+
+func (w *firstTokenWatch) timedOut() bool {
+	if w == nil {
+		return false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.fired
+}
+
+func isTimeoutErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
+
+func proxyTimeoutMessage(err error, firstToken bool) string {
+	if firstToken && isTimeoutErr(err) {
+		return "first token timeout"
+	}
+	if isTimeoutErr(err) {
+		return "upstream timeout"
+	}
+	if err != nil {
+		return err.Error()
+	}
+	return "upstream request failed"
 }
 
 func gatewayError(c *gin.Context, status int, typ, message string) {

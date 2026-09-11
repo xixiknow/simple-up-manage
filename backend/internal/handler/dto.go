@@ -8,12 +8,12 @@ import (
 
 type upstreamDTO struct {
 	ID            uint       `json:"id"`
-	Name          string      `json:"name"`
-	BaseURL       string      `json:"base_url"`
-	Kind          string      `json:"kind"`
+	Name          string     `json:"name"`
+	BaseURL       string     `json:"base_url"`
+	Kind          string     `json:"kind"`
 	Protocols     []string   `json:"protocols"`
 	Status        string     `json:"status"`
-	Note          string      `json:"note"`
+	Note          string     `json:"note"`
 	Concurrency   int        `json:"concurrency"`
 	LastBalance   *float64   `json:"last_balance"`
 	LastBalanceAt *time.Time `json:"last_balance_at"`
@@ -202,6 +202,8 @@ type logDTO struct {
 	CacheCreationTokens int64     `json:"cache_creation_tokens"`
 	TTFTMs              int       `json:"ttft_ms"`
 	DurationMs          int       `json:"duration_ms"`
+	InFlight            bool      `json:"in_flight"`
+	Stream              bool      `json:"stream"`
 	CostUSD             *float64  `json:"cost_usd"`
 	ErrorMessage        string    `json:"error_message"`
 	CreatedAt           time.Time `json:"created_at"`
@@ -238,6 +240,8 @@ func toLogDTO(l domain.RequestLog, upstreamName, consumerName string) logDTO {
 		CacheCreationTokens: l.CacheCreationTokens,
 		TTFTMs:              l.TTFTMs,
 		DurationMs:          l.DurationMs,
+		InFlight:            l.InFlight,
+		Stream:              l.Stream,
 		CostUSD:             l.CostUSD,
 		ErrorMessage:        l.ErrorMessage,
 		CreatedAt:           l.CreatedAt,
