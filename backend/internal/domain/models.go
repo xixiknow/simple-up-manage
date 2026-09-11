@@ -79,18 +79,18 @@ type PlatformKey struct {
 	RateSyncedAt   *time.Time `json:"rate_synced_at"`
 	// BillingGroup is the new-api group the token belongs to (e.g. "default",
 	// "vip"); used to look up group_ratio when syncing. Empty means "default".
-	BillingGroup        string      `gorm:"size:128" json:"billing_group"`
-	Status string `gorm:"size:16;not null;default:enabled" json:"status"`
+	BillingGroup string `gorm:"size:128" json:"billing_group"`
+	Status       string `gorm:"size:16;not null;default:enabled" json:"status"`
 	// Concurrency / LastBalance / LastBalanceAt remain on the table for older
 	// databases; live values live on Upstream. All keys of a provider share one
 	// concurrency cap and one balance.
-	Concurrency         int         `gorm:"not null;default:0" json:"concurrency"`
-	LastBalance         *float64    `gorm:"type:decimal(20,8)" json:"last_balance"`
-	LastBalanceAt       *time.Time  `json:"last_balance_at"`
-	LastRequestAt       *time.Time  `json:"last_request_at"`
-	LastError           string      `gorm:"type:text" json:"last_error"`
-	CooldownUntil       *time.Time  `json:"cooldown_until"`
-	HealthStatus        string      `gorm:"size:32;not null;default:healthy" json:"health_status"`
+	Concurrency   int        `gorm:"not null;default:0" json:"concurrency"`
+	LastBalance   *float64   `gorm:"type:decimal(20,8)" json:"last_balance"`
+	LastBalanceAt *time.Time `json:"last_balance_at"`
+	LastRequestAt *time.Time `json:"last_request_at"`
+	LastError     string     `gorm:"type:text" json:"last_error"`
+	CooldownUntil *time.Time `json:"cooldown_until"`
+	HealthStatus  string     `gorm:"size:32;not null;default:healthy" json:"health_status"`
 	// ProbeIntervalSec is this key's scheduled probe cadence. 0 follows the
 	// global jobs.probe_interval.
 	ProbeIntervalSec    int         `gorm:"not null;default:0" json:"probe_interval_sec"`
@@ -231,32 +231,37 @@ type ConsumerRouteGroup struct {
 }
 
 type RequestLog struct {
-	ID                  uint      `gorm:"primaryKey" json:"id"`
-	RequestID           string    `gorm:"size:64;index" json:"request_id"`
-	ConsumerKeyID       *uint     `gorm:"index" json:"consumer_key_id"`
-	UpstreamID          *uint     `gorm:"index" json:"upstream_id"`
-	PlatformKeyID       *uint     `gorm:"index" json:"platform_key_id"`
-	Protocol            string    `gorm:"size:16;index" json:"protocol"`
-	Model               string    `gorm:"size:128;index" json:"model"`
-	Path                string    `gorm:"size:256" json:"path"`
-	ClientIP            string    `gorm:"size:64;index" json:"client_ip"`
-	StatusCode          int       `json:"status_code"`
-	Success             bool      `gorm:"index" json:"success"`
-	InputTokens         int64     `json:"input_tokens"`
-	OutputTokens        int64     `json:"output_tokens"`
-	CacheReadTokens     int64     `json:"cache_read_tokens"`
-	CacheCreationTokens int64     `json:"cache_creation_tokens"`
-	TTFTMs              int       `json:"ttft_ms"`
-	DurationMs          int       `json:"duration_ms"`
-	CostUSD             *float64  `gorm:"type:decimal(20,8)" json:"cost_usd"`
-	ErrorMessage        string    `gorm:"type:text" json:"error_message"`
-	RequestHeaders      string    `gorm:"type:text" json:"request_headers"`
-	RequestBody         string    `gorm:"type:text" json:"request_body"`
-	RequestBodyTrunc    bool      `json:"request_body_truncated"`
-	ResponseHeaders     string    `gorm:"type:text" json:"response_headers"`
-	ResponseBody        string    `gorm:"type:text" json:"response_body"`
-	ResponseBodyTrunc   bool      `json:"response_body_truncated"`
-	CreatedAt           time.Time `gorm:"index" json:"created_at"`
+	ID                  uint       `gorm:"primaryKey" json:"id"`
+	RequestID           string     `gorm:"size:64;index" json:"request_id"`
+	ConsumerKeyID       *uint      `gorm:"index" json:"consumer_key_id"`
+	UpstreamID          *uint      `gorm:"index" json:"upstream_id"`
+	PlatformKeyID       *uint      `gorm:"index" json:"platform_key_id"`
+	Protocol            string     `gorm:"size:16;index" json:"protocol"`
+	Model               string     `gorm:"size:128;index" json:"model"`
+	Path                string     `gorm:"size:256" json:"path"`
+	ClientIP            string     `gorm:"size:64;index" json:"client_ip"`
+	StatusCode          int        `json:"status_code"`
+	Success             bool       `gorm:"index" json:"success"`
+	InputTokens         int64      `json:"input_tokens"`
+	OutputTokens        int64      `json:"output_tokens"`
+	CacheReadTokens     int64      `json:"cache_read_tokens"`
+	CacheCreationTokens int64      `json:"cache_creation_tokens"`
+	TTFTMs              int        `json:"ttft_ms"`
+	DurationMs          int        `json:"duration_ms"`
+	InFlight            bool       `gorm:"index" json:"in_flight"`
+	Stream              bool       `json:"stream"`
+	StreamKnown         bool       `gorm:"not null;default:false" json:"stream_known"`
+	LogRevision         uint64     `gorm:"not null;default:0" json:"-"`
+	CompletedAt         *time.Time `gorm:"index" json:"completed_at"`
+	CostUSD             *float64   `gorm:"type:decimal(20,8)" json:"cost_usd"`
+	ErrorMessage        string     `gorm:"type:text" json:"error_message"`
+	RequestHeaders      string     `gorm:"type:text" json:"request_headers"`
+	RequestBody         string     `gorm:"type:text" json:"request_body"`
+	RequestBodyTrunc    bool       `json:"request_body_truncated"`
+	ResponseHeaders     string     `gorm:"type:text" json:"response_headers"`
+	ResponseBody        string     `gorm:"type:text" json:"response_body"`
+	ResponseBodyTrunc   bool       `json:"response_body_truncated"`
+	CreatedAt           time.Time  `gorm:"index" json:"created_at"`
 }
 
 type ProbeLog struct {

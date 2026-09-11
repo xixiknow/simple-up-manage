@@ -7,18 +7,26 @@ import (
 )
 
 type upstreamDTO struct {
-	ID            uint       `json:"id"`
-	Name          string      `json:"name"`
-	BaseURL       string      `json:"base_url"`
-	Kind          string      `json:"kind"`
-	Protocols     []string   `json:"protocols"`
-	Status        string     `json:"status"`
-	Note          string      `json:"note"`
-	Concurrency   int        `json:"concurrency"`
-	LastBalance   *float64   `json:"last_balance"`
-	LastBalanceAt *time.Time `json:"last_balance_at"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	Summary       *upstreamSummary `json:"summary,omitempty"`
+	ID            uint             `json:"id"`
+	Name          string           `json:"name"`
+	BaseURL       string           `json:"base_url"`
+	Kind          string           `json:"kind"`
+	Protocols     []string         `json:"protocols"`
+	Status        string           `json:"status"`
+	Note          string           `json:"note"`
+	Concurrency   int              `json:"concurrency"`
+	LastBalance   *float64         `json:"last_balance"`
+	LastBalanceAt *time.Time       `json:"last_balance_at"`
+	CreatedAt     time.Time        `json:"created_at"`
+	UpdatedAt     time.Time        `json:"updated_at"`
+}
+
+type upstreamSummary struct {
+	KeyCount      int            `json:"key_count"`
+	AbnormalCount int            `json:"abnormal_count"`
+	HealthCounts  map[string]int `json:"health_counts"`
+	LastRequestAt *time.Time     `json:"last_request_at"`
 }
 
 func toUpstreamDTO(u domain.Upstream) upstreamDTO {
@@ -91,6 +99,14 @@ type keyDTO struct {
 	RouteGroups         []refDTO    `json:"route_groups"`
 	CreatedAt           time.Time   `json:"created_at"`
 	UpdatedAt           time.Time   `json:"updated_at"`
+}
+
+type keyRateDTO struct {
+	ID             uint    `json:"id"`
+	UpstreamID     uint    `json:"upstream_id"`
+	UpstreamName   string  `json:"upstream_name,omitempty"`
+	Name           string  `json:"name"`
+	RateMultiplier float64 `json:"rate_multiplier"`
 }
 
 // refDTO is a compact {id,name} reference used for tags in list views.
@@ -202,6 +218,9 @@ type logDTO struct {
 	CacheCreationTokens int64     `json:"cache_creation_tokens"`
 	TTFTMs              int       `json:"ttft_ms"`
 	DurationMs          int       `json:"duration_ms"`
+	InFlight            bool      `json:"in_flight"`
+	Stream              bool      `json:"stream"`
+	StreamKnown         bool      `json:"stream_known"`
 	CostUSD             *float64  `json:"cost_usd"`
 	ErrorMessage        string    `json:"error_message"`
 	CreatedAt           time.Time `json:"created_at"`
@@ -238,6 +257,9 @@ func toLogDTO(l domain.RequestLog, upstreamName, consumerName string) logDTO {
 		CacheCreationTokens: l.CacheCreationTokens,
 		TTFTMs:              l.TTFTMs,
 		DurationMs:          l.DurationMs,
+		InFlight:            l.InFlight,
+		Stream:              l.Stream,
+		StreamKnown:         l.StreamKnown,
 		CostUSD:             l.CostUSD,
 		ErrorMessage:        l.ErrorMessage,
 		CreatedAt:           l.CreatedAt,

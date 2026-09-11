@@ -48,3 +48,12 @@ internal/jobs       background tickers
 ```
 
 Scheduler: hard-filter by price threshold / health / balance, then pick the lowest effective cost inside the near-best quality band. Anthropic sticky and limited 5xx failover are on by default.
+
+Scheduled health probes run on `jobs.probe_interval` ticks. Each key is checked at
+most once per fixed time window (`probe_interval_sec`, or the global interval when
+zero), so a probe's response time does not add another full tick to its cadence.
+Windows align to clock boundaries; an interval is a window size, not a minimum
+elapsed delay after the previous probe finishes. Recent requests still suppress
+scheduled probes for their configured interval. Disabled keys are excluded.
+The 60-minute health history retains gray cells for minutes without a completed
+health probe or request.

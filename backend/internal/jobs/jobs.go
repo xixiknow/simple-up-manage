@@ -40,6 +40,16 @@ func Start(cfg *config.Config, opsSvc *ops.Service, afterCatalog func(), stop <-
 	}()
 	go runTicker("catalog", cfg.Jobs.CatalogInterval, stop, syncCatalog)
 
+	finalizeStale := func(ctx context.Context) {
+		n, err := opsSvc.FinalizeStaleInFlightLogs(ctx)
+		if err != nil {
+			log.Printf("job stale-logs: %v", err)
+			return
+		}
+		if n > 0 {
+			log.Printf("job stale-logs: finalized=%d", n)
+		}
+	}
 	purgeLogs := func(ctx context.Context) {
 		n, err := opsSvc.PurgeRequestLogs(ctx, cfg.Jobs.LogRetention)
 		if err != nil {
@@ -48,6 +58,12 @@ func Start(cfg *config.Config, opsSvc *ops.Service, afterCatalog func(), stop <-
 		}
 		log.Printf("job log-retention: deleted=%d older_than=%s", n, cfg.Jobs.LogRetention)
 	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		finalizeStale(ctx)
+	}()
+	go runTicker("stale-logs", 20*time.Second, stop, finalizeStale)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()

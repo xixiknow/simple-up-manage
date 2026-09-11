@@ -772,6 +772,10 @@ func (s *Service) ProbeAllEnabled(ctx context.Context, skipRecent time.Duration)
 }
 
 func (s *Service) ProbeFiltered(ctx context.Context, deep bool, upstreamID *uint, skipRecent time.Duration) (int, int, int) {
+	return s.probeFilteredAt(ctx, deep, upstreamID, skipRecent, time.Now())
+}
+
+func (s *Service) probeFilteredAt(ctx context.Context, deep bool, upstreamID *uint, skipRecent time.Duration, now time.Time) (int, int, int) {
 	q := s.DB.WithContext(ctx).Where("status = ?", domain.StatusEnabled)
 	if upstreamID != nil && *upstreamID > 0 {
 		q = q.Where("upstream_id = ?", *upstreamID)
@@ -787,21 +791,23 @@ func (s *Service) ProbeFiltered(ctx context.Context, deep bool, upstreamID *uint
 			win = d
 		}
 	}
-	recent := s.recentRequestAt(ctx, keys, win)
+	recent := s.recentRequestAt(ctx, keys, win, now)
 	probed := s.lastProbeAt(ctx, keys)
 	ok, fail, skipped := 0, 0, 0
 	for _, k := range keys {
 		every := k.ProbeEvery(skipRecent)
 		if skipRecent > 0 && every > 0 {
-			if t, hit := probed[k.ID]; hit && time.Since(t) < every {
+			// Deduplicate within the scheduled time window. Waiting a full interval
+			// after completion skips the next tick by the duration of the probe.
+			if t, hit := probed[k.ID]; hit && !t.Before(now.Truncate(every)) {
 				skipped++
 				continue
 			}
-			if t, hit := recent[k.ID]; hit && time.Since(t) < every {
+			if t, hit := recent[k.ID]; hit && now.Sub(t) < every {
 				skipped++
 				continue
 			}
-			if k.LastRequestAt != nil && time.Since(*k.LastRequestAt) < every {
+			if k.LastRequestAt != nil && now.Sub(*k.LastRequestAt) < every {
 				skipped++
 				continue
 			}
@@ -847,7 +853,7 @@ func (s *Service) lastProbeAt(ctx context.Context, keys []domain.PlatformKey) ma
 	return out
 }
 
-func (s *Service) recentRequestAt(ctx context.Context, keys []domain.PlatformKey, window time.Duration) map[uint]time.Time {
+func (s *Service) recentRequestAt(ctx context.Context, keys []domain.PlatformKey, window time.Duration, now time.Time) map[uint]time.Time {
 	out := make(map[uint]time.Time)
 	if window <= 0 || len(keys) == 0 {
 		return out
@@ -862,7 +868,7 @@ func (s *Service) recentRequestAt(ctx context.Context, keys []domain.PlatformKey
 	}
 	_ = s.DB.WithContext(ctx).Model(&domain.RequestLog{}).
 		Select("platform_key_id, MAX(created_at) as last_at").
-		Where("platform_key_id IN ? AND created_at >= ?", ids, time.Now().Add(-window)).
+		Where("platform_key_id IN ? AND created_at >= ?", ids, now.Add(-window)).
 		Group("platform_key_id").
 		Scan(&rows).Error
 	for _, r := range rows {
@@ -980,7 +986,7 @@ func (s *Service) HealthPulses(ctx context.Context, keyIDs []uint) map[uint][]Pu
 	var reqs []domain.RequestLog
 	_ = s.DB.WithContext(ctx).
 		Select("platform_key_id, success, duration_ms, created_at").
-		Where("platform_key_id IN ? AND created_at >= ?", keyIDs, start).
+		Where("platform_key_id IN ? AND created_at >= ? AND in_flight = ?", keyIDs, start, false).
 		Find(&reqs).Error
 	for _, r := range reqs {
 		if r.PlatformKeyID == nil {
@@ -1020,7 +1026,7 @@ func (s *Service) KeyCacheRates(ctx context.Context, keyIDs []uint) map[uint]Key
 	var rows []domain.RequestLog
 	_ = s.DB.WithContext(ctx).
 		Select("platform_key_id, input_tokens, cache_read_tokens, cache_creation_tokens").
-		Where("platform_key_id IN ? AND created_at >= ?", keyIDs, time.Now().Add(-CacheWindow)).
+		Where("platform_key_id IN ? AND created_at >= ? AND in_flight = ?", keyIDs, time.Now().Add(-CacheWindow), false).
 		Find(&rows).Error
 	type acc struct {
 		in, cr, cc int64

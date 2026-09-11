@@ -2,11 +2,12 @@
 import { computed, h, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { NTag, useMessage } from 'naive-ui'
 import type { DataTableColumns, SelectOption } from 'naive-ui'
-import { getRequestLog, listKeys, listRequestLogs, listUpstreams } from '@/api/admin'
-import type { RequestLog, RequestLogDetail } from '@/api/types'
-import { copyText, errText, formatMoney, formatNumber, formatTime, formatTokenCount } from '@/utils/format'
+import { allPages, getRequestLog, listKeyOptions, listRequestLogs, listUpstreams } from '@/api/admin'
+import type { RequestLog, RequestLogDetail, RequestLogQuery } from '@/api/types'
+import { copyText, errText, formatMoney, formatNumber, formatSeconds, formatTime, formatTokenCount, formatTps } from '@/utils/format'
 
 const LIVE_MS = 4000
+const IN_FLIGHT_CAP_MS = 6 * 60 * 1000
 const message = useMessage()
 
 const loading = ref(false)
@@ -55,47 +56,103 @@ const activeIoRaw = computed(() => {
 })
 
 let timer: number | undefined
+const clock = ref(Date.now())
+let clockTimer: number | undefined
 
-async function loadOptions() {
-  const [up, keys] = await Promise.all([
-    listUpstreams({ page: 1, page_size: 200 }),
-    listKeys({ page: 1, page_size: 200 }),
-  ])
-  upstreamOptions.value = up.items.map((u) => ({ label: u.name, value: u.id }))
-  keyOptions.value = keys.items.map((k) => ({
-    label: `${k.name} (${k.key_preview})`,
-    value: k.id,
-  }))
+function rowElapsedMs(row: RequestLog) {
+  if (row.in_flight) {
+    const start = new Date(row.created_at).getTime()
+    if (!Number.isNaN(start)) {
+      return Math.min(IN_FLIGHT_CAP_MS, Math.max(row.duration_ms || 0, clock.value - start))
+    }
+  }
+  return row.duration_ms
 }
 
-async function load(opts?: { silent?: boolean }) {
-  if (!opts?.silent) loading.value = true
-  error.value = ''
-  try {
-    const res = await listRequestLogs({
-      page: page.value,
-      page_size: pageSize.value,
-      upstream_id: filters.upstream_id || undefined,
-      key_id: filters.key_id || undefined,
-      model: filters.model.trim() || undefined,
-      success: filters.success === '' ? undefined : filters.success === 'true',
-      from: filters.range ? new Date(filters.range[0]).toISOString() : undefined,
-      to: filters.range ? new Date(filters.range[1]).toISOString() : undefined,
-    })
-    items.value = res.items
-    total.value = res.total
-    lastRefresh.value = formatTime(new Date().toISOString())
-  } catch (e) {
-    error.value = errText(e)
-    if (!opts?.silent) items.value = []
-  } finally {
-    loading.value = false
+function startClock() {
+  if (clockTimer != null) return
+  clock.value = Date.now()
+  clockTimer = window.setInterval(() => {
+    clock.value = Date.now()
+  }, 250)
+}
+
+function stopClock() {
+  if (clockTimer != null) {
+    window.clearInterval(clockTimer)
+    clockTimer = undefined
   }
 }
 
-function search() {
+async function loadOptions() {
+  const [up, keys] = await Promise.all([allPages(listUpstreams), allPages(listKeyOptions)])
+  upstreamOptions.value = up.map((u) => ({ label: u.name, value: u.id }))
+  keyOptions.value = keys.map((k) => ({ label: `${k.name} (${k.key_preview})`, value: k.id }))
+}
+
+const appliedFilters = ref<RequestLogQuery>({})
+let snapshotId: number | undefined
+let snapshotAt: string | undefined
+let disposed = false
+let loadSequence = 0
+let listPending = false
+let detailSequence = 0
+let detailPending = false
+let activeDetailId: number | null = null
+
+async function load(opts?: { silent?: boolean }) {
+  if (disposed) return
+  if (opts?.silent && listPending) return
+  const sequence = ++loadSequence
+  listPending = true
+  if (!opts?.silent) loading.value = true
+  const requestedPage = page.value
+  try {
+    const res = await listRequestLogs({
+      ...appliedFilters.value, page: requestedPage, page_size: pageSize.value,
+      snapshot_id: requestedPage === 1 && live.value ? undefined : snapshotId,
+      snapshot_at: requestedPage === 1 && live.value ? undefined : snapshotAt,
+    })
+    if (sequence !== loadSequence) return
+    snapshotId = res.snapshot_id
+    snapshotAt = res.snapshot_at
+    const lastPage = Math.max(1, Math.ceil(res.total / pageSize.value))
+    if (requestedPage > lastPage) {
+      page.value = lastPage
+      void load()
+      return
+    }
+    items.value = res.items
+    total.value = res.total
+    error.value = ''
+    lastRefresh.value = formatTime(new Date().toISOString())
+  } catch (e) {
+    if (sequence === loadSequence) error.value = errText(e)
+  } finally {
+    if (sequence === loadSequence) {
+      listPending = false
+      loading.value = false
+    }
+  }
+}
+
+function refresh() {
   page.value = 1
+  snapshotId = undefined
+  snapshotAt = undefined
   void load()
+}
+
+function search() {
+  appliedFilters.value = {
+    upstream_id: filters.upstream_id || undefined,
+    key_id: filters.key_id || undefined,
+    model: filters.model.trim() || undefined,
+    success: filters.success === '' ? undefined : filters.success === 'true',
+    from: filters.range ? new Date(filters.range[0]).toISOString() : undefined,
+    to: filters.range ? new Date(filters.range[1]).toISOString() : undefined,
+  }
+  refresh()
 }
 
 function reset() {
@@ -108,30 +165,51 @@ function reset() {
 }
 
 function startLive() {
+  if (disposed) return
   stopLive()
-  timer = window.setInterval(() => void load({ silent: true }), LIVE_MS)
+  timer = window.setInterval(() => {
+    if (live.value) void load({ silent: true })
+    if (showDetail.value && detail.value?.in_flight) void refreshDetail(true)
+  }, LIVE_MS)
 }
 
 function stopLive() {
-  if (timer != null) {
-    window.clearInterval(timer)
-    timer = undefined
+  if (timer != null) window.clearInterval(timer)
+  timer = undefined
+}
+
+async function refreshDetail(silent = false) {
+  if (activeDetailId == null || (silent && detailPending)) return
+  const id = activeDetailId
+  const sequence = ++detailSequence
+  detailPending = true
+  if (!silent) detailLoading.value = true
+  try {
+    const result = await getRequestLog(id)
+    if (sequence !== detailSequence || !showDetail.value || activeDetailId !== id) return
+    detail.value = result
+    detailError.value = ''
+  } catch (e) {
+    if (sequence === detailSequence) detailError.value = errText(e)
+  } finally {
+    if (sequence === detailSequence) {
+      detailPending = false
+      detailLoading.value = false
+    }
   }
 }
 
-async function openDetail(row: RequestLog) {
+function openDetail(row: RequestLog) {
   showDetail.value = true
+  activeDetailId = row.id
   ioTab.value = 'req_headers'
-  detailLoading.value = true
   detailError.value = ''
   detail.value = null
-  try {
-    detail.value = await getRequestLog(row.id)
-  } catch (e) {
-    detailError.value = errText(e)
-  } finally {
-    detailLoading.value = false
-  }
+  void refreshDetail()
+}
+
+function streamLabel(row: RequestLog) {
+  return row.stream_known ? (row.stream ? '流式' : '同步') : '未知'
 }
 
 function pretty(raw?: string | null) {
@@ -159,7 +237,9 @@ async function copySection(label: string, raw?: string | null) {
   else message.error('复制失败')
 }
 
-const columns: DataTableColumns<RequestLog> = [
+const columns = computed<DataTableColumns<RequestLog>>(() => {
+  clock.value
+  return [
   {
     title: '时间',
     key: 'created_at',
@@ -198,6 +278,18 @@ const columns: DataTableColumns<RequestLog> = [
   { title: '模型', key: 'model', width: 140, ellipsis: { tooltip: true } },
   { title: '协议', key: 'protocol', width: 90 },
   {
+    title: '类型',
+    key: 'stream',
+    width: 72,
+    render(row) {
+      return h(
+        NTag,
+        { size: 'small', bordered: false, type: row.stream_known && row.stream ? 'info' : 'default' },
+        { default: () => streamLabel(row) },
+      )
+    },
+  },
+  {
     title: 'Tokens / Cache',
     key: 'tokens',
     width: 148,
@@ -220,19 +312,16 @@ const columns: DataTableColumns<RequestLog> = [
     },
   },
   {
-    title: 'TTFT',
-    key: 'ttft_ms',
-    width: 80,
+    title: 'TTFT / 耗时',
+    key: 'timing',
+    width: 132,
     render(row) {
-      return `${formatNumber(row.ttft_ms)}ms`
-    },
-  },
-  {
-    title: '耗时',
-    key: 'duration_ms',
-    width: 80,
-    render(row) {
-      return `${formatNumber(row.duration_ms)}ms`
+      const dur = rowElapsedMs(row)
+      const ttft = row.ttft_ms > 0 ? formatSeconds(row.ttft_ms) : '—'
+      return h('div', { class: 'tok-cell', title: `TTFT ${ttft} · 总耗时 ${formatSeconds(dur)}` }, [
+        h('div', { class: 'tok-line' }, `${ttft} / ${formatSeconds(dur)}`),
+        h('div', { class: 'tok-line tok-cache' }, formatTps(row.output_tokens, dur, row.ttft_ms)),
+      ])
     },
   },
   {
@@ -248,6 +337,9 @@ const columns: DataTableColumns<RequestLog> = [
     key: 'success',
     width: 80,
     render(row) {
+      if (row.in_flight) {
+        return h(NTag, { type: 'warning', size: 'small', bordered: false }, { default: () => '进行中' })
+      }
       return h(
         NTag,
         { type: row.success ? 'success' : 'error', size: 'small', bordered: false },
@@ -256,6 +348,7 @@ const columns: DataTableColumns<RequestLog> = [
     },
   },
 ]
+})
 
 function rowProps(row: RequestLog) {
   return {
@@ -272,9 +365,21 @@ function rowClassName(row: RequestLog) {
   return showDetail.value && detail.value?.id === row.id ? 'log-row-active' : ''
 }
 
+watch([items, detail, showDetail], () => {
+  if (items.value.some((r) => r.in_flight) || (showDetail.value && detail.value?.in_flight)) startClock()
+  else stopClock()
+})
+
 watch(live, (on) => {
-  if (on) startLive()
-  else stopLive()
+  if (on) void load({ silent: true })
+})
+
+watch(showDetail, (show) => {
+  if (!show) {
+    activeDetailId = null
+    detailSequence++
+    detailPending = false
+  }
 })
 
 onMounted(async () => {
@@ -284,10 +389,16 @@ onMounted(async () => {
     /* filters remain empty if options fail */
   }
   await load()
-  if (live.value) startLive()
+  startLive()
 })
 
-onUnmounted(stopLive)
+onUnmounted(() => {
+  disposed = true
+  loadSequence++
+  detailSequence++
+  stopLive()
+  stopClock()
+})
 </script>
 
 <template>
@@ -332,15 +443,16 @@ onUnmounted(stopLive)
         />
         <n-button type="primary" size="small" @click="search">查询</n-button>
         <n-button size="small" @click="reset">重置</n-button>
-        <n-button size="small" @click="load()">刷新</n-button>
+        <n-button size="small" @click="refresh">刷新</n-button>
       </div>
       <n-alert v-if="error" type="error" :title="error" style="margin-bottom: 10px" />
       <n-data-table
+        remote
         size="small"
         :columns="columns"
         :data="items"
         :loading="loading"
-        :scroll-x="1360"
+        :scroll-x="1280"
         :row-key="rowKey"
         :row-props="rowProps"
         :row-class-name="rowClassName"
@@ -356,14 +468,13 @@ onUnmounted(stopLive)
           },
           onUpdatePageSize: (s: number) => {
             pageSize = s
-            page = 1
-            load()
+            refresh()
           },
         }"
       />
     </n-card>
 
-    <n-drawer v-model:show="showDetail" :width="640" placement="right">
+    <n-drawer v-model:show="showDetail" width="min(640px, 100vw)" placement="right">
       <n-drawer-content title="请求明细" closable :native-scrollbar="false">
         <n-spin :show="detailLoading">
           <n-alert v-if="detailError" type="error" :title="detailError" style="margin-bottom: 10px" />
@@ -386,14 +497,20 @@ onUnmounted(stopLive)
               </div>
               <div><span class="meta-k">模型</span>{{ detail.model || '—' }}</div>
               <div>
+                <span class="meta-k">类型</span>{{ streamLabel(detail) }}
+              </div>
+              <div>
                 <span class="meta-k">路径</span><span class="mono">{{ detail.path || '—' }}</span>
               </div>
               <div>
-                <span class="meta-k">状态</span>{{ detail.status_code || '—' }} · {{ detail.success ? '成功' : '失败' }}
+                <span class="meta-k">状态</span>
+                <template v-if="detail.in_flight">进行中</template>
+                <template v-else>{{ detail.status_code || '—' }} · {{ detail.success ? '成功' : '失败' }}</template>
               </div>
               <div>
-                <span class="meta-k">耗时</span>{{ formatNumber(detail.duration_ms) }}ms / TTFT
-                {{ formatNumber(detail.ttft_ms) }}ms
+                <span class="meta-k">耗时</span>{{ detail.ttft_ms > 0 ? formatSeconds(detail.ttft_ms) : '—' }} /
+                {{ formatSeconds(rowElapsedMs(detail)) }}
+                <span class="muted"> · {{ formatTps(detail.output_tokens, rowElapsedMs(detail), detail.ttft_ms) }}</span>
               </div>
               <div>
                 <span class="meta-k">Tokens</span>{{ formatNumber(detail.input_tokens) }} /
@@ -406,6 +523,7 @@ onUnmounted(stopLive)
               <div><span class="meta-k">费用</span>{{ formatMoney(detail.cost_usd, 6) }}</div>
             </div>
             <n-alert v-if="detail.error_message" type="error" :title="detail.error_message" style="margin: 10px 0" />
+            <n-alert v-if="detail.error_message === 'stale in-flight request'" type="warning" title="请求异常中断，耗时为最后记录值" style="margin: 10px 0" />
             <n-alert
               v-if="detail.request_body_truncated || detail.response_body_truncated"
               type="warning"
@@ -460,6 +578,8 @@ onUnmounted(stopLive)
   width: 88px;
   color: #667085;
 }
+.meta-grid > div { min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 600px) { .meta-grid { grid-template-columns: minmax(0, 1fr); } }
 .block-head {
   display: flex;
   align-items: center;

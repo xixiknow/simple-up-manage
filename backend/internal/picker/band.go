@@ -295,7 +295,7 @@ func (p *BandPicker) backfillOnce(ctx context.Context, keyID uint, model string,
 		limit = 50
 	}
 	since := time.Now().Add(-time.Duration(cfg.WindowMinutes) * time.Minute)
-	q := p.db.WithContext(ctx).Where("platform_key_id = ? AND created_at >= ?", keyID, since)
+	q := p.db.WithContext(ctx).Where("platform_key_id = ? AND created_at >= ? AND in_flight = ?", keyID, since, false)
 	if strings.TrimSpace(model) != "" {
 		q = q.Where("model = ?", model)
 	}
@@ -305,7 +305,7 @@ func (p *BandPicker) backfillOnce(ctx context.Context, keyID uint, model string,
 			return
 		}
 		if err := p.db.WithContext(ctx).
-			Where("platform_key_id = ? AND created_at >= ?", keyID, since).
+			Where("platform_key_id = ? AND created_at >= ? AND in_flight = ?", keyID, since, false).
 			Order("id DESC").Limit(limit).Find(&logs).Error; err != nil || len(logs) == 0 {
 			return
 		}

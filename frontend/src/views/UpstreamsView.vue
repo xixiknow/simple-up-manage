@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { computed, h, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { NButton, NDropdown, NSpace, NTag, NTooltip, useDialog, useMessage } from 'naive-ui'
+import { NButton, NDropdown, NIcon, NSpace, NSwitch, NTag, NTooltip, useDialog, useMessage } from 'naive-ui'
+import { AddOutline, CreateOutline, EllipsisHorizontalOutline, RefreshOutline } from '@vicons/ionicons5'
 import type { DataTableColumns, DropdownOption, FormInst, FormRules } from 'naive-ui'
 import {
   actionMessage,
+  allPages,
   createKey,
   createUpstream,
   deleteKey,
   deleteUpstream,
   fetchKeyModels,
   listKeys,
+  listKeyRates,
   listRouteGroups,
   listUpstreams,
   probeKey,
@@ -19,6 +22,7 @@ import {
   runProbes,
   updateKey,
   updateUpstream,
+  type KeyRate,
 } from '@/api/admin'
 import {
   BILLING_KINDS,
@@ -72,7 +76,6 @@ let timer: number | undefined
 
 const LIVE_MS = 15_000
 const LOW_BALANCE = 50
-const RECENT_MS = 24 * 60 * 60 * 1000
 
 const showForm = ref(false)
 const saving = ref(false)
@@ -95,82 +98,163 @@ const rules: FormRules = {
   protocols: { type: 'array', required: true, min: 1, message: '至少选择一种协议', trigger: 'change' },
 }
 
-function lastUsedMs(list: PlatformKey[]) {
-  let max = 0
-  for (const k of list) {
-    if (!k.last_request_at) continue
-    const t = Date.parse(k.last_request_at)
-    if (!Number.isNaN(t) && t > max) max = t
-  }
-  return max > 0 ? max : null
-}
-
-function isRecentlyUsed(ms: number | null) {
-  return ms != null && Date.now() - ms <= RECENT_MS
-}
+const page = ref(1)
+const pageSize = ref(10)
+const orderedIds = ref<number[]>([])
+const filters = reactive({ query: '', kind: null as UpstreamKind | null, protocol: null as Protocol | null, status: null as EnableStatus | null })
+const quick = ref('all')
+const narrow = ref(window.innerWidth < 760)
+let loadSequence = 0
+let pending = false
+let disposed = false
+let initialized = false
+const rateSnapshot = new Map<number, number>()
+const syncingRateIds = new Set<number>()
+let rateRevision = 0
 
 function isLowBalance(value?: number | null) {
   return typeof value === 'number' && value < LOW_BALANCE
 }
 
-function keyRowKey(row: PlatformKey) {
-  return row.id
+function abnormal(up: Upstream) {
+  return up.status === 'enabled' && (up.summary?.abnormal_count ?? 0) > 0
 }
 
-const boards = computed(() => {
-  const mapped = items.value.map((up) => {
-    const list = keys.value.filter((k) => k.upstream_id === up.id)
-    const counts: Partial<Record<HealthStatus, number>> = {}
-    for (const k of list) {
-      counts[k.health_status] = (counts[k.health_status] || 0) + 1
-    }
-    return { upstream: up, keys: list, counts, usedAt: lastUsedMs(list) }
+function priority(up: Upstream) {
+  if (up.status === 'disabled') return 3
+  if (abnormal(up)) return 0
+  return isLowBalance(up.last_balance) ? 1 : 2
+}
+
+function matches(up: Upstream) {
+  const query = filters.query.trim().toLowerCase()
+  return (!query || [up.name, up.base_url, up.note].some((v) => v?.toLowerCase().includes(query)))
+    && (!filters.kind || up.kind === filters.kind)
+    && (!filters.protocol || up.protocols.includes(filters.protocol))
+    && (!filters.status || up.status === filters.status)
+    && (quick.value !== 'abnormal' || abnormal(up))
+    && (quick.value !== 'low' || (up.status === 'enabled' && isLowBalance(up.last_balance)))
+    && (quick.value !== 'disabled' || up.status === 'disabled')
+}
+
+const quickOptions = computed(() => [
+  { label: `全部 ${items.value.length}`, value: 'all' },
+  { label: `异常 ${items.value.filter(abnormal).length}`, value: 'abnormal' },
+  { label: `低余额 ${items.value.filter((u) => u.status === 'enabled' && isLowBalance(u.last_balance)).length}`, value: 'low' },
+  { label: `停用 ${items.value.filter((u) => u.status === 'disabled').length}`, value: 'disabled' },
+])
+const providerMap = computed(() => new Map(items.value.map((up) => [up.id, up])))
+const visibleIds = computed(() => orderedIds.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
+type ProviderRow = { id: string; upstream: Upstream; key: PlatformKey | null; span: number; first: boolean }
+const rows = computed<ProviderRow[]>(() => {
+  const grouped = new Map<number, PlatformKey[]>()
+  for (const key of keys.value) {
+    const group = grouped.get(key.upstream_id) ?? []
+    group.push(key)
+    grouped.set(key.upstream_id, group)
+  }
+  return visibleIds.value.flatMap<ProviderRow>((id) => {
+    const upstream = providerMap.value.get(id)
+    if (!upstream) return []
+    const group = grouped.get(id) ?? []
+    if (!group.length) return [{ id: `up-${id}`, upstream, key: null, span: 1, first: true }]
+    return group.map((key, i) => ({ id: `key-${key.id}`, upstream, key, span: i === 0 ? group.length : 0, first: i === 0 }))
   })
-  mapped.sort((a, b) => {
-    const aRecent = isRecentlyUsed(a.usedAt)
-    const bRecent = isRecentlyUsed(b.usedAt)
-    if (aRecent !== bRecent) return aRecent ? -1 : 1
-    if (aRecent) {
-      const va = typeof a.upstream.last_balance === 'number' ? a.upstream.last_balance : Number.POSITIVE_INFINITY
-      const vb = typeof b.upstream.last_balance === 'number' ? b.upstream.last_balance : Number.POSITIVE_INFINITY
-      if (va !== vb) return va - vb
-      return a.upstream.id - b.upstream.id
-    }
-    const ua = a.usedAt ?? 0
-    const ub = b.usedAt ?? 0
-    if (ua !== ub) return ub - ua
-    return a.upstream.id - b.upstream.id
-  })
-  return mapped
 })
 
-async function load(opts?: { silent?: boolean }) {
-  const silent = !!opts?.silent
-  if (!silent) {
-    loading.value = true
-    error.value = ''
+function notifyRateChanges(nextKeys: KeyRate[]) {
+  const changes: Array<{ key: KeyRate; previous: number; current: number }> = []
+  for (const key of nextKeys) {
+    if (syncingRateIds.has(key.id)) continue
+    const previous = rateSnapshot.get(key.id)
+    const current = key.rate_multiplier
+    if (!Number.isFinite(current)) continue
+    if (previous != null && Math.abs(previous - current) > 1e-9) {
+      changes.push({ key, previous, current })
+    }
+    rateSnapshot.set(key.id, current)
   }
+  if (!changes.length) return false
+  const shown = changes.slice(0, 3)
+  for (const change of shown) {
+    const direction = change.current < change.previous ? '降价' : '涨价'
+    const detail = `${change.key.upstream_name || '提供商'} / ${change.key.name}: ×${formatAlertRate(change.previous)} → ×${formatAlertRate(change.current)}`
+    const content = () => h('div', { style: 'max-width: min(560px, calc(100vw - 100px)); overflow-wrap: anywhere' }, `倍率${direction}：${detail}`)
+    if (direction === '降价') message.success(content, { duration: 7000, closable: true })
+    else message.warning(content, { duration: 9000, closable: true })
+  }
+  if (changes.length > shown.length) {
+    message.info(`另有 ${changes.length - shown.length} 把 Key 的倍率发生变化`, { duration: 7000 })
+  }
+  return true
+}
+
+function formatAlertRate(value: number) {
+  return value.toLocaleString('en-US', { maximumFractionDigits: 9, useGrouping: false })
+}
+
+async function load(opts?: { silent?: boolean; preserveOrder?: boolean }) {
+  if (disposed) return
+  const silent = !!opts?.silent
+  if (silent && pending) return
+  const sequence = ++loadSequence
+  pending = true
+  if (!silent) loading.value = true
   try {
-    const [upRes, keyRes] = await Promise.all([
-      listUpstreams({ page: 1, page_size: 100 }),
-      listKeys({ page: 1, page_size: 200 }),
-      silent ? Promise.resolve() : loadRouteGroups(),
+    const upstreams = await allPages((params) => listUpstreams({ ...params, include_summary: true }))
+    if (sequence !== loadSequence) return
+    const knownIds = new Set(upstreams.map((up) => up.id))
+    const order = initialized && (silent || opts?.preserveOrder)
+      ? orderedIds.value.filter((id) => knownIds.has(id))
+      : upstreams.filter(matches).sort((a, b) => priority(a) - priority(b) || a.id - b.id).map((up) => up.id)
+    const nextPage = Math.min(page.value, Math.max(1, Math.ceil(order.length / pageSize.value)))
+    const ids = order.slice((nextPage - 1) * pageSize.value, nextPage * pageSize.value)
+    const revision = rateRevision
+    const [allRates, pageKeys] = await Promise.all([
+      allPages((params) => listKeyRates(params)),
+      ids.length ? allPages((params) => listKeys({ ...params, upstream_ids: ids })) : Promise.resolve([]),
     ])
-    items.value = upRes.items
-    keys.value = keyRes.items
+    if (sequence !== loadSequence) return
+    // A manual sync supersedes any rate snapshot already in flight.
+    if (revision === rateRevision) notifyRateChanges(allRates)
+    items.value = upstreams
+    orderedIds.value = order
+    page.value = nextPage
+    keys.value = pageKeys
+    initialized = true
+    error.value = ''
     lastRefresh.value = formatTime(new Date().toISOString())
   } catch (e) {
-    if (!silent) {
-      error.value = errText(e)
-      items.value = []
-      keys.value = []
-    }
+    if (sequence === loadSequence) error.value = errText(e)
   } finally {
-    if (!silent) loading.value = false
+    if (sequence === loadSequence) {
+      pending = false
+      loading.value = false
+    }
   }
 }
 
+function search() {
+  page.value = 1
+  void load()
+}
+
+function resetFilters() {
+  Object.assign(filters, { query: '', kind: null, protocol: null, status: null })
+  quick.value = 'all'
+  search()
+}
+
+function changePage(next: number) {
+  page.value = next
+  keys.value = []
+  void load({ preserveOrder: true })
+}
+
+function resize() { narrow.value = window.innerWidth < 760 }
+
 function startLive() {
+  if (disposed) return
   stopLive()
   timer = window.setInterval(() => void load({ silent: true }), LIVE_MS)
 }
@@ -306,14 +390,26 @@ async function probeOne(row: PlatformKey) {
 }
 
 async function syncRateOne(row: PlatformKey) {
+  if (syncingRateIds.has(row.id)) return
+  syncingRateIds.add(row.id)
+  rateRevision++
   busy.value = `rate-${row.id}`
   try {
     const data = await refreshKeyBilling(row.id)
-    message.success(actionMessage(data, '已同步倍率'))
+    if (disposed) return
+    syncingRateIds.delete(row.id)
+    rateRevision++
+    if (data.billing_unsupported) {
+      message.warning('该 Key 暂不支持同步倍率')
+    } else if (!notifyRateChanges([data])) {
+      message.success(`已同步倍率：×${formatAlertRate(data.rate_multiplier)}`)
+    }
     await load()
   } catch (e) {
     message.error(errText(e, '同步倍率失败'))
   } finally {
+    syncingRateIds.delete(row.id)
+    rateRevision++
     busy.value = null
   }
 }
@@ -412,6 +508,24 @@ async function saveKey() {
   }
 }
 
+async function toggleKeyStatus(row: PlatformKey, enabled: boolean) {
+  const next: EnableStatus = enabled ? 'enabled' : 'disabled'
+  if (row.status === next) return
+  busy.value = `status-${row.id}`
+  try {
+    await updateKey(row.id, {
+      name_tag: row.name_tag || inferNameTag(row.name, row.upstream_name),
+      status: next,
+    })
+    row.status = next
+    message.success(next === 'enabled' ? '已启用' : '已停用')
+  } catch (e) {
+    message.error(errText(e, '更新状态失败'))
+  } finally {
+    busy.value = null
+  }
+}
+
 function confirmDeleteKey(row: PlatformKey) {
   dialog.warning({
     title: '删除 Key',
@@ -476,15 +590,6 @@ const keyColumns: DataTableColumns<PlatformKey> = [
           default: () => synced + extra,
         },
       )
-    },
-  },
-  {
-    title: '探测间隔',
-    key: 'probe_interval_sec',
-    width: 96,
-    render(row) {
-      const label = formatProbeInterval(row.probe_interval_sec)
-      return h('span', { class: label === '默认' ? 'muted' : undefined }, label)
     },
   },
   {
@@ -574,31 +679,39 @@ const keyColumns: DataTableColumns<PlatformKey> = [
   {
     title: '操作',
     key: 'actions',
-    width: 196,
+    width: 140,
     align: 'right',
     render(row) {
       const rowBusy =
         busy.value === `probe-${row.id}` ||
         busy.value === `rate-${row.id}` ||
         busy.value === `models-${row.id}`
+      const statusBusy = busy.value === `status-${row.id}`
       const more: DropdownOption[] = [
         { label: '探测', key: 'probe', disabled: rowBusy },
         { label: '获取模型', key: 'models', disabled: rowBusy },
+        { label: '删除 Key', key: 'delete', disabled: rowBusy },
       ]
       if (row.upstream_kind && BILLING_KINDS.includes(row.upstream_kind)) {
         more.splice(1, 0, { label: '同步倍率', key: 'rate', disabled: rowBusy })
       }
       return h(
         NSpace,
-        { size: 4, wrap: false, justify: 'end' },
+        { size: 4, wrap: false, justify: 'end', align: 'center' },
         {
           default: () => [
-            h(NButton, { size: 'tiny', quaternary: true, onClick: () => openEditKey(row) }, { default: () => '编辑' }),
             h(
-              NButton,
-              { size: 'tiny', quaternary: true, type: 'error', onClick: () => confirmDeleteKey(row) },
-              { default: () => '删除' },
+              NSwitch,
+              {
+                size: 'small',
+                value: row.status === 'enabled',
+                loading: statusBusy,
+                disabled: statusBusy,
+                onUpdateValue: (on: boolean) => void toggleKeyStatus(row, on),
+              },
+              { checked: () => '启用', unchecked: () => '停用' },
             ),
+            iconButton(CreateOutline, '编辑 Key', () => openEditKey(row)),
             h(
               NDropdown,
               {
@@ -609,11 +722,12 @@ const keyColumns: DataTableColumns<PlatformKey> = [
                   if (key === 'probe') void probeOne(row)
                   else if (key === 'rate') void syncRateOne(row)
                   else if (key === 'models') void fetchModelsOne(row)
+                  else if (key === 'delete') confirmDeleteKey(row)
                 },
               },
               {
                 default: () =>
-                  h(NButton, { size: 'tiny', quaternary: true, loading: rowBusy }, { default: () => '更多' }),
+                  h(NButton, { size: 'tiny', quaternary: true, loading: rowBusy, 'aria-label': 'Key 操作' }, { icon: () => h(NIcon, null, { default: () => h(EllipsisHorizontalOutline) }) }),
               },
             ),
           ],
@@ -622,6 +736,104 @@ const keyColumns: DataTableColumns<PlatformKey> = [
     },
   },
 ]
+
+
+function iconButton(icon: typeof RefreshOutline, label: string, action: () => void, isBusy = false) {
+  return h(NTooltip, null, {
+    trigger: () => h(NButton, { size: 'tiny', quaternary: true, 'aria-label': label, loading: isBusy, onClick: action },
+      { icon: () => h(NIcon, null, { default: () => h(icon) }) }),
+    default: () => label,
+  })
+}
+
+function providerMenu(up: Upstream) {
+  const options: DropdownOption[] = [
+    { label: '添加 Key', key: 'add' },
+    { label: '编辑提供商', key: 'edit' },
+    { label: up.status === 'enabled' ? '停用提供商' : '启用提供商', key: 'status' },
+    { label: '探测该提供商', key: 'probe' },
+    { label: '删除提供商', key: 'delete' },
+  ]
+  return h(NDropdown, {
+    trigger: 'click', options,
+    onSelect: async (value: string) => {
+      if (value === 'add') openCreateKey(up)
+      if (value === 'edit') openEdit(up)
+      if (value === 'delete') confirmDelete(up)
+      if (value === 'status' || value === 'probe') {
+        busy.value = `up-${up.id}`
+        try {
+          if (value === 'status') await updateUpstream(up.id, { ...up, status: up.status === 'enabled' ? 'disabled' : 'enabled' })
+          else await runProbes({ upstream_id: up.id, deep: deep.value })
+          message.success(value === 'status' ? '状态已更新' : '探测完成')
+          await load({ preserveOrder: true })
+        } catch (e) { message.error(errText(e)) }
+        finally { busy.value = null }
+      }
+    },
+  }, { default: () => h(NButton, { size: 'tiny', quaternary: true, 'aria-label': `${up.name} 操作`, loading: busy.value === `up-${up.id}` },
+    { icon: () => h(NIcon, null, { default: () => h(EllipsisHorizontalOutline) }) }) })
+}
+
+function renderBalance(up: Upstream) {
+  return h('div', { class: 'balance-cell' }, [
+    h(NTooltip, null, {
+      trigger: () => h('span', { class: ['balance-value', { 'is-low': isLowBalance(up.last_balance), 'is-unknown': up.last_balance == null }] },
+        up.last_balance == null ? '未知' : formatMoney(up.last_balance)),
+      default: () => up.last_balance_at ? `更新于 ${formatTime(up.last_balance_at)}` : '尚无余额数据',
+    }),
+    iconButton(RefreshOutline, `刷新 ${up.name} 余额`, () => void refreshUpstream(up), busy.value === `bal-up-${up.id}`),
+  ])
+}
+
+const columns = computed<DataTableColumns<ProviderRow>>(() => {
+  const provider: DataTableColumns<ProviderRow> = [{
+    title: narrow.value ? '提供商 / 余额' : '提供商', key: 'provider', width: narrow.value ? 154 : 215,
+    fixed: 'left', rowSpan: (row) => row.span, className: 'provider-cell',
+    render: ({ upstream: up }) => h('div', { class: 'provider-info' }, [
+      h('div', { class: 'provider-name-line' }, [h('strong', { title: up.name }, up.name), providerMenu(up)]),
+      h('a', { class: 'provider-url', href: providerHref(up.base_url), target: '_blank', rel: 'noopener noreferrer', title: up.base_url }, up.base_url),
+      h('div', { class: 'provider-meta' }, [
+        h(StatusTag, { status: up.status }),
+        h('span', KIND_LABEL[up.kind]),
+      ]),
+      h('div', { class: 'muted', title: `${healthSummary(up.summary?.health_counts ?? {})} · 并发 ${concLabel(up.concurrency)}` },
+        `${up.summary?.key_count ?? 0} 把 Key · ${up.protocols.map((p) => PROTOCOL_LABEL[p]).join(' / ')}`),
+      up.note ? h('div', { class: 'provider-note', title: up.note }, up.note) : null,
+      narrow.value ? renderBalance(up) : null,
+    ]),
+  }]
+  if (!narrow.value) provider.push({
+    title: '余额', key: 'balance', width: 130, fixed: 'left',
+    rowSpan: (row) => row.span, className: 'provider-cell',
+    render: ({ upstream }) => renderBalance(upstream),
+  })
+  const order = ['name', 'health_status', 'rate_multiplier', 'channel_score', 'health_pulse', 'route_groups', 'models_count', 'cache_rate', 'actions']
+  for (const key of order) {
+    const original = keyColumns.find((col) => 'key' in col && col.key === key)
+    if (!original || !('key' in original) || 'children' in original) continue
+    provider.push({
+      title: original.title,
+      key: original.key,
+      align: original.align,
+      width: key === 'name' ? 140 : key === 'health_status' ? 80 : key === 'rate_multiplier' ? 70 : key === 'channel_score' ? 80 : key === 'health_pulse' ? 220 : key === 'route_groups' ? 130 : original.width,
+      render: (row, index) => {
+        if (!row.key) {
+          if (key !== 'name') return null
+          if ((row.upstream.summary?.key_count ?? 0) > 0) return h('span', { class: 'muted' }, loading.value ? '加载中' : 'Key 数据待刷新')
+          return h(NButton, { size: 'tiny', onClick: () => openCreateKey(row.upstream) }, { default: () => '添加 Key' })
+        }
+        if (key === 'name') return h('div', { class: 'key-name', title: row.key.name }, [
+          h('span', row.key.name_tag || inferNameTag(row.key.name, row.upstream.name)),
+          h('small', { class: 'preview' }, row.key.key_preview),
+        ])
+        return original.render ? original.render(row.key, index) : String(row.key[key as keyof PlatformKey] ?? '')
+      },
+    })
+  }
+  return provider
+})
+
 
 function healthSummary(counts: Partial<Record<HealthStatus, number>>) {
   const order: HealthStatus[] = ['healthy', 'degraded', 'down', 'cooldown', 'low_balance', 'disabled']
@@ -636,13 +848,6 @@ function concLabel(n?: number | null) {
   return v > 0 ? String(v) : '不限制'
 }
 
-function formatProbeInterval(sec?: number | null) {
-  const n = Number(sec) || 0
-  if (n <= 0) return '默认'
-  if (n % 60 === 0 && n >= 60) return `${n / 60} 分`
-  return `${n} 秒`
-}
-
 function providerHref(url?: string | null) {
   const u = (url || '').trim()
   if (!u) return ''
@@ -651,6 +856,8 @@ function providerHref(url?: string | null) {
 }
 
 onMounted(() => {
+  window.addEventListener('resize', resize)
+  void loadRouteGroups()
   void load().then(() => {
     if (live.value) startLive()
   })
@@ -663,121 +870,72 @@ watch(live, (on) => {
   } else stopLive()
 })
 
-onUnmounted(stopLive)
+onUnmounted(() => {
+  disposed = true
+  loadSequence++
+  stopLive()
+  window.removeEventListener('resize', resize)
+})
 </script>
 
 <template>
   <div class="page">
     <div class="page-head">
-      <div>
-        <h2>提供商</h2>
-        <p>登记供应商并管理其 Key。余额与近 60 分钟健康色块：绿正常（&lt;6s） / 黄降级（≥6s） / 红失败 / 灰无数据</p>
-      </div>
+      <h2>提供商</h2>
       <div class="toolbar">
-        <n-switch v-model:value="live" size="small" />
+        <n-switch v-model:value="live" size="small" aria-label="自动刷新" />
         <span class="live-label">自动刷新</span>
-        <span v-if="lastRefresh" class="muted">{{ lastRefresh }}</span>
+        <span v-if="lastRefresh" class="muted refresh-time">{{ lastRefresh }}</span>
+        <n-tooltip>
+          <template #trigger><n-button size="small" quaternary aria-label="刷新列表" :loading="loading" @click="load()"><template #icon><n-icon><RefreshOutline /></n-icon></template></n-button></template>
+          刷新列表
+        </n-tooltip>
         <n-checkbox v-model:checked="deep">深度探测</n-checkbox>
-        <n-button size="small" :loading="refreshingBal" @click="refreshAll">刷新全部余额</n-button>
-        <n-button size="small" :loading="probing" @click="probeAll">探测全部</n-button>
-        <n-button type="primary" size="small" @click="openCreate">新建提供商</n-button>
+        <n-dropdown trigger="click" :options="[{ label: '刷新全部余额', key: 'balance', disabled: refreshingBal }, { label: '探测全部', key: 'probe', disabled: probing }]" @select="(key: string) => key === 'balance' ? refreshAll() : probeAll()">
+          <n-button size="small" :loading="refreshingBal || probing">全部操作</n-button>
+        </n-dropdown>
+        <n-button type="primary" size="small" @click="openCreate"><template #icon><n-icon><AddOutline /></n-icon></template>新建提供商</n-button>
       </div>
     </div>
-
-    <n-alert v-if="error" type="error" :title="error" closable @close="error = ''" />
-
-    <n-spin :show="loading">
-      <n-empty v-if="!loading && !boards.length" description="还没有提供商">
-        <template #extra>
-          <n-button type="primary" size="small" @click="openCreate">新建第一个提供商</n-button>
-        </template>
-      </n-empty>
-      <div v-else class="boards">
-        <n-card v-for="board in boards" :key="board.upstream.id" size="small" :bordered="false">
-          <template #header>
-            <div class="board-title">
-              <strong class="board-name">{{ board.upstream.name }}</strong>
-              <StatusTag :status="board.upstream.status" />
-              <n-tag size="small" :bordered="false">{{ KIND_LABEL[board.upstream.kind] || board.upstream.kind }}</n-tag>
-              <n-tag v-for="p in board.upstream.protocols" :key="p" size="small" :bordered="false">
-                {{ PROTOCOL_LABEL[p] || p }}
-              </n-tag>
-            </div>
-          </template>
-          <template #header-extra>
-            <n-space size="small" align="center" :wrap="false">
-              <n-tooltip v-if="board.upstream.last_balance_at" trigger="hover">
-                <template #trigger>
-                  <span
-                    class="board-balance"
-                    :class="{
-                      'is-low': isLowBalance(board.upstream.last_balance),
-                      'is-empty': board.upstream.last_balance == null,
-                    }"
-                  >
-                    <template v-if="board.upstream.last_balance != null">
-                      <span class="yen">￥</span>{{ formatMoney(board.upstream.last_balance) }}
-                    </template>
-                    <template v-else>—</template>
-                  </span>
-                </template>
-                刷新于 {{ formatTime(board.upstream.last_balance_at) }}
-              </n-tooltip>
-              <span
-                v-else
-                class="board-balance"
-                :class="{
-                  'is-low': isLowBalance(board.upstream.last_balance),
-                  'is-empty': board.upstream.last_balance == null,
-                }"
-              >
-                <template v-if="board.upstream.last_balance != null">
-                  <span class="yen">￥</span>{{ formatMoney(board.upstream.last_balance) }}
-                </template>
-                <template v-else>—</template>
-              </span>
-              <n-button
-                size="tiny"
-                quaternary
-                :loading="busy === `bal-up-${board.upstream.id}`"
-                @click="refreshUpstream(board.upstream)"
-              >
-                刷余额
-              </n-button>
-              <n-button size="tiny" type="primary" secondary @click="openCreateKey(board.upstream)">添加 Key</n-button>
-              <n-button size="tiny" quaternary @click="openEdit(board.upstream)">编辑</n-button>
-              <n-button size="tiny" quaternary type="error" @click="confirmDelete(board.upstream)">删除</n-button>
-            </n-space>
-          </template>
-          <p class="muted board-meta">
-            <a
-              class="preview board-link"
-              :href="providerHref(board.upstream.base_url)"
-              target="_blank"
-              rel="noopener noreferrer"
-            >{{ board.upstream.base_url }}</a>
-            <span> · 并发 {{ concLabel(board.upstream.concurrency) }}</span>
-            <span v-if="board.keys.length"> · {{ healthSummary(board.counts) || `${board.keys.length} 把 Key` }}</span>
-            <span v-if="board.upstream.note"> · {{ board.upstream.note }}</span>
-          </p>
-          <n-empty v-if="!board.keys.length" description="该提供商还没有 Key">
-            <template #extra>
-              <n-button size="small" type="primary" @click="openCreateKey(board.upstream)">添加 Key</n-button>
-            </template>
-          </n-empty>
-          <n-data-table
-            v-else
-            size="small"
-            :columns="keyColumns"
-            :data="board.keys"
-            :row-key="keyRowKey"
-            :scroll-x="1420"
-          />
-        </n-card>
+    <div class="provider-filters">
+      <n-radio-group class="quick-filters" v-model:value="quick" size="small" @update:value="search">
+        <n-radio-button v-for="option in quickOptions" :key="option.value" :value="option.value">{{ option.label }}</n-radio-button>
+      </n-radio-group>
+      <div class="filter-fields">
+        <n-input v-model:value="filters.query" clearable placeholder="名称、地址或备注" :input-props="{ 'aria-label': '搜索提供商' }" @keyup.enter="search" />
+        <n-select v-model:value="filters.kind" :options="KIND_OPTIONS" clearable placeholder="类型" />
+        <n-select v-model:value="filters.protocol" :options="PROTOCOL_OPTIONS" clearable placeholder="协议" />
+        <n-select v-model:value="filters.status" :options="STATUS_OPTIONS" clearable placeholder="启停状态" />
+        <n-button size="small" type="primary" secondary @click="search">查询</n-button>
+        <n-button size="small" @click="resetFilters">重置</n-button>
       </div>
-    </n-spin>
+    </div>
+    <n-alert v-if="error" type="error" :title="error" />
+    <div class="table-meta">
+      <span>共 {{ orderedIds.length }} 家提供商<span v-if="rows.length"> · 本页 {{ keys.length }} 把 Key</span></span>
+      <span class="muted">异常优先</span>
+    </div>
+    <n-data-table
+      class="provider-table"
+      size="small"
+      :columns="columns"
+      :data="rows"
+      :loading="loading"
+      :row-key="(row: ProviderRow) => row.id"
+      :row-class-name="(row: ProviderRow) => row.first ? 'provider-first' : ''"
+      :scroll-x="narrow ? 1166 : 1357"
+      :max-height="720"
+      :single-line="false"
+    >
+      <template #empty><n-empty :description="items.length ? '没有匹配的提供商' : '还没有提供商'" /></template>
+    </n-data-table>
+    <div class="provider-pagination">
+      <n-pagination :page="page" :page-size="pageSize" :item-count="orderedIds.length" show-size-picker :page-sizes="[10, 20, 50]"
+        @update:page="changePage"
+        @update:page-size="(size: number) => { pageSize = size; changePage(1) }" />
+    </div>
 
-    <n-modal v-model:show="showForm" preset="card" :title="editing ? '编辑提供商' : '新建提供商'" style="width: 560px">
+    <n-modal v-model:show="showForm" preset="card" :title="editing ? '编辑提供商' : '新建提供商'" style="width: min(560px, calc(100vw - 24px))">
       <n-form ref="formRef" :model="form" :rules="rules" label-placement="left" label-width="90">
         <n-form-item label="名称" path="name">
           <n-input v-model:value="form.name" placeholder="例如 NewAPI-主池" />
@@ -818,7 +976,7 @@ onUnmounted(stopLive)
       </template>
     </n-modal>
 
-    <n-modal v-model:show="showKeyForm" preset="card" :title="editingKey ? '编辑 Key' : `添加 Key · ${keyHost?.name || ''}`" style="width: 520px">
+    <n-modal v-model:show="showKeyForm" preset="card" :title="editingKey ? '编辑 Key' : `添加 Key · ${keyHost?.name || ''}`" style="width: min(520px, calc(100vw - 24px))">
       <n-form ref="keyFormRef" :model="keyForm" :rules="keyRules" label-placement="left" label-width="100">
         <n-form-item label="标识" path="name_tag">
           <div class="rate-field">
@@ -890,74 +1048,31 @@ onUnmounted(stopLive)
 </template>
 
 <style scoped>
-.boards {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.board-title {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-.board-name {
-  font-size: 15px;
-  font-weight: 650;
-}
-.board-meta {
-  margin: -4px 0 10px;
-}
-.board-link {
-  color: inherit;
-  text-decoration: none;
-}
-.board-link:hover {
-  color: #0f9d8e;
-  text-decoration: underline;
-}
-.board-balance {
-  display: inline-flex;
-  align-items: baseline;
-  justify-content: flex-end;
-  width: max-content;
-  padding: 3px 8px;
-  border-radius: 6px;
-  font-size: 18px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.15;
-  color: #0f766e;
-  background: #ccfbf1;
-}
-.board-balance .yen {
-  margin-right: 2px;
-  font-size: 12px;
-  font-weight: 650;
-  opacity: 0.75;
-}
-.board-balance.is-low {
-  color: #b42318;
-  background: #fee4e2;
-}
-.board-balance.is-empty {
-  color: #98a2b3;
-  background: #f2f4f7;
-  font-size: 14px;
-  font-weight: 500;
-  justify-content: center;
-}
-.live-label {
-  font-size: 13px;
-  color: #344054;
-}
-.rate-field {
-  width: 100%;
-}
-.rate-hint {
-  margin-top: 6px;
-  font-size: 12px;
-  line-height: 1.5;
-}
+.page-head { align-items: center; flex-wrap: wrap; }
+.page-head h2 { letter-spacing: 0; }
+.provider-filters { display: flex; flex-direction: column; gap: 12px; padding: 14px 0; border-block: 1px solid #d4dce1; }
+.quick-filters { display: flex; flex-wrap: wrap; gap: 4px 0; height: auto; }
+.filter-fields { display: grid; grid-template-columns: minmax(180px, 1fr) 160px 135px 125px auto auto; gap: 8px; align-items: center; }
+.table-meta { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
+.provider-pagination { display: flex; justify-content: flex-end; overflow-x: auto; padding-bottom: 4px; }
+:deep(.provider-cell) { vertical-align: top !important; background: #f6f9f9 !important; }
+:deep(.provider-first td) { border-top: 2px solid #dce3e7; }
+:deep(.provider-info) { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+:deep(.provider-name-line) { display: flex; align-items: start; justify-content: space-between; gap: 4px; }
+:deep(.provider-name-line strong) { font-size: 13px; overflow-wrap: anywhere; min-width: 0; }
+:deep(.provider-name-line .n-button) { flex: none; }
+:deep(.provider-url), :deep(.provider-note) { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: #667085; text-decoration: none; }
+:deep(.provider-url:hover) { color: #0f766e; }
+:deep(.provider-meta) { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; font-size: 11px; color: #667085; }
+:deep(.balance-cell) { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; }
+:deep(.balance-value) { font-size: 14px; font-weight: 650; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; color: #137960; }
+:deep(.balance-value.is-low) { color: #bc352c; }
+:deep(.balance-value.is-unknown) { color: #7b8790; font-weight: 400; }
+:deep(.key-name) { display: flex; flex-direction: column; gap: 3px; overflow-wrap: anywhere; }
+:deep(.key-name small) { color: #7b8790; font-size: 11px; }
+.live-label { font-size: 13px; color: #344054; }
+.rate-field { width: 100%; }
+.rate-hint { margin-top: 6px; font-size: 12px; line-height: 1.5; }
+@media (max-width: 1000px) { .filter-fields { grid-template-columns: minmax(180px, 1fr) 130px 130px; } .refresh-time { display: none; } }
+@media (max-width: 760px) { .filter-fields { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .page-head { align-items: start; } .toolbar { gap: 6px; } }
 </style>

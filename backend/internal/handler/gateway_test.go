@@ -14,6 +14,21 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func TestPeekStream(t *testing.T) {
+	if peekStream([]byte(`{"model":"gpt-4o","stream":true}`)) != true {
+		t.Fatal("stream true")
+	}
+	if peekStream([]byte(`{"model":"gpt-4o","stream":false}`)) {
+		t.Fatal("stream false")
+	}
+	if peekStream([]byte(`{"model":"gpt-4o"}`)) {
+		t.Fatal("omitted stream is sync")
+	}
+	if peekStream([]byte(`not json`)) {
+		t.Fatal("invalid json is sync")
+	}
+}
+
 func TestPeekModelFromJSON(t *testing.T) {
 	got := peekModelFrom("application/json", []byte(`{"model":" gpt-image-1 ","prompt":"a cat"}`))
 	if got != "gpt-image-1" {
@@ -165,5 +180,94 @@ func TestConcLimiter(t *testing.T) {
 	}
 	if l.Acquire(2, 2) && l.Acquire(2, 2) && l.Acquire(2, 2) {
 		t.Fatal("third slot at limit 2 should deny")
+	}
+}
+
+func TestCopySSEHoldsUntilFirstText(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	col := &streamCollector{start: time.Now()}
+	released := false
+	src := bytes.NewReader([]byte(
+		"data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n" +
+			"data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n",
+	))
+	if err := copySSE(c.Writer, src, col, true, func() {
+		released = true
+		c.Status(200)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !released {
+		t.Fatal("should release headers on first generated text")
+	}
+	if col.ttftMs == 0 {
+		t.Fatal("ttft should be set")
+	}
+	if !strings.Contains(rec.Body.String(), "Hi") {
+		t.Fatalf("body %q", rec.Body.String())
+	}
+}
+
+func TestCopySSEReleasesOnEOFWithoutText(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	col := &streamCollector{start: time.Now()}
+	released := false
+	src := bytes.NewReader([]byte("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n"))
+	if err := copySSE(c.Writer, src, col, true, func() { released = true }); err != nil {
+		t.Fatal(err)
+	}
+	if !released {
+		t.Fatal("complete stream with no text should still flush")
+	}
+	if col.ttftMs != 0 {
+		t.Fatalf("role-only eof should not set ttft, got %d", col.ttftMs)
+	}
+}
+
+func TestProxyTimeoutMessage(t *testing.T) {
+	if got := proxyTimeoutMessage(context.DeadlineExceeded, true); got != "first token timeout" {
+		t.Fatalf("got %q", got)
+	}
+	if got := proxyTimeoutMessage(context.DeadlineExceeded, false); got != "upstream timeout" {
+		t.Fatalf("got %q", got)
+	}
+	if got := proxyTimeoutMessage(io.EOF, false); got != io.EOF.Error() {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestFirstTokenWatchStops(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w := &firstTokenWatch{}
+	w.start(cancel, 30*time.Millisecond, time.Now().Add(time.Second))
+	if !w.running() {
+		t.Fatal("should be running")
+	}
+	w.stop()
+	time.Sleep(50 * time.Millisecond)
+	if w.timedOut() {
+		t.Fatal("stopped watch should not fire")
+	}
+	select {
+	case <-ctx.Done():
+		t.Fatal("stopped watch should not cancel")
+	default:
+	}
+}
+
+func TestStreamCollectorTTFTOnFirstText(t *testing.T) {
+	col := &streamCollector{start: time.Now().Add(-800 * time.Millisecond)}
+	col.feed([]byte("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n"))
+	if col.ttftMs != 0 {
+		t.Fatalf("role-only should not set ttft, got %d", col.ttftMs)
+	}
+	col.feed([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n"))
+	if col.ttftMs < 700 {
+		t.Fatalf("ttft %d too small, want ~800ms after first text", col.ttftMs)
 	}
 }
