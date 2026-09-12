@@ -199,15 +199,17 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 		allow, drift = nil, nil
 	}
 
-	var exclude []uint
+	var exclude, excludeProviders, excludeKeyModels []uint
 	for attempt := 0; attempt < attempts; attempt++ {
 		pk, up, err := h.Picker.Pick(c.Request.Context(), picker.Request{
-			Protocol:  protocol,
-			Model:     model,
-			Session:   session,
-			Exclude:   exclude,
-			AllowKeys: allow,
-			DriftKeys: drift,
+			Protocol:         protocol,
+			Model:            model,
+			Session:          session,
+			Exclude:          exclude,
+			ExcludeProviders: excludeProviders,
+			ExcludeKeyModels: excludeKeyModels,
+			AllowKeys:        allow,
+			DriftKeys:        drift,
 		})
 		if err != nil {
 			if errors.Is(err, picker.ErrNoUpstream) {
@@ -245,10 +247,15 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 			}
 			break
 		}
-		h.penalizeKey(c.Request.Context(), pk.ID, outcome.lowBalance, outcome.failOver && !outcome.concBusy)
-		if outcome.concBusy || outcome.lowBalance {
-			exclude = append(exclude, h.upstreamKeyIDs(c.Request.Context(), up.ID)...)
-		} else {
+		if outcome.failOver && !outcome.capacityBusy {
+			h.applyFailure(c.Request.Context(), pk, up, model, outcome)
+		}
+		switch outcome.scope {
+		case failureScopeProvider:
+			excludeProviders = append(excludeProviders, up.ID)
+		case failureScopeKeyModel:
+			excludeKeyModels = append(excludeKeyModels, pk.ID)
+		case failureScopeKey:
 			exclude = append(exclude, pk.ID)
 		}
 		if !outcome.failOver {
@@ -266,23 +273,46 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 const sameKeyRetryDelay = 250 * time.Millisecond
 
 type forwardOutcome struct {
-	ok         bool
-	failOver   bool
-	retrySame  bool
-	lowBalance bool
-	concBusy   bool
-	msg        string
+	ok           bool
+	failOver     bool
+	retrySame    bool
+	lowBalance   bool
+	capacityBusy bool
+	status       int
+	scope        string
+	action       string
+	msg          string
 }
 
-func (h *Gateway) penalizeKey(ctx context.Context, keyID uint, lowBalance, failOver bool) {
-	if h.Picker == nil || !failOver {
+const (
+	failureScopeKey      = "key"
+	failureScopeKeyModel = "key_model"
+	failureScopeProvider = "provider"
+)
+
+func (h *Gateway) applyFailure(ctx context.Context, key *domain.PlatformKey, up *domain.Upstream, model string, outcome forwardOutcome) {
+	if h.Picker == nil || key == nil || up == nil {
 		return
 	}
-	if lowBalance {
-		h.Picker.MarkLowBalance(ctx, keyID)
+	if outcome.lowBalance {
+		h.Picker.MarkLowBalance(ctx, key.ID)
 		return
 	}
-	h.Picker.Cooldown(ctx, keyID)
+	runtime, ok := h.Picker.(picker.RuntimeController)
+	if !ok {
+		if outcome.scope == failureScopeKey {
+			h.Picker.Cooldown(ctx, key.ID)
+		}
+		return
+	}
+	switch outcome.scope {
+	case failureScopeProvider:
+		runtime.CooldownProvider(ctx, up.ID, outcome.msg)
+	case failureScopeKeyModel:
+		runtime.CooldownKeyModel(ctx, key.ID, model, outcome.msg, outcome.status)
+	case failureScopeKey:
+		h.Picker.Cooldown(ctx, key.ID)
+	}
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {
@@ -300,9 +330,23 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 }
 
 func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain.PlatformKey, up *domain.Upstream, protocol, model, session, reqID string, body []byte, reqSnap ioCapture, lg *liveLog, reqStart time.Time) forwardOutcome {
-	if up != nil {
+	if runtime, ok := h.Picker.(picker.RuntimeController); ok {
+		acquired, scope := runtime.TryAcquire(pk, up)
+		if !acquired {
+			msg := "key capacity exceeded"
+			if scope == failureScopeProvider {
+				msg = "upstream concurrency exceeded"
+			}
+			outcome := forwardOutcome{failOver: true, capacityBusy: true, scope: scope, action: "exclude_busy_resource", msg: msg}
+			lg.markFailure(h, outcome.scope, outcome.action)
+			return outcome
+		}
+		defer runtime.Release(pk, up)
+	} else if up != nil {
 		if !h.conc.Acquire(up.ID, up.Concurrency) {
-			return forwardOutcome{failOver: true, concBusy: true, msg: "upstream concurrency exceeded"}
+			outcome := forwardOutcome{failOver: true, capacityBusy: true, scope: failureScopeProvider, action: "exclude_busy_resource", msg: "upstream concurrency exceeded"}
+			lg.markFailure(h, outcome.scope, outcome.action)
+			return outcome
 		}
 		defer h.conc.Release(up.ID, up.Concurrency)
 	}
@@ -354,22 +398,21 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 		msg := proxyTimeoutMessage(err, firstWatch.timedOut())
 		h.observeAttempt(pk, model, false, upstream.TokenUsage{}, 0)
 		h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, 0, false, upstream.TokenUsage{}, 0, dur, msg, reqSnap, true, true)
-		return forwardOutcome{failOver: true, retrySame: !firstWatch.timedOut() && !isTimeoutErr(err), msg: msg}
+		outcome := forwardOutcome{failOver: true, retrySame: !firstWatch.timedOut() && !isTimeoutErr(err), scope: failureScopeProvider, action: "cooldown_provider", msg: msg}
+		lg.markFailure(h, outcome.scope, outcome.action)
+		return outcome
 	}
 
-	if shouldFailoverStatus(resp.StatusCode) && !c.Writer.Written() {
+	if failure := classifyHTTPFailure(resp.StatusCode, nil); failure.failOver && resp.StatusCode != http.StatusForbidden && !c.Writer.Written() {
 		peek, _ := io.ReadAll(io.LimitReader(resp.Body, maxLogBodyBytes+1))
 		_ = resp.Body.Close()
+		failure = classifyHTTPFailure(resp.StatusCode, peek)
 		snap := reqSnap.withResponse(resp.Header, resp.Header.Get("Content-Type"), peek, len(peek))
 		h.observeAttempt(pk, model, false, upstream.TokenUsage{}, 0)
 		h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, int(time.Since(started).Milliseconds()), http.StatusText(resp.StatusCode), snap, true, true)
-		low := resp.StatusCode == http.StatusPaymentRequired
-		return forwardOutcome{
-			failOver:   true,
-			retrySame:  !low,
-			lowBalance: low,
-			msg:        http.StatusText(resp.StatusCode),
-		}
+		failure.msg = http.StatusText(resp.StatusCode)
+		lg.markFailure(h, failure.scope, failure.action)
+		return failure
 	}
 
 	// new-api / one-api report an exhausted token as 403 with a quota error
@@ -382,14 +425,18 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 			snap := reqSnap.withResponse(resp.Header, resp.Header.Get("Content-Type"), peek, len(peek))
 			h.observeAttempt(pk, model, false, upstream.TokenUsage{}, 0)
 			h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, int(time.Since(started).Milliseconds()), msg, snap, true, true)
-			return forwardOutcome{failOver: true, lowBalance: true, msg: msg}
+			outcome := forwardOutcome{failOver: true, lowBalance: true, status: resp.StatusCode, scope: failureScopeProvider, action: "mark_low_balance", msg: msg}
+			lg.markFailure(h, outcome.scope, outcome.action)
+			return outcome
 		}
-		// Not a quota error: stitch the peeked prefix back and pass through as-is.
-		orig := resp.Body
-		resp.Body = struct {
-			io.Reader
-			io.Closer
-		}{io.MultiReader(bytes.NewReader(peek), orig), orig}
+		_ = resp.Body.Close()
+		msg := http.StatusText(resp.StatusCode)
+		snap := reqSnap.withResponse(resp.Header, resp.Header.Get("Content-Type"), peek, len(peek))
+		h.observeAttempt(pk, model, false, upstream.TokenUsage{}, 0)
+		h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, int(time.Since(started).Milliseconds()), msg, snap, true, true)
+		outcome := forwardOutcome{failOver: true, status: resp.StatusCode, scope: failureScopeKey, action: "cooldown_key", msg: msg}
+		lg.markFailure(h, outcome.scope, outcome.action)
+		return outcome
 	}
 
 	defer resp.Body.Close()
@@ -440,7 +487,9 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 			snap := reqSnap.withResponse(resp.Header, resp.Header.Get("Content-Type"), respPrefix, respTotal)
 			h.observeAttempt(pk, model, false, upstream.TokenUsage{}, 0)
 			h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, collector.ttftMs, dur, msg, snap, true, true)
-			return forwardOutcome{failOver: true, retrySame: false, msg: msg}
+			outcome := forwardOutcome{failOver: true, scope: failureScopeProvider, action: "cooldown_provider", msg: msg}
+			lg.markFailure(h, outcome.scope, outcome.action)
+			return outcome
 		}
 	} else {
 		commitHeaders()
@@ -464,7 +513,9 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 			snap := reqSnap.withResponse(resp.Header, resp.Header.Get("Content-Type"), respPrefix, respTotal)
 			h.observeAttempt(pk, model, false, upstream.TokenUsage{}, 0)
 			h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, dur, msg, snap, true, true)
-			return forwardOutcome{failOver: true, retrySame: !isTimeoutErr(err), msg: msg}
+			outcome := forwardOutcome{failOver: true, retrySame: !isTimeoutErr(err), scope: failureScopeProvider, action: "cooldown_provider", msg: msg}
+			lg.markFailure(h, outcome.scope, outcome.action)
+			return outcome
 		}
 	}
 
@@ -480,9 +531,14 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 	if collector.usage.CostUSD == nil {
 		collector.usage.CostUSD = estimateRequestCost(h.DB, model, pk, collector.usage)
 	}
-	h.observeAttempt(pk, model, success, collector.usage, collector.ttftMs)
+	if success {
+		h.observeAttempt(pk, model, true, collector.usage, collector.ttftMs)
+	}
 	h.finishLog(lg, ck, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, success, collector.usage, collector.ttftMs, dur, errMsg, snap)
 	if success {
+		if runtime, ok := h.Picker.(picker.RuntimeController); ok {
+			runtime.RecordProviderSuccess(c.Request.Context(), up.ID)
+		}
 		h.Picker.SetSticky(c.Request.Context(), protocol, session, pk.ID)
 		if collector.usage.CostUSD != nil {
 			h.addQuotaUsed(ck.ID, *collector.usage.CostUSD)
@@ -519,11 +575,23 @@ func isQuotaExhaustedBody(body []byte) bool {
 	return false
 }
 
-func shouldFailoverStatus(code int) bool {
-	if code == http.StatusTooManyRequests || code == http.StatusPaymentRequired || code == 529 {
-		return true
+func classifyHTTPFailure(code int, body []byte) forwardOutcome {
+	switch {
+	case code == http.StatusPaymentRequired || code == http.StatusForbidden && isQuotaExhaustedBody(body):
+		return forwardOutcome{failOver: true, lowBalance: true, status: code, scope: failureScopeProvider, action: "mark_low_balance"}
+	case code == http.StatusUnauthorized || code == http.StatusForbidden:
+		return forwardOutcome{failOver: true, status: code, scope: failureScopeKey, action: "cooldown_key"}
+	case code == http.StatusTooManyRequests:
+		return forwardOutcome{failOver: true, status: code, scope: failureScopeKeyModel, action: "cooldown_key_model"}
+	case code == http.StatusNotFound || code == 529 || code >= 500:
+		return forwardOutcome{failOver: true, retrySame: true, status: code, scope: failureScopeProvider, action: "cooldown_provider"}
+	default:
+		return forwardOutcome{status: code}
 	}
-	return code >= 500
+}
+
+func shouldFailoverStatus(code int) bool {
+	return classifyHTTPFailure(code, nil).failOver
 }
 
 func (h *Gateway) Models(c *gin.Context) {
@@ -605,7 +673,7 @@ func (h *Gateway) observeAttempt(pk *domain.PlatformKey, model string, success b
 	if h.Picker != nil {
 		h.Picker.Observe(context.Background(), pk.ID, model, success, usage.InputTokens, usage.CacheReadTokens, usage.CacheCreationTokens, ttft)
 	}
-	if h.Ops != nil {
+	if h.Ops != nil && success {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
@@ -622,6 +690,16 @@ type liveLog struct {
 	revision  uint64
 	closed    bool
 	updates   map[string]any
+}
+
+func (lg *liveLog) markFailure(h *Gateway, scope, action string) {
+	if lg == nil || lg.id == 0 || (scope == "" && action == "") {
+		return
+	}
+	h.writeLog(lg, map[string]any{
+		"failure_scope":  scope,
+		"failure_action": action,
+	}, false)
 }
 
 func (h *Gateway) beginLog(ck *domain.ConsumerKey, protocol, model, path, reqID, clientIP string, snap ioCapture) *liveLog {
@@ -700,6 +778,10 @@ func (h *Gateway) finishLog(lg *liveLog, ck *domain.ConsumerKey, pk *domain.Plat
 	updates["completed_at"] = completedAt
 	updates["stream"] = snap.ReqStream
 	updates["stream_known"] = snap.StreamKnown
+	if success {
+		updates["failure_scope"] = ""
+		updates["failure_action"] = ""
+	}
 	if lg == nil || lg.id == 0 {
 		row := domain.RequestLog{
 			RequestID:           reqID,

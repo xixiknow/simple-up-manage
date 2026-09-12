@@ -48,6 +48,23 @@ func TestParseNewAPIBilling(t *testing.T) {
 	if !ok || !unlimited {
 		t.Fatalf("token unlimited: %v %v", unlimited, ok)
 	}
+	rem, unlimited, ok = ParseNewAPITokenUsage([]byte(`{"success":true,"message":"","data":{"object":"token_usage","total_available":2500000,"unlimited_quota":false}}`))
+	if !ok || unlimited || rem != 5 {
+		t.Fatalf("success wrapper: %v %v %v", rem, unlimited, ok)
+	}
+	rem, unlimited, ok = ParseNewAPITokenUsage([]byte(`{"object":"token_usage","total_available":1500000,"unlimited_quota":false}`))
+	if !ok || unlimited || rem != 3 {
+		t.Fatalf("unwrapped: %v %v %v", rem, unlimited, ok)
+	}
+	if _, _, ok = ParseNewAPITokenUsage([]byte(`{"success":false,"message":"No Authorization header"}`)); ok {
+		t.Fatal("failed body must not parse as ok")
+	}
+	if got := MaybeRawQuotaToUSD(12.5); got != 12.5 {
+		t.Fatalf("usd limit: %v", got)
+	}
+	if got := MaybeRawQuotaToUSD(1000000); got != 2 {
+		t.Fatalf("token-scale limit: %v", got)
+	}
 	gr, ok := ParseNewAPIGroupRatio([]byte(`{"success":true,"data":[],"group_ratio":{"default":1,"vip":0.8}}`))
 	if !ok || gr["vip"] != 0.8 || gr["default"] != 1 {
 		t.Fatalf("group ratio: %v %v", gr, ok)

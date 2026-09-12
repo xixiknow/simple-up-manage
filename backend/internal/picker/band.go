@@ -3,6 +3,7 @@ package picker
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"sort"
 	"strings"
 	"sync"
@@ -23,11 +24,25 @@ type BandPicker struct {
 	cfg     domain.SchedulerSettings
 	sticky  map[string]stickyEntry
 	filled  sync.Map
+	runtime *runtimeState
 }
 
 type stickyEntry struct {
 	KeyID  uint
 	Expiry time.Time
+}
+
+type failureStats struct {
+	KeyID     uint  `gorm:"column:platform_key_id"`
+	Failures  int64 `gorm:"column:failures"`
+	Successes int64 `gorm:"column:successes"`
+}
+
+type runtimeState struct {
+	mu               sync.Mutex
+	keyInflight      map[uint]int
+	providerInflight map[uint]int
+	rpm              map[uint][]time.Time
 }
 
 func NewBand(db *gorm.DB, rdb *redis.Client) *BandPicker {
@@ -39,6 +54,7 @@ func NewBand(db *gorm.DB, rdb *redis.Client) *BandPicker {
 		metrics: store,
 		cfg:     cfg,
 		sticky:  map[string]stickyEntry{},
+		runtime: &runtimeState{keyInflight: map[uint]int{}, providerInflight: map[uint]int{}, rpm: map[uint][]time.Time{}},
 	}
 }
 
@@ -131,11 +147,21 @@ func (p *BandPicker) evaluate(ctx context.Context, req Request) ([]Candidate, er
 	for _, id := range req.Exclude {
 		excluded[id] = struct{}{}
 	}
+	excludedProviders := map[uint]struct{}{}
+	for _, id := range req.ExcludeProviders {
+		excludedProviders[id] = struct{}{}
+	}
+	excludedKeyModels := map[uint]struct{}{}
+	for _, id := range req.ExcludeKeyModels {
+		excludedKeyModels[id] = struct{}{}
+	}
 
 	out := make([]Candidate, 0, len(keys))
+	failureByKey := p.recentFailureStats(ctx, keys, cfg)
+	modelCooldowns := p.activeModelCooldowns(ctx, keys, req.Model)
 	var eligible []int
 	for i := range keys {
-		c := p.inspect(ctx, &keys[i], req, cfg, excluded)
+		c := p.inspect(ctx, &keys[i], req, cfg, excluded, excludedProviders, excludedKeyModels, failureByKey, modelCooldowns)
 		out = append(out, c)
 		if c.Eligible {
 			eligible = append(eligible, i)
@@ -143,17 +169,6 @@ func (p *BandPicker) evaluate(ctx context.Context, req Request) ([]Candidate, er
 	}
 	if len(eligible) == 0 {
 		return out, nil
-	}
-
-	if stickyID := p.stickyKey(ctx, req, cfg); stickyID > 0 {
-		for i := range eligible {
-			idx := eligible[i]
-			if out[idx].KeyID == stickyID {
-				out[idx].Selected = true
-				out[idx].InBand = true
-				return out, nil
-			}
-		}
 	}
 
 	best := out[eligible[0]].Quality
@@ -170,20 +185,29 @@ func (p *BandPicker) evaluate(ctx context.Context, req Request) ([]Candidate, er
 			band = append(band, idx)
 		}
 	}
-	sort.SliceStable(band, func(i, j int) bool {
-		a, b := out[band[i]], out[band[j]]
-		if a.EffectiveCost != b.EffectiveCost {
-			return a.EffectiveCost < b.EffectiveCost
+	mode := effectiveRankingMode(cfg.RankingMode, req.Session)
+	for _, idx := range band {
+		out[idx].RankingMode = mode
+	}
+	if mode == "cache_affinity" {
+		if stickyID := p.stickyKey(ctx, req, cfg); stickyID > 0 {
+			for _, idx := range band {
+				if out[idx].KeyID == stickyID {
+					out[idx].Selected, out[idx].AffinityHit = true, true
+					return out, nil
+				}
+			}
 		}
-		return a.KeyID < b.KeyID
-	})
+	}
+	sort.SliceStable(band, func(i, j int) bool { return p.candidateLess(out[band[i]], out[band[j]], mode, req) })
 	if len(band) > 0 {
 		out[band[0]].Selected = true
+		out[band[0]].AffinityHit = mode == "cache_affinity" && strings.TrimSpace(req.Session) != ""
 	}
 	return out, nil
 }
 
-func (p *BandPicker) inspect(ctx context.Context, key *domain.PlatformKey, req Request, cfg domain.SchedulerSettings, excluded map[uint]struct{}) Candidate {
+func (p *BandPicker) inspect(ctx context.Context, key *domain.PlatformKey, req Request, cfg domain.SchedulerSettings, excluded, excludedProviders, excludedKeyModels map[uint]struct{}, failureByKey map[uint]failureStats, modelCooldowns map[uint]struct{}) Candidate {
 	c := Candidate{
 		Key:          key,
 		Upstream:     key.Upstream,
@@ -199,6 +223,12 @@ func (p *BandPicker) inspect(ctx context.Context, key *domain.PlatformKey, req R
 		c.LastBalance = key.Upstream.LastBalance
 	}
 	c.Rate = key.RateMultiplier
+	c.RankingMode = effectiveRankingMode(cfg.RankingMode, req.Session)
+	c.RPMLimit, c.MaxConcurrency = key.RPMLimit, key.MaxConcurrency
+	if key.Upstream != nil {
+		c.ProviderConcurrency = key.Upstream.Concurrency
+	}
+	c.CurrentRPM, c.KeyInflight, c.ProviderInflight = p.resourceSnapshot(key.ID, key.UpstreamID)
 	if req.AllowKeys != nil {
 		if _, ok := req.AllowKeys[key.ID]; !ok {
 			if _, drifted := req.DriftKeys[key.ID]; drifted {
@@ -211,6 +241,34 @@ func (p *BandPicker) inspect(ctx context.Context, key *domain.PlatformKey, req R
 	}
 	if reason := hardReject(key, req.Protocol, req.Model, cfg.ModelFilterEnabled(), excluded); reason != "" {
 		c.SkipReason = reason
+		return c
+	}
+	if _, ok := excludedProviders[key.UpstreamID]; ok {
+		c.SkipReason = "provider_excluded"
+		return c
+	}
+	if _, ok := excludedKeyModels[key.ID]; ok {
+		c.SkipReason = "key_model_excluded"
+		return c
+	}
+	if _, ok := modelCooldowns[key.ID]; ok {
+		c.SkipReason = "key_model_cooldown"
+		return c
+	}
+	if key.RPMLimit > 0 && c.CurrentRPM >= key.RPMLimit {
+		c.SkipReason = "key_rpm_exceeded"
+		return c
+	}
+	if key.MaxConcurrency > 0 && c.KeyInflight >= key.MaxConcurrency {
+		c.SkipReason = "key_concurrency_exceeded"
+		return c
+	}
+	if key.Upstream != nil && key.Upstream.Concurrency > 0 && c.ProviderInflight >= key.Upstream.Concurrency {
+		c.SkipReason = "provider_concurrency_exceeded"
+		return c
+	}
+	if stats, ok := failureByKey[key.ID]; ok && stats.Successes == 0 && stats.Failures >= int64(cfg.FailureThreshold) {
+		c.SkipReason = "recent_failure_cooldown"
 		return c
 	}
 
@@ -232,6 +290,88 @@ func (p *BandPicker) inspect(ctx context.Context, key *domain.PlatformKey, req R
 	return c
 }
 
+func effectiveRankingMode(configured, session string) string {
+	if configured == "adaptive" {
+		if strings.TrimSpace(session) != "" {
+			return "cache_affinity"
+		}
+		return "load_balance"
+	}
+	return configured
+}
+
+func affinityScore(req Request, keyID uint) uint64 {
+	h := fnv.New64a()
+	_, _ = fmt.Fprintf(h, "%s\x00%s\x00%s\x00%d", req.Protocol, req.Model, strings.TrimSpace(req.Session), keyID)
+	return h.Sum64()
+}
+
+func (p *BandPicker) candidateLess(a, b Candidate, mode string, req Request) bool {
+	switch mode {
+	case "fixed_order":
+		return a.KeyID < b.KeyID
+	case "cache_affinity":
+		ha, hb := affinityScore(req, a.KeyID), affinityScore(req, b.KeyID)
+		if ha != hb {
+			return ha > hb
+		}
+	case "load_balance":
+		if a.KeyInflight != b.KeyInflight {
+			return a.KeyInflight < b.KeyInflight
+		}
+		if a.ProviderInflight != b.ProviderInflight {
+			return a.ProviderInflight < b.ProviderInflight
+		}
+	}
+	if a.EffectiveCost != b.EffectiveCost {
+		return a.EffectiveCost < b.EffectiveCost
+	}
+	return a.KeyID < b.KeyID
+}
+
+func (p *BandPicker) activeModelCooldowns(ctx context.Context, keys []domain.PlatformKey, model string) map[uint]struct{} {
+	out := map[uint]struct{}{}
+	model = strings.TrimSpace(model)
+	if model == "" || len(keys) == 0 {
+		return out
+	}
+	ids := make([]uint, 0, len(keys))
+	for i := range keys {
+		ids = append(ids, keys[i].ID)
+	}
+	var rows []domain.KeyModelCooldown
+	_ = p.db.WithContext(ctx).Where("platform_key_id IN ? AND model = ? AND cooldown_until > ?", ids, model, time.Now()).Find(&rows).Error
+	for _, row := range rows {
+		out[row.PlatformKeyID] = struct{}{}
+	}
+	return out
+}
+
+// recentFailureStats loads the short-window circuit counters used by
+// Aether-style schedulers. A recent success clears the guard; this prevents a
+// burst of transient failures from repeatedly entering the request path.
+func (p *BandPicker) recentFailureStats(ctx context.Context, keys []domain.PlatformKey, cfg domain.SchedulerSettings) map[uint]failureStats {
+	stats := make(map[uint]failureStats)
+	if cfg.FailureThreshold <= 0 || cfg.FailureWindowSec <= 0 || len(keys) == 0 {
+		return stats
+	}
+	ids := make([]uint, 0, len(keys))
+	for i := range keys {
+		ids = append(ids, keys[i].ID)
+	}
+	since := time.Now().Add(-time.Duration(cfg.FailureWindowSec) * time.Second)
+	var rows []failureStats
+	p.db.WithContext(ctx).Model(&domain.RequestLog{}).
+		Select("platform_key_id, SUM(CASE WHEN success = ? THEN 1 ELSE 0 END) AS failures, SUM(CASE WHEN success = ? THEN 1 ELSE 0 END) AS successes", false, true).
+		Where("platform_key_id IN ? AND created_at >= ? AND in_flight = ?", ids, since, false).
+		Where("failure_action IS NULL OR failure_action <> ?", "exclude_busy_resource").
+		Group("platform_key_id").Scan(&rows)
+	for _, row := range rows {
+		stats[row.KeyID] = row
+	}
+	return stats
+}
+
 func hardReject(key *domain.PlatformKey, protocol, model string, filterByModels bool, excluded map[uint]struct{}) string {
 	if _, skip := excluded[key.ID]; skip {
 		return "excluded"
@@ -241,6 +381,9 @@ func hardReject(key *domain.PlatformKey, protocol, model string, filterByModels 
 	}
 	if key.Upstream == nil || key.Upstream.Status != domain.StatusEnabled {
 		return "upstream_disabled"
+	}
+	if key.Upstream.CooldownUntil != nil && key.Upstream.CooldownUntil.After(time.Now()) {
+		return "provider_cooldown"
 	}
 	if !key.Upstream.Supports(protocol) {
 		return "protocol_mismatch"
@@ -260,8 +403,6 @@ func hardReject(key *domain.PlatformKey, protocol, model string, filterByModels 
 		return "disabled"
 	case domain.HealthDown:
 		return "down"
-	case domain.HealthCooldown:
-		return "cooldown"
 	case domain.HealthLowBalance:
 		return "low_balance"
 	}
@@ -395,7 +536,101 @@ func (p *BandPicker) MarkLowBalance(ctx context.Context, keyID uint) {
 	_ = p.db.WithContext(ctx).Model(&domain.Upstream{}).Where("id = ?", k.UpstreamID).Updates(map[string]any{
 		"last_balance":    zero,
 		"last_balance_at": now,
+		"health_status":   domain.HealthLowBalance,
+		"last_error":      "upstream quota exhausted",
 	}).Error
 	_ = p.db.WithContext(ctx).Model(&domain.PlatformKey{}).Where("upstream_id = ?", k.UpstreamID).
 		Update("health_status", domain.HealthLowBalance).Error
+}
+
+func (p *BandPicker) resourceSnapshot(keyID, providerID uint) (rpm, keyInflight, providerInflight int) {
+	now := time.Now()
+	p.runtime.mu.Lock()
+	defer p.runtime.mu.Unlock()
+	window := p.runtime.rpm[keyID]
+	cut := now.Add(-time.Minute)
+	keep := window[:0]
+	for _, at := range window {
+		if at.After(cut) {
+			keep = append(keep, at)
+		}
+	}
+	p.runtime.rpm[keyID] = keep
+	return len(keep), p.runtime.keyInflight[keyID], p.runtime.providerInflight[providerID]
+}
+
+func (p *BandPicker) TryAcquire(key *domain.PlatformKey, up *domain.Upstream) (bool, string) {
+	if key == nil || up == nil {
+		return false, "key"
+	}
+	now := time.Now()
+	p.runtime.mu.Lock()
+	defer p.runtime.mu.Unlock()
+	cut := now.Add(-time.Minute)
+	window := p.runtime.rpm[key.ID]
+	keep := window[:0]
+	for _, at := range window {
+		if at.After(cut) {
+			keep = append(keep, at)
+		}
+	}
+	if key.RPMLimit > 0 && len(keep) >= key.RPMLimit {
+		p.runtime.rpm[key.ID] = keep
+		return false, "key"
+	}
+	if key.MaxConcurrency > 0 && p.runtime.keyInflight[key.ID] >= key.MaxConcurrency {
+		return false, "key"
+	}
+	if up.Concurrency > 0 && p.runtime.providerInflight[up.ID] >= up.Concurrency {
+		return false, "provider"
+	}
+	p.runtime.rpm[key.ID] = append(keep, now)
+	p.runtime.keyInflight[key.ID]++
+	p.runtime.providerInflight[up.ID]++
+	return true, ""
+}
+
+func (p *BandPicker) Release(key *domain.PlatformKey, up *domain.Upstream) {
+	if key == nil || up == nil {
+		return
+	}
+	p.runtime.mu.Lock()
+	defer p.runtime.mu.Unlock()
+	if n := p.runtime.keyInflight[key.ID] - 1; n > 0 {
+		p.runtime.keyInflight[key.ID] = n
+	} else {
+		delete(p.runtime.keyInflight, key.ID)
+	}
+	if n := p.runtime.providerInflight[up.ID] - 1; n > 0 {
+		p.runtime.providerInflight[up.ID] = n
+	} else {
+		delete(p.runtime.providerInflight, up.ID)
+	}
+}
+
+func (p *BandPicker) CooldownProvider(ctx context.Context, upstreamID uint, reason string) {
+	until := time.Now().Add(time.Duration(p.Settings().CooldownSec) * time.Second)
+	_ = p.db.WithContext(ctx).Model(&domain.Upstream{}).Where("id = ?", upstreamID).Updates(map[string]any{
+		"cooldown_until": until, "health_status": domain.HealthCooldown, "last_error": reason,
+	}).Error
+}
+
+func (p *BandPicker) CooldownKeyModel(ctx context.Context, keyID uint, model, reason string, status int) {
+	model = strings.TrimSpace(model)
+	if keyID == 0 || model == "" {
+		return
+	}
+	row := domain.KeyModelCooldown{PlatformKeyID: keyID, Model: model}
+	until := time.Now().Add(time.Duration(p.Settings().FailureWindowSec) * time.Second)
+	_ = p.db.WithContext(ctx).Where("platform_key_id = ? AND model = ?", keyID, model).
+		Assign(domain.KeyModelCooldown{CooldownUntil: until, Reason: reason, StatusCode: status}).FirstOrCreate(&row).Error
+}
+
+func (p *BandPicker) RecordProviderSuccess(ctx context.Context, upstreamID uint) {
+	if upstreamID == 0 {
+		return
+	}
+	_ = p.db.WithContext(ctx).Model(&domain.Upstream{}).Where("id = ?", upstreamID).Updates(map[string]any{
+		"health_status": domain.HealthHealthy, "cooldown_until": nil, "last_error": "",
+	}).Error
 }

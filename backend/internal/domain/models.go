@@ -47,6 +47,9 @@ type Upstream struct {
 	// provider. 0 means unlimited. Upstream APIs do not expose a reliable value,
 	// so this is operator-set.
 	Concurrency   int        `gorm:"not null;default:0" json:"concurrency"`
+	HealthStatus  string     `gorm:"size:32;not null;default:healthy" json:"health_status"`
+	CooldownUntil *time.Time `json:"cooldown_until"`
+	LastError     string     `gorm:"type:text" json:"last_error"`
 	LastBalance   *float64   `gorm:"type:decimal(20,8)" json:"last_balance"`
 	LastBalanceAt *time.Time `json:"last_balance_at"`
 	CreatedAt     time.Time  `json:"created_at"`
@@ -88,13 +91,15 @@ type PlatformKey struct {
 	// Concurrency / LastBalance / LastBalanceAt remain on the table for older
 	// databases; live values live on Upstream. All keys of a provider share one
 	// concurrency cap and one balance.
-	Concurrency   int        `gorm:"not null;default:0" json:"concurrency"`
-	LastBalance   *float64   `gorm:"type:decimal(20,8)" json:"last_balance"`
-	LastBalanceAt *time.Time `json:"last_balance_at"`
-	LastRequestAt *time.Time `json:"last_request_at"`
-	LastError     string     `gorm:"type:text" json:"last_error"`
-	CooldownUntil *time.Time `json:"cooldown_until"`
-	HealthStatus  string     `gorm:"size:32;not null;default:healthy" json:"health_status"`
+	Concurrency    int        `gorm:"not null;default:0" json:"concurrency"`
+	RPMLimit       int        `gorm:"not null;default:0" json:"rpm_limit"`
+	MaxConcurrency int        `gorm:"not null;default:0" json:"max_concurrency"`
+	LastBalance    *float64   `gorm:"type:decimal(20,8)" json:"last_balance"`
+	LastBalanceAt  *time.Time `json:"last_balance_at"`
+	LastRequestAt  *time.Time `json:"last_request_at"`
+	LastError      string     `gorm:"type:text" json:"last_error"`
+	CooldownUntil  *time.Time `json:"cooldown_until"`
+	HealthStatus   string     `gorm:"size:32;not null;default:healthy" json:"health_status"`
 	// ProbeIntervalSec is this key's scheduled probe cadence. 0 follows the
 	// global jobs.probe_interval.
 	ProbeIntervalSec    int         `gorm:"not null;default:0" json:"probe_interval_sec"`
@@ -259,6 +264,8 @@ type RequestLog struct {
 	CompletedAt         *time.Time `gorm:"index" json:"completed_at"`
 	CostUSD             *float64   `gorm:"type:decimal(20,8)" json:"cost_usd"`
 	ErrorMessage        string     `gorm:"type:text" json:"error_message"`
+	FailureScope        string     `gorm:"size:32;index" json:"failure_scope"`
+	FailureAction       string     `gorm:"size:32" json:"failure_action"`
 	RequestHeaders      string     `gorm:"type:text" json:"request_headers"`
 	RequestBody         string     `gorm:"type:text" json:"request_body"`
 	RequestBodyTrunc    bool       `json:"request_body_truncated"`
@@ -266,6 +273,19 @@ type RequestLog struct {
 	ResponseBody        string     `gorm:"type:text" json:"response_body"`
 	ResponseBodyTrunc   bool       `json:"response_body_truncated"`
 	CreatedAt           time.Time  `gorm:"index" json:"created_at"`
+}
+
+// KeyModelCooldown isolates model-specific throttling without disabling the
+// same credential for unrelated models.
+type KeyModelCooldown struct {
+	ID            uint      `gorm:"primaryKey" json:"id"`
+	PlatformKeyID uint      `gorm:"uniqueIndex:idx_key_model_cooldown;not null" json:"platform_key_id"`
+	Model         string    `gorm:"size:128;uniqueIndex:idx_key_model_cooldown;not null" json:"model"`
+	CooldownUntil time.Time `gorm:"index;not null" json:"cooldown_until"`
+	Reason        string    `gorm:"size:128" json:"reason"`
+	StatusCode    int       `json:"status_code"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 type ProbeLog struct {

@@ -59,6 +59,7 @@ async function loadConsumers() {
 }
 
 const form = reactive<SchedulerSettings>({
+  ranking_mode: 'adaptive',
   weight_success: 0.45,
   weight_cache: 0.3,
   weight_ttft: 0.25,
@@ -74,6 +75,8 @@ const form = reactive<SchedulerSettings>({
   failover_max: 2,
   retry_max: 1,
   cooldown_sec: 30,
+  failure_window_sec: 60,
+  failure_threshold: 8,
   probe_openai_model: 'gpt-4o-mini',
   probe_anthropic_model: 'claude-3-haiku-20240307',
   probe_grok_model: 'grok-3-mini',
@@ -82,6 +85,13 @@ const form = reactive<SchedulerSettings>({
   probe_deepseek_model: 'deepseek-chat',
   filter_by_models: true,
 })
+
+const RANKING_OPTIONS = [
+  { label: '自适应', value: 'adaptive' },
+  { label: '固定顺序', value: 'fixed_order' },
+  { label: '缓存亲和', value: 'cache_affinity' },
+  { label: '负载均衡', value: 'load_balance' },
+]
 
 const EMPTY_VENDORS: CatalogVendor[] = [
   { id: 'openai', name: 'OpenAI', protocol: 'openai', models: [] },
@@ -292,6 +302,14 @@ const columns: DataTableColumns<SchedulerCandidate> = [
   },
   { title: '样本', key: 'samples', width: 60 },
   {
+    title: '运行负载',
+    key: 'key_inflight',
+    width: 135,
+    render(row) {
+      return `RPM ${row.current_rpm}/${row.rpm_limit || '不限'} · 并发 ${row.key_inflight}/${row.max_concurrency || '不限'}`
+    },
+  },
+  {
     title: '原因',
     key: 'skip_reason',
     render(row) {
@@ -359,6 +377,9 @@ onMounted(async () => {
         </n-card>
         <n-card size="small" title="选路策略" :bordered="false" :loading="loading">
           <div class="grid">
+            <n-form-item label="候选排序">
+              <n-select v-model:value="form.ranking_mode" :options="RANKING_OPTIONS" style="width: 100%" />
+            </n-form-item>
             <n-form-item label="近优带宽 ε" path="epsilon">
               <n-input-number v-model:value="form.epsilon" :min="0.01" :max="0.5" :step="0.01" style="width: 100%" />
             </n-form-item>
@@ -383,6 +404,12 @@ onMounted(async () => {
             </n-form-item>
             <n-form-item label="冷却秒">
               <n-input-number v-model:value="form.cooldown_sec" :min="5" :max="600" style="width: 100%" />
+            </n-form-item>
+            <n-form-item label="失败窗口秒">
+              <n-input-number v-model:value="form.failure_window_sec" :min="1" :max="3600" style="width: 100%" />
+            </n-form-item>
+            <n-form-item label="失败阈值">
+              <n-input-number v-model:value="form.failure_threshold" :min="1" :max="100" style="width: 100%" />
             </n-form-item>
             <n-form-item label="粘滞 TTL 秒">
               <n-input-number v-model:value="form.sticky_ttl_sec" :min="60" :max="86400" style="width: 100%" />

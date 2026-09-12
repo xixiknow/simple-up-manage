@@ -187,6 +187,33 @@ func TestLogKeepsOriginalStreamAndStart(t *testing.T) {
 	}
 }
 
+func TestSuccessfulFailoverLogClearsPreviousFailure(t *testing.T) {
+	db := logTestDB(t)
+	h := &Gateway{DB: db}
+	snap := ioCapture{StartedAt: time.Now()}
+	lg := h.beginLog(nil, domain.ProtocolOpenAI, "model", "/v1/chat/completions", "failover-success", "", snap)
+	if lg == nil {
+		t.Fatal("missing log")
+	}
+	lg.markFailure(h, failureScopeProvider, "cooldown_provider")
+	h.finishLog(lg, nil, nil, nil, domain.ProtocolOpenAI, "model", "/v1/chat/completions", "failover-success", "", http.StatusOK, true, upstream.TokenUsage{}, 0, 10, "", snap)
+
+	var row domain.RequestLog
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if err := db.First(&row, lg.id).Error; err != nil {
+			t.Fatal(err)
+		}
+		if !row.InFlight {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if row.InFlight || !row.Success || row.FailureScope != "" || row.FailureAction != "" {
+		t.Fatalf("final log: inflight=%v success=%v scope=%q action=%q", row.InFlight, row.Success, row.FailureScope, row.FailureAction)
+	}
+}
+
 func TestSSETerminalWithoutEOF(t *testing.T) {
 	for _, terminal := range []string{
 		"data: [DONE]\r\n\r\n",

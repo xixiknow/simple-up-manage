@@ -28,6 +28,9 @@ export type Upstream = {
   note?: string
   /** Shared in-flight cap for every key of this provider. 0 = unlimited. */
   concurrency: number
+  health_status: HealthStatus
+  cooldown_until?: string | null
+  last_error?: string | null
   last_balance?: number | null
   last_balance_at?: string | null
 }
@@ -63,6 +66,8 @@ export type PlatformKey = {
   name_tag?: string
   key_preview: string
   status: EnableStatus
+  rpm_limit: number
+  max_concurrency: number
   last_balance?: number | null
   last_balance_at?: string | null
   last_request_at?: string | null
@@ -205,6 +210,8 @@ export type RequestLog = {
   stream_known?: boolean
   cost_usd?: number
   error_message?: string
+  failure_scope?: string
+  failure_action?: string
   created_at: string
   upstream_name?: string
   consumer_name?: string
@@ -281,6 +288,8 @@ export type PlatformKeyPayload = {
   rate_multiplier?: number
   billing_group?: string
   probe_interval_sec?: number
+  rpm_limit?: number
+  max_concurrency?: number
 }
 
 export type ConsumerKeyPayload = {
@@ -292,6 +301,7 @@ export type ConsumerKeyPayload = {
 }
 
 export type SchedulerSettings = {
+  ranking_mode: 'adaptive' | 'fixed_order' | 'cache_affinity' | 'load_balance'
   weight_success: number
   weight_cache: number
   weight_ttft: number
@@ -307,6 +317,8 @@ export type SchedulerSettings = {
   failover_max: number
   retry_max: number
   cooldown_sec: number
+  failure_window_sec: number
+  failure_threshold: number
   probe_openai_model: string
   probe_anthropic_model: string
   probe_grok_model: string
@@ -362,6 +374,14 @@ export type SchedulerCandidate = {
   samples: number
   health_status: HealthStatus
   last_balance?: number | null
+  ranking_mode: SchedulerSettings['ranking_mode']
+  affinity_hit: boolean
+  current_rpm: number
+  key_inflight: number
+  provider_inflight: number
+  rpm_limit: number
+  max_concurrency: number
+  provider_concurrency: number
 }
 
 export type SchedulerExplain = {

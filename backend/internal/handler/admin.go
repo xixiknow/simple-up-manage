@@ -329,6 +329,8 @@ type keyBody struct {
 	RateMultiplier   *float64 `json:"rate_multiplier"`
 	BillingGroup     *string  `json:"billing_group"`
 	ProbeIntervalSec *int     `json:"probe_interval_sec"`
+	RPMLimit         *int     `json:"rpm_limit"`
+	MaxConcurrency   *int     `json:"max_concurrency"`
 }
 
 func validRate(r float64) bool {
@@ -400,6 +402,22 @@ func (h *Admin) CreateUpstreamKey(c *gin.Context) {
 		}
 		probeSec = *body.ProbeIntervalSec
 	}
+	rpmLimit := 0
+	if body.RPMLimit != nil {
+		if *body.RPMLimit < 0 {
+			httpx.BadRequest(c, "rpm_limit must be >= 0")
+			return
+		}
+		rpmLimit = *body.RPMLimit
+	}
+	maxConcurrency := 0
+	if body.MaxConcurrency != nil {
+		if *body.MaxConcurrency < 0 {
+			httpx.BadRequest(c, "max_concurrency must be >= 0")
+			return
+		}
+		maxConcurrency = *body.MaxConcurrency
+	}
 	k := domain.PlatformKey{
 		UpstreamID:       id,
 		Name:             domain.ComposeKeyName(up.Name, tag, rate),
@@ -411,6 +429,8 @@ func (h *Admin) CreateUpstreamKey(c *gin.Context) {
 		Status:           status,
 		HealthStatus:     domain.HealthHealthy,
 		ProbeIntervalSec: probeSec,
+		RPMLimit:         rpmLimit,
+		MaxConcurrency:   maxConcurrency,
 	}
 	if err := h.DB.Create(&k).Error; err != nil {
 		httpx.Internal(c, err.Error())
@@ -509,6 +529,20 @@ func (h *Admin) UpdateKey(c *gin.Context) {
 			return
 		}
 		updates["probe_interval_sec"] = *body.ProbeIntervalSec
+	}
+	if body.RPMLimit != nil {
+		if *body.RPMLimit < 0 {
+			httpx.BadRequest(c, "rpm_limit must be >= 0")
+			return
+		}
+		updates["rpm_limit"] = *body.RPMLimit
+	}
+	if body.MaxConcurrency != nil {
+		if *body.MaxConcurrency < 0 {
+			httpx.BadRequest(c, "max_concurrency must be >= 0")
+			return
+		}
+		updates["max_concurrency"] = *body.MaxConcurrency
 	}
 	if len(updates) > 0 {
 		if err := h.DB.Model(&k).Updates(updates).Error; err != nil {
