@@ -521,6 +521,12 @@ onUnmounted(() => {
                 {{ formatNumber(detail.cache_creation_tokens) }}
               </div>
               <div><span class="meta-k">费用</span>{{ formatMoney(detail.cost_usd, 6) }}</div>
+              <div v-if="detail.failure_scope">
+                <span class="meta-k">故障范围</span><span class="mono">{{ detail.failure_scope }}</span>
+              </div>
+              <div v-if="detail.failure_action">
+                <span class="meta-k">调度动作</span><span class="mono">{{ detail.failure_action }}</span>
+              </div>
             </div>
             <n-alert v-if="detail.error_message" type="error" :title="detail.error_message" style="margin: 10px 0" />
             <n-alert v-if="detail.error_message === 'stale in-flight request'" type="warning" title="请求异常中断，耗时为最后记录值" style="margin: 10px 0" />

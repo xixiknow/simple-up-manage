@@ -24,6 +24,9 @@ type SchedulerSettings struct {
 	// (network / 5xx / 429 / 529) before switching keys. 0 means no same-key retry.
 	RetryMax            int    `gorm:"not null;default:1" json:"retry_max"`
 	CooldownSec         int    `gorm:"not null;default:30" json:"cooldown_sec"`
+	FailureWindowSec    int    `gorm:"not null;default:60" json:"failure_window_sec"`
+	FailureThreshold    int    `gorm:"not null;default:8" json:"failure_threshold"`
+	RankingMode         string `gorm:"size:32;not null;default:adaptive" json:"ranking_mode"`
 	ProbeOpenAIModel    string `gorm:"size:128;not null;default:gpt-4o-mini" json:"probe_openai_model"`
 	ProbeAnthropicModel string `gorm:"size:128;not null;default:claude-3-haiku-20240307" json:"probe_anthropic_model"`
 	ProbeGrokModel      string `gorm:"size:128;not null;default:grok-3-mini" json:"probe_grok_model"`
@@ -60,6 +63,9 @@ func DefaultSchedulerSettings() SchedulerSettings {
 		FailoverMax:         2,
 		RetryMax:            1,
 		CooldownSec:         30,
+		FailureWindowSec:    60,
+		FailureThreshold:    8,
+		RankingMode:         "adaptive",
 		ProbeOpenAIModel:    "gpt-4o-mini",
 		ProbeAnthropicModel: "claude-3-haiku-20240307",
 		ProbeGrokModel:      "grok-3-mini",
@@ -167,6 +173,23 @@ func (s *SchedulerSettings) Normalize() {
 	}
 	if s.CooldownSec <= 0 {
 		s.CooldownSec = d.CooldownSec
+	}
+	if s.FailureWindowSec <= 0 {
+		s.FailureWindowSec = d.FailureWindowSec
+	}
+	if s.FailureWindowSec > 3600 {
+		s.FailureWindowSec = 3600
+	}
+	if s.FailureThreshold <= 0 {
+		s.FailureThreshold = d.FailureThreshold
+	}
+	if s.FailureThreshold > 100 {
+		s.FailureThreshold = 100
+	}
+	switch s.RankingMode = strings.TrimSpace(s.RankingMode); s.RankingMode {
+	case "adaptive", "fixed_order", "cache_affinity", "load_balance":
+	default:
+		s.RankingMode = d.RankingMode
 	}
 	if s.ProbeOpenAIModel = strings.TrimSpace(s.ProbeOpenAIModel); s.ProbeOpenAIModel == "" {
 		s.ProbeOpenAIModel = d.ProbeOpenAIModel

@@ -16,6 +16,9 @@ type upstreamDTO struct {
 	Status        string           `json:"status"`
 	Note          string           `json:"note"`
 	Concurrency   int              `json:"concurrency"`
+	HealthStatus  string           `json:"health_status"`
+	CooldownUntil *time.Time       `json:"cooldown_until"`
+	LastError     string           `json:"last_error"`
 	LastBalance   *float64         `json:"last_balance"`
 	LastBalanceAt *time.Time       `json:"last_balance_at"`
 	CreatedAt     time.Time        `json:"created_at"`
@@ -39,6 +42,9 @@ func toUpstreamDTO(u domain.Upstream) upstreamDTO {
 		Status:        u.Status,
 		Note:          u.Note,
 		Concurrency:   u.Concurrency,
+		HealthStatus:  u.HealthStatus,
+		CooldownUntil: u.CooldownUntil,
+		LastError:     u.LastError,
 		LastBalance:   u.LastBalance,
 		LastBalanceAt: u.LastBalanceAt,
 		CreatedAt:     u.CreatedAt,
@@ -75,6 +81,8 @@ type keyDTO struct {
 	KeyPreview          string      `json:"key_preview"`
 	Status              string      `json:"status"`
 	Concurrency         int         `json:"concurrency"`
+	RPMLimit            int         `json:"rpm_limit"`
+	MaxConcurrency      int         `json:"max_concurrency"`
 	LastBalance         *float64    `json:"last_balance"`
 	LastBalanceAt       *time.Time  `json:"last_balance_at"`
 	LastRequestAt       *time.Time  `json:"last_request_at,omitempty"`
@@ -133,6 +141,8 @@ func toKeyDTO(k domain.PlatformKey) keyDTO {
 		KeyPreview:          k.KeyPreview,
 		Status:              k.Status,
 		Concurrency:         k.Concurrency,
+		RPMLimit:            k.RPMLimit,
+		MaxConcurrency:      k.MaxConcurrency,
 		LastBalance:         k.LastBalance,
 		LastBalanceAt:       k.LastBalanceAt,
 		LastRequestAt:       k.LastRequestAt,
@@ -223,6 +233,8 @@ type logDTO struct {
 	StreamKnown         bool      `json:"stream_known"`
 	CostUSD             *float64  `json:"cost_usd"`
 	ErrorMessage        string    `json:"error_message"`
+	FailureScope        string    `json:"failure_scope"`
+	FailureAction       string    `json:"failure_action"`
 	CreatedAt           time.Time `json:"created_at"`
 	UpstreamName        string    `json:"upstream_name,omitempty"`
 	ConsumerName        string    `json:"consumer_name,omitempty"`
@@ -262,6 +274,8 @@ func toLogDTO(l domain.RequestLog, upstreamName, consumerName string) logDTO {
 		StreamKnown:         l.StreamKnown,
 		CostUSD:             l.CostUSD,
 		ErrorMessage:        l.ErrorMessage,
+		FailureScope:        l.FailureScope,
+		FailureAction:       l.FailureAction,
 		CreatedAt:           l.CreatedAt,
 		UpstreamName:        upstreamName,
 		ConsumerName:        consumerName,

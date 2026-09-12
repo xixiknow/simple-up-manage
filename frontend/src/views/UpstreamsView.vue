@@ -438,6 +438,8 @@ const keyForm = reactive({
   rate_multiplier: 1 as number | null,
   billing_group: '',
   probe_interval_sec: null as number | null,
+  rpm_limit: 0 as number | null,
+  max_concurrency: 0 as number | null,
   status: 'enabled' as EnableStatus,
 })
 const keyRules: FormRules = {
@@ -458,6 +460,8 @@ function openCreateKey(up: Upstream) {
     rate_multiplier: null,
     billing_group: '',
     probe_interval_sec: null,
+    rpm_limit: 0,
+    max_concurrency: 0,
     status: 'enabled' as EnableStatus,
   })
   showKeyForm.value = true
@@ -472,6 +476,8 @@ function openEditKey(row: PlatformKey) {
     rate_multiplier: row.rate_multiplier ?? 1,
     billing_group: row.billing_group || '',
     probe_interval_sec: row.probe_interval_sec && row.probe_interval_sec > 0 ? row.probe_interval_sec : null,
+    rpm_limit: row.rpm_limit ?? 0,
+    max_concurrency: row.max_concurrency ?? 0,
     status: row.status,
   })
   showKeyForm.value = true
@@ -496,6 +502,8 @@ async function saveKey() {
     }
     if (keyForm.rate_multiplier != null) payload.rate_multiplier = keyForm.rate_multiplier
     payload.probe_interval_sec = Number(keyForm.probe_interval_sec) || 0
+    payload.rpm_limit = Number(keyForm.rpm_limit) || 0
+    payload.max_concurrency = Number(keyForm.max_concurrency) || 0
     if (editingKey.value) await updateKey(editingKey.value.id, payload)
     else await createKey(up.id, payload)
     message.success('已保存')
@@ -562,6 +570,10 @@ const SCORE_TERM_LABEL: Record<string, string> = { success: '成功率', latency
 
 const keyColumns: DataTableColumns<PlatformKey> = [
   { title: 'Key', key: 'name', ellipsis: { tooltip: true } },
+  {
+    title: '限制', key: 'limits', width: 120,
+    render: (row) => `RPM ${row.rpm_limit || '不限'} · 并发 ${row.max_concurrency || '不限'}`,
+  },
   {
     title: '预览',
     key: 'key_preview',
@@ -778,9 +790,9 @@ function providerMenu(up: Upstream) {
 function renderBalance(up: Upstream) {
   return h('div', { class: 'balance-cell' }, [
     h(NTooltip, null, {
-      trigger: () => h('span', { class: ['balance-value', { 'is-low': isLowBalance(up.last_balance), 'is-unknown': up.last_balance == null }] },
-        up.last_balance == null ? '未知' : formatMoney(up.last_balance)),
-      default: () => up.last_balance_at ? `更新于 ${formatTime(up.last_balance_at)}` : '尚无余额数据',
+      trigger: () => h('span', { class: ['balance-value', { 'is-low': isLowBalance(up.last_balance), 'is-unknown': up.last_balance == null && !up.last_balance_at }] },
+        up.last_balance == null ? (up.last_balance_at ? '不限' : '未知') : formatMoney(up.last_balance)),
+      default: () => up.last_balance_at ? (up.last_balance == null ? `不限额度 · 更新于 ${formatTime(up.last_balance_at)}` : `更新于 ${formatTime(up.last_balance_at)}`) : '尚无余额数据',
     }),
     iconButton(RefreshOutline, `刷新 ${up.name} 余额`, () => void refreshUpstream(up), busy.value === `bal-up-${up.id}`),
   ])
@@ -795,6 +807,12 @@ const columns = computed<DataTableColumns<ProviderRow>>(() => {
       h('a', { class: 'provider-url', href: providerHref(up.base_url), target: '_blank', rel: 'noopener noreferrer', title: up.base_url }, up.base_url),
       h('div', { class: 'provider-meta' }, [
         h(StatusTag, { status: up.status }),
+        h(NTooltip, null, {
+          trigger: () => h(HealthTag, { status: up.health_status || 'healthy' }),
+          default: () => up.cooldown_until
+            ? `冷却至 ${formatTime(up.cooldown_until)}${up.last_error ? ` · ${up.last_error}` : ''}`
+            : (up.last_error || '提供商运行状态'),
+        }),
         h('span', KIND_LABEL[up.kind]),
       ]),
       h('div', { class: 'muted', title: `${healthSummary(up.summary?.health_counts ?? {})} · 并发 ${concLabel(up.concurrency)}` },
@@ -808,7 +826,7 @@ const columns = computed<DataTableColumns<ProviderRow>>(() => {
     rowSpan: (row) => row.span, className: 'provider-cell',
     render: ({ upstream }) => renderBalance(upstream),
   })
-  const order = ['name', 'health_status', 'rate_multiplier', 'channel_score', 'health_pulse', 'route_groups', 'models_count', 'cache_rate', 'actions']
+  const order = ['name', 'health_status', 'limits', 'rate_multiplier', 'channel_score', 'health_pulse', 'route_groups', 'models_count', 'cache_rate', 'actions']
   for (const key of order) {
     const original = keyColumns.find((col) => 'key' in col && col.key === key)
     if (!original || !('key' in original) || 'children' in original) continue
@@ -1027,6 +1045,18 @@ onUnmounted(() => {
               clearable
             />
             <div class="muted rate-hint">单位秒。留空或 0 跟随全局定时任务（默认 1 分钟）。手动「探测全部」仍会探测此 Key。</div>
+          </div>
+        </n-form-item>
+        <n-form-item label="RPM 上限" path="rpm_limit">
+          <div class="rate-field">
+            <n-input-number v-model:value="keyForm.rpm_limit" :min="0" :step="1" style="width: 100%" />
+            <div class="muted rate-hint">该 Key 每分钟最多接收的请求数，0 表示不限。</div>
+          </div>
+        </n-form-item>
+        <n-form-item label="Key 并发" path="max_concurrency">
+          <div class="rate-field">
+            <n-input-number v-model:value="keyForm.max_concurrency" :min="0" :step="1" style="width: 100%" />
+            <div class="muted rate-hint">该 Key 的实例内在途请求上限，0 表示不限。</div>
           </div>
         </n-form-item>
         <n-form-item label="状态" path="status">

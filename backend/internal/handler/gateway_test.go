@@ -82,15 +82,42 @@ func TestExtractGatewayError(t *testing.T) {
 }
 
 func TestShouldFailoverStatus(t *testing.T) {
-	for _, code := range []int{429, 402, 500, 502, 529} {
+	for _, code := range []int{401, 403, 404, 429, 402, 500, 502, 529} {
 		if !shouldFailoverStatus(code) {
 			t.Fatalf("%d should failover", code)
 		}
 	}
-	for _, code := range []int{200, 400, 401, 403, 404} {
+	for _, code := range []int{200, 400} {
 		if shouldFailoverStatus(code) {
 			t.Fatalf("%d must not failover", code)
 		}
+	}
+}
+
+func TestClassifyHTTPFailure(t *testing.T) {
+	quota := []byte(`{"error":{"code":"insufficient_quota"}}`)
+	tests := []struct {
+		name, scope, action string
+		code                int
+		body                []byte
+		failover, low       bool
+	}{
+		{name: "bad request", code: 400},
+		{name: "unauthorized", code: 401, failover: true, scope: failureScopeKey, action: "cooldown_key"},
+		{name: "forbidden", code: 403, failover: true, scope: failureScopeKey, action: "cooldown_key"},
+		{name: "quota forbidden", code: 403, body: quota, failover: true, low: true, scope: failureScopeProvider, action: "mark_low_balance"},
+		{name: "not found", code: 404, failover: true, scope: failureScopeProvider, action: "cooldown_provider"},
+		{name: "rate limit", code: 429, failover: true, scope: failureScopeKeyModel, action: "cooldown_key_model"},
+		{name: "server error", code: 500, failover: true, scope: failureScopeProvider, action: "cooldown_provider"},
+		{name: "overloaded", code: 529, failover: true, scope: failureScopeProvider, action: "cooldown_provider"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyHTTPFailure(tt.code, tt.body)
+			if got.failOver != tt.failover || got.lowBalance != tt.low || got.scope != tt.scope || got.action != tt.action {
+				t.Fatalf("classification = %+v", got)
+			}
+		})
 	}
 }
 

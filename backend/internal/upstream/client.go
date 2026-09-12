@@ -212,18 +212,36 @@ func ParseNewAPITokenUsage(body []byte) (remainingUSD float64, unlimited bool, o
 	if err := json.Unmarshal(body, &top); err != nil {
 		return 0, false, false
 	}
+	if success, isBool := top["success"].(bool); isBool && !success {
+		return 0, false, false
+	}
+	if code, isBool := top["code"].(bool); isBool && !code {
+		return 0, false, false
+	}
 	data, ok := asMap(top["data"])
 	if !ok {
-		return 0, false, false
+		data = top
 	}
 	if u, isBool := data["unlimited_quota"].(bool); isBool && u {
 		return 0, true, true
 	}
 	v, ok := asFloat(data["total_available"])
 	if !ok {
+		v, ok = asFloat(data["remain_quota"])
+	}
+	if !ok {
 		return 0, false, false
 	}
 	return v / NewAPIQuotaPerUnit, false, true
+}
+
+// MaybeRawQuotaToUSD converts new-api quota units to USD when a billing
+// endpoint ignored QuotaDisplayType=TOKENS and returned raw remain+used.
+func MaybeRawQuotaToUSD(v float64) float64 {
+	if v >= NewAPIQuotaPerUnit && v < NewAPIUnlimitedUSD {
+		return v / NewAPIQuotaPerUnit
+	}
+	return v
 }
 
 // ParseNewAPIGroupRatio parses GET /api/pricing and returns the group_ratio map

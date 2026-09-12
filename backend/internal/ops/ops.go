@@ -587,53 +587,97 @@ func (s *Service) fetchKeyBalance(ctx context.Context, key *domain.PlatformKey, 
 	return bal.Remaining, false, nil
 }
 
-// newAPIBalance queries a new-api token's remaining quota. Primary path is the
-// OpenAI-compatible /v1/dashboard/billing/{subscription,usage} pair (already in
-// USD); fallback is new-api's /api/usage/token/ (raw quota units).
-// remaining==nil with unlimited==true means the token has no cap.
+// newAPIBalance queries a new-api token's remaining quota.
+// Primary path is GET /api/usage/token/ (raw quota units, independent of the
+// site's QuotaDisplayType). Fallback is the OpenAI-compatible
+// /v1/dashboard/billing/{subscription,usage} pair. remaining==nil with
+// unlimited==true means the token has no cap.
 func (s *Service) newAPIBalance(ctx context.Context, baseURL, apiKey string) (remaining *float64, unlimited bool, source string, status int, err error) {
-	sub, err := s.Client.GetJSON(ctx, baseURL, "/v1/dashboard/billing/subscription", apiKey)
-	if err != nil {
-		return nil, false, "", 0, err
+	var lastErr error
+	sawUnlimited := false
+	unlimitedSource := ""
+	unlimitedStatus := 0
+
+	tokenPaths := []string{"/api/usage/token/", "/api/usage/token"}
+	for i, path := range tokenPaths {
+		tok, e := s.Client.GetJSON(ctx, baseURL, path, apiKey)
+		if e != nil {
+			lastErr = e
+			break
+		}
+		status = tok.Status
+		if tok.Status == http.StatusNotFound && i+1 < len(tokenPaths) {
+			continue
+		}
+		if tok.Status < 200 || tok.Status >= 300 {
+			lastErr = fmt.Errorf("new-api balance status %d: %s", tok.Status, truncate(string(tok.Body), 200))
+			break
+		}
+		rem, isUnlimited, ok := upstream.ParseNewAPITokenUsage(tok.Body)
+		if !ok {
+			lastErr = fmt.Errorf("new-api token usage: unexpected body")
+			break
+		}
+		if isUnlimited {
+			sawUnlimited = true
+			unlimitedSource = "api.usage.token"
+			unlimitedStatus = tok.Status
+			break
+		}
+		return &rem, false, "api.usage.token", tok.Status, nil
+	}
+
+	sub, e := s.Client.GetJSON(ctx, baseURL, "/v1/dashboard/billing/subscription", apiKey)
+	if e != nil {
+		if sawUnlimited {
+			return nil, true, unlimitedSource, unlimitedStatus, nil
+		}
+		if lastErr != nil {
+			return nil, false, "", status, lastErr
+		}
+		return nil, false, "", status, e
 	}
 	status = sub.Status
 	if sub.Status >= 200 && sub.Status < 300 {
 		limit, isUnlimited, ok := upstream.ParseSubscriptionLimit(sub.Body)
 		if ok {
 			if isUnlimited {
-				return nil, true, "billing.subscription", sub.Status, nil
-			}
-			use, err := s.Client.GetJSON(ctx, baseURL, "/v1/dashboard/billing/usage", apiKey)
-			if err != nil {
-				return nil, false, "", sub.Status, err
-			}
-			status = use.Status
-			if use.Status >= 200 && use.Status < 300 {
-				if used, ok := upstream.ParseBillingUsage(use.Body); ok {
-					rem := limit - used
-					if rem < 0 {
-						rem = 0
+				sawUnlimited = true
+				if unlimitedSource == "" {
+					unlimitedSource = "billing.subscription"
+					unlimitedStatus = sub.Status
+				}
+			} else {
+				use, ue := s.Client.GetJSON(ctx, baseURL, "/v1/dashboard/billing/usage", apiKey)
+				if ue != nil {
+					lastErr = ue
+				} else {
+					status = use.Status
+					if use.Status >= 200 && use.Status < 300 {
+						if used, usedOK := upstream.ParseBillingUsage(use.Body); usedOK {
+							rem := limit - used
+							if rem < 0 {
+								rem = 0
+							}
+							rem = upstream.MaybeRawQuotaToUSD(rem)
+							return &rem, false, "billing.subscription-usage", use.Status, nil
+						}
 					}
-					return &rem, false, "billing.subscription-usage", use.Status, nil
 				}
 			}
 		}
 	}
-	tok, err := s.Client.GetJSON(ctx, baseURL, "/api/usage/token/", apiKey)
-	if err != nil {
-		return nil, false, "", status, err
+
+	if sawUnlimited {
+		return nil, true, unlimitedSource, unlimitedStatus, nil
 	}
-	if tok.Status < 200 || tok.Status >= 300 {
-		return nil, false, "", tok.Status, fmt.Errorf("new-api balance status %d: %s", tok.Status, truncate(string(tok.Body), 200))
+	if lastErr != nil {
+		return nil, false, "", status, lastErr
 	}
-	rem, isUnlimited, ok := upstream.ParseNewAPITokenUsage(tok.Body)
-	if !ok {
-		return nil, false, "", tok.Status, fmt.Errorf("new-api token usage: unexpected body")
+	if sub.Status < 200 || sub.Status >= 300 {
+		return nil, false, "", sub.Status, fmt.Errorf("new-api balance status %d: %s", sub.Status, truncate(string(sub.Body), 200))
 	}
-	if isUnlimited {
-		return nil, true, "api.usage.token", tok.Status, nil
-	}
-	return &rem, false, "api.usage.token", tok.Status, nil
+	return nil, false, "", status, fmt.Errorf("new-api token usage: unexpected body")
 }
 
 // refreshNewAPIBilling reads new-api's public /api/pricing and copies the
