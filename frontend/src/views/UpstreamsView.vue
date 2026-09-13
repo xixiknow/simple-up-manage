@@ -978,6 +978,12 @@ onUnmounted(() => {
             <n-radio v-for="opt in STATUS_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.label }}</n-radio>
           </n-radio-group>
         </n-form-item>
+        <n-form-item v-if="form.kind === 'new_api'" label="accessToken" path="access_token">
+          <n-input v-model:value="form.access_token" type="password" show-password-on="click" placeholder="用于查询提供商钱包余额" />
+        </n-form-item>
+        <n-form-item v-if="form.kind === 'new_api'" label="New-Api-User" path="new_api_user_id">
+          <n-input-number v-model:value="form.new_api_user_id" :min="1" :step="1" style="width: 100%" placeholder="例如 2809" />
+        </n-form-item>
         <n-form-item label="并发" path="concurrency">
           <div class="rate-field">
             <n-input-number v-model:value="form.concurrency" :min="0" style="width: 100%" />
@@ -1011,12 +1017,6 @@ onUnmounted(() => {
             show-password-on="click"
             :placeholder="editingKey ? '留空则不修改' : '仅此次提交，列表不会回显'"
           />
-        </n-form-item>
-        <n-form-item v-if="form.kind === 'new_api'" label="accessToken" path="access_token">
-          <n-input v-model:value="form.access_token" type="password" show-password-on="click" placeholder="用于查询提供商钱包余额" />
-        </n-form-item>
-        <n-form-item v-if="form.kind === 'new_api'" label="New-Api-User" path="new_api_user_id">
-          <n-input-number v-model:value="form.new_api_user_id" :min="1" :step="1" style="width: 100%" placeholder="例如 2809" />
         </n-form-item>
         <n-form-item label="倍率" path="rate_multiplier">
           <div class="rate-field">
