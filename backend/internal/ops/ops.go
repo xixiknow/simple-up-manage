@@ -617,6 +617,9 @@ func (s *Service) newAPIBalance(ctx context.Context, baseURL, apiKey string, use
 			}
 		}
 		lastErr = fmt.Errorf("new-api self status %d: %s", self.Status, truncate(string(self.Body), 200))
+		if self.Status == http.StatusTooManyRequests {
+			return nil, false, "api.user.self", self.Status, lastErr
+		}
 	}
 	sawUnlimited := false
 	unlimitedSource := ""
@@ -639,6 +642,9 @@ func (s *Service) newAPIBalance(ctx context.Context, baseURL, apiKey string, use
 		}
 		if tok.Status < 200 || tok.Status >= 300 {
 			lastErr = fmt.Errorf("new-api balance status %d: %s", tok.Status, truncate(string(tok.Body), 200))
+			if tok.Status == http.StatusTooManyRequests {
+				return nil, false, "api.usage.token", tok.Status, lastErr
+			}
 			break
 		}
 		rem, isUnlimited, ok := upstream.ParseNewAPITokenUsage(tok.Body)
