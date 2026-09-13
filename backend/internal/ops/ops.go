@@ -549,12 +549,12 @@ func (s *Service) fetchKeyBalance(ctx context.Context, key *domain.PlatformKey, 
 	start := time.Now()
 	if up.Kind == domain.KindNewAPI {
 		balanceToken := apiKey
-		if key.EncryptedAccessToken != "" {
-			if token, decryptErr := s.Enc.Decrypt(key.EncryptedAccessToken); decryptErr == nil && strings.TrimSpace(token) != "" {
+		if up.EncryptedAccessToken != "" {
+			if token, decryptErr := s.Enc.Decrypt(up.EncryptedAccessToken); decryptErr == nil && strings.TrimSpace(token) != "" {
 				balanceToken = token
 			}
 		}
-		remaining, unlimited, source, status, err := s.newAPIBalance(ctx, up.BaseURL, balanceToken, key.NewAPIUserID)
+		remaining, unlimited, source, status, err := s.newAPIBalance(ctx, up.BaseURL, balanceToken, up.NewAPIUserID)
 		plog := domain.ProbeLog{PlatformKeyID: key.ID, Kind: domain.ProbeBalance, LatencyMs: int(time.Since(start).Milliseconds()), StatusCode: status}
 		if err != nil {
 			plog.ErrorMessage = truncate(err.Error(), 500)

@@ -28,6 +28,7 @@ export type Upstream = {
   note?: string
   /** Shared in-flight cap for every key of this provider. 0 = unlimited. */
   concurrency: number
+  new_api_user_id?: number | null
   health_status: HealthStatus
   cooldown_until?: string | null
   last_error?: string | null
@@ -279,14 +280,14 @@ export type UpstreamPayload = {
   status: EnableStatus
   note?: string
   concurrency?: number
+  access_token?: string
+  new_api_user_id?: number | null
 }
 
 export type PlatformKeyPayload = {
   name?: string
   name_tag: string
   api_key?: string
-  access_token?: string
-  new_api_user_id?: number
   status: EnableStatus
   rate_multiplier?: number
   billing_group?: string

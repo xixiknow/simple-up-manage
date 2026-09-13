@@ -100,13 +100,15 @@ func (h *Admin) attachUpstreamSummaries(items []upstreamDTO) error {
 }
 
 type upstreamBody struct {
-	Name        string   `json:"name"`
-	BaseURL     string   `json:"base_url"`
-	Kind        string   `json:"kind"`
-	Protocols   []string `json:"protocols"`
-	Note        string   `json:"note"`
-	Status      string   `json:"status"`
-	Concurrency *int     `json:"concurrency"`
+	Name         string   `json:"name"`
+	BaseURL      string   `json:"base_url"`
+	Kind         string   `json:"kind"`
+	Protocols    []string `json:"protocols"`
+	Note         string   `json:"note"`
+	Status       string   `json:"status"`
+	Concurrency  *int     `json:"concurrency"`
+	AccessToken  string   `json:"access_token"`
+	NewAPIUserID *int     `json:"new_api_user_id"`
 }
 
 func (h *Admin) CreateUpstream(c *gin.Context) {
@@ -287,6 +289,20 @@ func (h *Admin) buildUpstream(body upstreamBody, existing *domain.Upstream) (*do
 		LastBalance:   bal,
 		LastBalanceAt: balAt,
 	}
+	if existing != nil {
+		u.EncryptedAccessToken = existing.EncryptedAccessToken
+		u.NewAPIUserID = existing.NewAPIUserID
+	}
+	if raw := strings.TrimSpace(body.AccessToken); raw != "" {
+		enc, err := h.Enc.Encrypt(raw)
+		if err != nil {
+			return nil, err
+		}
+		u.EncryptedAccessToken = enc
+	}
+	if body.NewAPIUserID != nil {
+		u.NewAPIUserID = *body.NewAPIUserID
+	}
 	return u, nil
 }
 
@@ -324,8 +340,6 @@ type keyBody struct {
 	Name             string   `json:"name"`
 	NameTag          string   `json:"name_tag"`
 	APIKey           string   `json:"api_key"`
-	AccessToken      string   `json:"access_token"`
-	NewAPIUserID     *int     `json:"new_api_user_id"`
 	Status           string   `json:"status"`
 	Concurrency      *int     `json:"concurrency"`
 	RateMultiplier   *float64 `json:"rate_multiplier"`
@@ -434,17 +448,6 @@ func (h *Admin) CreateUpstreamKey(c *gin.Context) {
 		RPMLimit:         rpmLimit,
 		MaxConcurrency:   maxConcurrency,
 	}
-	if rawAccess := strings.TrimSpace(body.AccessToken); rawAccess != "" {
-		encAccess, encErr := h.Enc.Encrypt(rawAccess)
-		if encErr != nil {
-			httpx.Internal(c, encErr.Error())
-			return
-		}
-		k.EncryptedAccessToken = encAccess
-	}
-	if body.NewAPIUserID != nil {
-		k.NewAPIUserID = *body.NewAPIUserID
-	}
 	if err := h.DB.Create(&k).Error; err != nil {
 		httpx.Internal(c, err.Error())
 		return
@@ -521,17 +524,6 @@ func (h *Admin) UpdateKey(c *gin.Context) {
 		}
 		updates["encrypted_key"] = enc
 		updates["key_preview"] = crypto.KeyPreview(raw)
-	}
-	if raw := strings.TrimSpace(body.AccessToken); raw != "" {
-		enc, encErr := h.Enc.Encrypt(raw)
-		if encErr != nil {
-			httpx.Internal(c, encErr.Error())
-			return
-		}
-		updates["encrypted_access_token"] = enc
-	}
-	if body.NewAPIUserID != nil {
-		updates["new_api_user_id"] = *body.NewAPIUserID
 	}
 	if body.Status != "" {
 		if !domain.ValidStatus(body.Status) {

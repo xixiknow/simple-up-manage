@@ -15,6 +15,7 @@ type upstreamDTO struct {
 	Protocols     []string         `json:"protocols"`
 	Status        string           `json:"status"`
 	Note          string           `json:"note"`
+	NewAPIUserID  int              `json:"new_api_user_id"`
 	Concurrency   int              `json:"concurrency"`
 	HealthStatus  string           `json:"health_status"`
 	CooldownUntil *time.Time       `json:"cooldown_until"`
@@ -41,6 +42,7 @@ func toUpstreamDTO(u domain.Upstream) upstreamDTO {
 		Protocols:     u.ProtocolList(),
 		Status:        u.Status,
 		Note:          u.Note,
+		NewAPIUserID:  u.NewAPIUserID,
 		Concurrency:   u.Concurrency,
 		HealthStatus:  u.HealthStatus,
 		CooldownUntil: u.CooldownUntil,
@@ -102,7 +104,6 @@ type keyDTO struct {
 	RateMultiplier      float64     `json:"rate_multiplier"`
 	RateSyncedAt        *time.Time  `json:"rate_synced_at,omitempty"`
 	BillingGroup        string      `json:"billing_group,omitempty"`
-	NewAPIUserID        int         `json:"new_api_user_id"`
 	ChannelScore        *int        `json:"channel_score,omitempty"`
 	ChannelScoreMeta    *scoreMeta  `json:"channel_score_meta,omitempty"`
 	RouteGroups         []refDTO    `json:"route_groups"`
@@ -159,7 +160,6 @@ func toKeyDTO(k domain.PlatformKey) keyDTO {
 		RateMultiplier:      k.RateMultiplier,
 		RateSyncedAt:        k.RateSyncedAt,
 		BillingGroup:        k.BillingGroup,
-		NewAPIUserID:        k.NewAPIUserID,
 		RouteGroups:         []refDTO{},
 		CreatedAt:           k.CreatedAt,
 		UpdatedAt:           k.UpdatedAt,

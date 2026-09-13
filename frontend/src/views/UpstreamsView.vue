@@ -89,6 +89,8 @@ const form = reactive<UpstreamPayload>({
   status: 'enabled',
   note: '',
   concurrency: 0,
+  access_token: '',
+  new_api_user_id: null as number | null,
 })
 
 const rules: FormRules = {
@@ -276,6 +278,7 @@ function openCreate() {
     status: 'enabled' as EnableStatus,
     note: '',
     concurrency: 0,
+    access_token: '', new_api_user_id: null,
   })
   showForm.value = true
 }
@@ -290,6 +293,7 @@ function openEdit(row: Upstream) {
     status: row.status,
     note: row.note || '',
     concurrency: row.concurrency ?? 0,
+    access_token: '', new_api_user_id: row.new_api_user_id || null,
   })
   showForm.value = true
 }
@@ -306,6 +310,8 @@ async function save() {
       status: form.status,
       note: form.note?.trim() || undefined,
       concurrency: Number(form.concurrency) || 0,
+      access_token: form.access_token?.trim() || undefined,
+      new_api_user_id: form.new_api_user_id || undefined,
     }
     if (editing.value) await updateUpstream(editing.value.id, payload)
     else await createUpstream(payload)
@@ -435,8 +441,6 @@ const keyFormRef = ref<FormInst | null>(null)
 const keyForm = reactive({
   name_tag: '',
   api_key: '',
-  access_token: '',
-  new_api_user_id: null as number | null,
   rate_multiplier: 1 as number | null,
   billing_group: '',
   probe_interval_sec: null as number | null,
@@ -459,8 +463,6 @@ function openCreateKey(up: Upstream) {
   Object.assign(keyForm, {
     name_tag: '',
     api_key: '',
-    access_token: '',
-    new_api_user_id: null,
     rate_multiplier: null,
     billing_group: '',
     probe_interval_sec: null,
@@ -477,8 +479,6 @@ function openEditKey(row: PlatformKey) {
   Object.assign(keyForm, {
     name_tag: row.name_tag || inferNameTag(row.name, keyHost.value?.name),
     api_key: '',
-    access_token: '',
-    new_api_user_id: row.new_api_user_id || null,
     rate_multiplier: row.rate_multiplier ?? 1,
     billing_group: row.billing_group || '',
     probe_interval_sec: row.probe_interval_sec && row.probe_interval_sec > 0 ? row.probe_interval_sec : null,
@@ -503,8 +503,6 @@ async function saveKey() {
     const payload: PlatformKeyPayload = {
       name_tag: tag,
       api_key: keyForm.api_key.trim() || undefined,
-      access_token: keyForm.access_token.trim() || undefined,
-      new_api_user_id: keyForm.new_api_user_id || undefined,
       billing_group: keyFormIsNewAPI.value ? keyForm.billing_group.trim() : '',
       status: keyForm.status,
     }
@@ -1014,11 +1012,11 @@ onUnmounted(() => {
             :placeholder="editingKey ? '留空则不修改' : '仅此次提交，列表不会回显'"
           />
         </n-form-item>
-        <n-form-item v-if="keyFormIsNewAPI" label="accessToken" path="access_token">
-          <n-input v-model:value="keyForm.access_token" type="password" show-password-on="click" placeholder="用于查询 /api/user/self 钱包余额" />
+        <n-form-item v-if="form.kind === 'new_api'" label="accessToken" path="access_token">
+          <n-input v-model:value="form.access_token" type="password" show-password-on="click" placeholder="用于查询提供商钱包余额" />
         </n-form-item>
-        <n-form-item v-if="keyFormIsNewAPI" label="New-Api-User" path="new_api_user_id">
-          <n-input-number v-model:value="keyForm.new_api_user_id" :min="1" :step="1" style="width: 100%" placeholder="/api/user/self 所需用户 ID" />
+        <n-form-item v-if="form.kind === 'new_api'" label="New-Api-User" path="new_api_user_id">
+          <n-input-number v-model:value="form.new_api_user_id" :min="1" :step="1" style="width: 100%" placeholder="例如 2809" />
         </n-form-item>
         <n-form-item label="倍率" path="rate_multiplier">
           <div class="rate-field">
