@@ -233,6 +233,7 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 		for r := 0; r <= retries; r++ {
 			outcome = h.forwardOnce(c, ck, pk, up, protocol, model, session, reqID, body, reqSnap, lg, reqStart)
 			if outcome.ok {
+				lg.traceEvent(h, pk, up, "selected", "success")
 				settled = true
 				return
 			}
