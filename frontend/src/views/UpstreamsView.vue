@@ -571,10 +571,6 @@ const SCORE_TERM_LABEL: Record<string, string> = { success: '成功率', latency
 const keyColumns: DataTableColumns<PlatformKey> = [
   { title: 'Key', key: 'name', ellipsis: { tooltip: true } },
   {
-    title: '限制', key: 'limits', width: 120,
-    render: (row) => `RPM ${row.rpm_limit || '不限'} · 并发 ${row.max_concurrency || '不限'}`,
-  },
-  {
     title: '预览',
     key: 'key_preview',
     width: 140,
@@ -826,7 +822,7 @@ const columns = computed<DataTableColumns<ProviderRow>>(() => {
     rowSpan: (row) => row.span, className: 'provider-cell',
     render: ({ upstream }) => renderBalance(upstream),
   })
-  const order = ['name', 'health_status', 'limits', 'rate_multiplier', 'channel_score', 'health_pulse', 'route_groups', 'models_count', 'cache_rate', 'actions']
+  const order = ['name', 'health_status', 'rate_multiplier', 'channel_score', 'health_pulse', 'route_groups', 'models_count', 'cache_rate', 'actions']
   for (const key of order) {
     const original = keyColumns.find((col) => 'key' in col && col.key === key)
     if (!original || !('key' in original) || 'children' in original) continue
