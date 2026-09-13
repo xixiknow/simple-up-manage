@@ -89,6 +89,7 @@ export type PlatformKey = {
   billing_unsupported?: boolean
   /** new-api only: the token's group name used to look up group_ratio. */
   billing_group?: string
+  new_api_user_id?: number
   route_groups?: RouteGroupRef[]
   last_models?: string[]
   last_models_at?: string | null
@@ -284,6 +285,8 @@ export type PlatformKeyPayload = {
   name?: string
   name_tag: string
   api_key?: string
+  access_token?: string
+  new_api_user_id?: number
   status: EnableStatus
   rate_multiplier?: number
   billing_group?: string

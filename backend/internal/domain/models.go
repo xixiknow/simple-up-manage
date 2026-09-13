@@ -77,9 +77,11 @@ type PlatformKey struct {
 	Name       string `gorm:"size:256;not null" json:"name"`
 	// NameTag is the operator-chosen middle segment of the display name
 	// `{provider}-{tag}-{rate}`.
-	NameTag      string `gorm:"size:64" json:"name_tag"`
-	EncryptedKey string `gorm:"type:text;not null" json:"-"`
-	KeyPreview   string `gorm:"size:64" json:"key_preview"`
+	NameTag              string `gorm:"size:64" json:"name_tag"`
+	EncryptedKey         string `gorm:"type:text;not null" json:"-"`
+	EncryptedAccessToken string `gorm:"type:text" json:"-"`
+	NewAPIUserID         int    `gorm:"default:0" json:"new_api_user_id"`
+	KeyPreview           string `gorm:"size:64" json:"key_preview"`
 	// RateMultiplier is the upstream's price multiplier for this key. Synced from
 	// sub2api / new-api when available, otherwise operator-entered. Defaults to 1.
 	RateMultiplier float64    `gorm:"type:decimal(12,6);not null;default:1" json:"rate_multiplier"`

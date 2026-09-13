@@ -548,7 +548,13 @@ func (s *Service) fetchKeyBalance(ctx context.Context, key *domain.PlatformKey, 
 	}
 	start := time.Now()
 	if up.Kind == domain.KindNewAPI {
-		remaining, unlimited, source, status, err := s.newAPIBalance(ctx, up.BaseURL, apiKey)
+		balanceToken := apiKey
+		if key.EncryptedAccessToken != "" {
+			if token, decryptErr := s.Enc.Decrypt(key.EncryptedAccessToken); decryptErr == nil && strings.TrimSpace(token) != "" {
+				balanceToken = token
+			}
+		}
+		remaining, unlimited, source, status, err := s.newAPIBalance(ctx, up.BaseURL, balanceToken, key.NewAPIUserID)
 		plog := domain.ProbeLog{PlatformKeyID: key.ID, Kind: domain.ProbeBalance, LatencyMs: int(time.Since(start).Milliseconds()), StatusCode: status}
 		if err != nil {
 			plog.ErrorMessage = truncate(err.Error(), 500)
@@ -592,7 +598,11 @@ func (s *Service) fetchKeyBalance(ctx context.Context, key *domain.PlatformKey, 
 // site's QuotaDisplayType). Fallback is the OpenAI-compatible
 // /v1/dashboard/billing/{subscription,usage} pair. remaining==nil with
 // unlimited==true means the token has no cap.
-func (s *Service) newAPIBalance(ctx context.Context, baseURL, apiKey string) (remaining *float64, unlimited bool, source string, status int, err error) {
+func (s *Service) newAPIBalance(ctx context.Context, baseURL, apiKey string, userIDs ...int) (remaining *float64, unlimited bool, source string, status int, err error) {
+	userID := 0
+	if len(userIDs) > 0 {
+		userID = userIDs[0]
+	}
 	var lastErr error
 	sawUnlimited := false
 	unlimitedSource := ""
@@ -600,7 +610,11 @@ func (s *Service) newAPIBalance(ctx context.Context, baseURL, apiKey string) (re
 
 	tokenPaths := []string{"/api/usage/token/", "/api/usage/token"}
 	for i, path := range tokenPaths {
-		tok, e := s.Client.GetJSON(ctx, baseURL, path, apiKey)
+		headers := http.Header{}
+		if userID > 0 {
+			headers.Set("New-Api-User", fmt.Sprintf("%d", userID))
+		}
+		tok, e := s.Client.GetJSONWithHeaders(ctx, baseURL, path, apiKey, headers)
 		if e != nil {
 			lastErr = e
 			break

@@ -222,6 +222,9 @@ func ParseNewAPITokenUsage(body []byte) (remainingUSD float64, unlimited bool, o
 	if !ok {
 		data = top
 	}
+	if v, hasUserQuota := asFloat(data["user_quota"]); hasUserQuota {
+		return v / NewAPIQuotaPerUnit, false, true
+	}
 	if u, isBool := data["unlimited_quota"].(bool); isBool && u {
 		return 0, true, true
 	}

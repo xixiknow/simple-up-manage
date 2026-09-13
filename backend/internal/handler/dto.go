@@ -102,6 +102,7 @@ type keyDTO struct {
 	RateMultiplier      float64     `json:"rate_multiplier"`
 	RateSyncedAt        *time.Time  `json:"rate_synced_at,omitempty"`
 	BillingGroup        string      `json:"billing_group,omitempty"`
+	NewAPIUserID        int         `json:"new_api_user_id"`
 	ChannelScore        *int        `json:"channel_score,omitempty"`
 	ChannelScoreMeta    *scoreMeta  `json:"channel_score_meta,omitempty"`
 	RouteGroups         []refDTO    `json:"route_groups"`
@@ -158,6 +159,7 @@ func toKeyDTO(k domain.PlatformKey) keyDTO {
 		RateMultiplier:      k.RateMultiplier,
 		RateSyncedAt:        k.RateSyncedAt,
 		BillingGroup:        k.BillingGroup,
+		NewAPIUserID:        k.NewAPIUserID,
 		RouteGroups:         []refDTO{},
 		CreatedAt:           k.CreatedAt,
 		UpdatedAt:           k.UpdatedAt,
