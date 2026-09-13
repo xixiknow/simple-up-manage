@@ -605,6 +605,11 @@ func (s *Service) newAPIBalance(ctx context.Context, baseURL, apiKey string, use
 	}
 	var lastErr error
 	selfHeaders := http.Header{"Access-Token": []string{apiKey}, "Authorization": []string{"Bearer " + apiKey}}
+	if strings.Contains(apiKey, "=") {
+		selfHeaders.Del("Access-Token")
+		selfHeaders.Del("Authorization")
+		selfHeaders.Set("Cookie", apiKey)
+	}
 	if userID > 0 {
 		selfHeaders.Set("New-Api-User", fmt.Sprintf("%d", userID))
 	}
