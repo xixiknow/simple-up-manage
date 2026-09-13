@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { NTag, useMessage } from 'naive-ui'
+import { NTag, NTimeline, NTimelineItem, useMessage } from 'naive-ui'
 import type { DataTableColumns, SelectOption } from 'naive-ui'
 import { allPages, getRequestLog, listKeyOptions, listRequestLogs, listUpstreams } from '@/api/admin'
 import type { RequestLog, RequestLogDetail, RequestLogQuery } from '@/api/types'
@@ -9,6 +9,8 @@ import { copyText, errText, formatMoney, formatNumber, formatSeconds, formatTime
 const LIVE_MS = 4000
 const IN_FLIGHT_CAP_MS = 6 * 60 * 1000
 const message = useMessage()
+const traceResultLabel: Record<string, string> = { selected: '已选中', retry: '重试', switch: '切换', failed: '失败' }
+function selectionTrace(row: RequestLogDetail) { try { return row.selection_trace ? JSON.parse(row.selection_trace) as Array<{ key_name: string; upstream_name: string; result: string; reason?: string; retry_count?: number; at: string }> : [] } catch { return [] } }
 
 const loading = ref(false)
 const error = ref('')
@@ -528,6 +530,14 @@ onUnmounted(() => {
                 <span class="meta-k">调度动作</span><span class="mono">{{ detail.failure_action }}</span>
               </div>
             </div>
+            <section v-if="selectionTrace(detail).length" class="selection-trace">
+              <h3>Key 选择过程</h3>
+              <n-timeline>
+                <n-timeline-item v-for="(event, index) in selectionTrace(detail)" :key="`${event.at}-${index}`" :type="event.result === 'selected' ? 'success' : event.result === 'retry' ? 'warning' : 'error'" :title="`${traceResultLabel[event.result] || event.result} · ${event.key_name || '未知 Key'}`" :time="formatTime(event.at)">
+                  <span>{{ event.upstream_name || '未知提供商' }}</span><span v-if="event.reason" class="muted"> · {{ event.reason }}</span><span v-if="event.retry_count && event.retry_count > 1" class="muted"> · 重试 {{ event.retry_count }} 次</span>
+                </n-timeline-item>
+              </n-timeline>
+            </section>
             <n-alert v-if="detail.error_message" type="error" :title="detail.error_message" style="margin: 10px 0" />
             <n-alert v-if="detail.error_message === 'stale in-flight request'" type="warning" title="请求异常中断，耗时为最后记录值" style="margin: 10px 0" />
             <n-alert

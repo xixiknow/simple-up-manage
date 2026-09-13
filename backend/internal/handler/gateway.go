@@ -228,6 +228,7 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 			gatewayError(c, http.StatusInternalServerError, "api_error", err.Error())
 			return
 		}
+		lg.traceEvent(h, pk, up, "selected", "picker")
 		var outcome forwardOutcome
 		for r := 0; r <= retries; r++ {
 			outcome = h.forwardOnce(c, ck, pk, up, protocol, model, session, reqID, body, reqSnap, lg, reqStart)
@@ -236,6 +237,11 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 				return
 			}
 			lastMsg = outcome.msg
+			if outcome.retrySame {
+				lg.traceEvent(h, pk, up, "retry", outcome.action)
+			} else if outcome.failOver {
+				lg.traceEvent(h, pk, up, "switch", outcome.action)
+			}
 			if outcome.retrySame && r < retries {
 				if err := sleepCtx(c.Request.Context(), sameKeyRetryDelay); err != nil {
 					if !c.Writer.Written() {
@@ -690,6 +696,45 @@ type liveLog struct {
 	revision  uint64
 	closed    bool
 	updates   map[string]any
+	trace     []selectionTraceEvent
+}
+
+type selectionTraceEvent struct {
+	KeyName      string    `json:"key_name"`
+	UpstreamName string    `json:"upstream_name"`
+	Result       string    `json:"result"`
+	Reason       string    `json:"reason,omitempty"`
+	RetryCount   int       `json:"retry_count,omitempty"`
+	At           time.Time `json:"at"`
+}
+
+func (lg *liveLog) traceEvent(h *Gateway, pk *domain.PlatformKey, up *domain.Upstream, result, reason string) {
+	if lg == nil || lg.id == 0 {
+		return
+	}
+	lg.mu.Lock()
+	name, provider := "", ""
+	if pk != nil {
+		name = pk.Name
+	}
+	if up != nil {
+		provider = up.Name
+	}
+	if len(lg.trace) > 0 && lg.trace[len(lg.trace)-1].KeyName == name && (result == "retry" || result == "selected") {
+		if result == "retry" {
+			lg.trace[len(lg.trace)-1].RetryCount++
+		}
+		lg.trace[len(lg.trace)-1].Result = result
+	} else {
+		lg.trace = append(lg.trace, selectionTraceEvent{KeyName: name, UpstreamName: provider, Result: result, Reason: reason, At: time.Now().UTC()})
+	}
+	b, _ := json.Marshal(lg.trace)
+	if lg.updates == nil {
+		lg.updates = map[string]any{}
+	}
+	lg.updates["selection_trace"] = string(b)
+	lg.mu.Unlock()
+	h.writeLog(lg, map[string]any{"selection_trace": string(b)}, false)
 }
 
 func (lg *liveLog) markFailure(h *Gateway, scope, action string) {

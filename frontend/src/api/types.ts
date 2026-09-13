@@ -214,6 +214,7 @@ export type RequestLog = {
   error_message?: string
   failure_scope?: string
   failure_action?: string
+  selection_trace?: string
   created_at: string
   upstream_name?: string
   consumer_name?: string

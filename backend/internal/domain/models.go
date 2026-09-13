@@ -268,6 +268,7 @@ type RequestLog struct {
 	ErrorMessage        string     `gorm:"type:text" json:"error_message"`
 	FailureScope        string     `gorm:"size:32;index" json:"failure_scope"`
 	FailureAction       string     `gorm:"size:32" json:"failure_action"`
+	SelectionTrace      string     `gorm:"type:text" json:"selection_trace"`
 	RequestHeaders      string     `gorm:"type:text" json:"request_headers"`
 	RequestBody         string     `gorm:"type:text" json:"request_body"`
 	RequestBodyTrunc    bool       `json:"request_body_truncated"`

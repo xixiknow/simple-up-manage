@@ -237,6 +237,7 @@ type logDTO struct {
 	ErrorMessage        string    `json:"error_message"`
 	FailureScope        string    `json:"failure_scope"`
 	FailureAction       string    `json:"failure_action"`
+	SelectionTrace      string    `json:"selection_trace"`
 	CreatedAt           time.Time `json:"created_at"`
 	UpstreamName        string    `json:"upstream_name,omitempty"`
 	ConsumerName        string    `json:"consumer_name,omitempty"`
@@ -278,6 +279,7 @@ func toLogDTO(l domain.RequestLog, upstreamName, consumerName string) logDTO {
 		ErrorMessage:        l.ErrorMessage,
 		FailureScope:        l.FailureScope,
 		FailureAction:       l.FailureAction,
+		SelectionTrace:      l.SelectionTrace,
 		CreatedAt:           l.CreatedAt,
 		UpstreamName:        upstreamName,
 		ConsumerName:        consumerName,
