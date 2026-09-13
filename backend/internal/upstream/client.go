@@ -73,6 +73,7 @@ func (c *Client) GetJSONWithHeaders(ctx context.Context, baseURL, path, apiKey s
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Accept", "application/json")
 	for k, vs := range extra {
+		req.Header.Del(k)
 		for _, v := range vs {
 			req.Header.Add(k, v)
 		}
