@@ -604,6 +604,20 @@ func (s *Service) newAPIBalance(ctx context.Context, baseURL, apiKey string, use
 		userID = userIDs[0]
 	}
 	var lastErr error
+	selfHeaders := http.Header{"Access-Token": []string{apiKey}, "access-token": []string{apiKey}}
+	if userID > 0 {
+		selfHeaders.Set("New-Api-User", fmt.Sprintf("%d", userID))
+	}
+	if self, e := s.Client.GetJSONWithHeaders(ctx, baseURL, "/api/user/self", apiKey, selfHeaders); e == nil {
+		status = self.Status
+		if self.Status >= 200 && self.Status < 300 {
+			bal := upstream.ParseBalance(self.Body)
+			if bal.Remaining != nil {
+				return bal.Remaining, false, "api.user.self", self.Status, nil
+			}
+		}
+		lastErr = fmt.Errorf("new-api self status %d: %s", self.Status, truncate(string(self.Body), 200))
+	}
 	sawUnlimited := false
 	unlimitedSource := ""
 	unlimitedStatus := 0
