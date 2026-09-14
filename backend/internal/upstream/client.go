@@ -24,6 +24,13 @@ func NewClient() *Client {
 	}
 }
 
+// WithTimeout returns an independent client configuration with the same transport.
+func (c *Client) WithTimeout(timeout time.Duration) *Client {
+	cloned := *c.http
+	cloned.Timeout = timeout
+	return &Client{http: &cloned}
+}
+
 func NewStreamingClient() *Client {
 	// Slightly above the gateway's 300s overall deadline so the request
 	// context (sync 300s / stream first-token 30s) wins.

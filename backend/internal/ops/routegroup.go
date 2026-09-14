@@ -31,7 +31,7 @@ func RouteGroupMatches(g *domain.RouteGroup, protocol, model string) bool {
 }
 
 // RateInRange reports whether a key rate sits inside the route group's optional
-// reference range. Unset bounds are open.
+// reference range [min, max). Unset bounds are unrestricted.
 func RateInRange(g *domain.RouteGroup, rate float64) bool {
 	if g == nil {
 		return true
@@ -39,7 +39,7 @@ func RateInRange(g *domain.RouteGroup, rate float64) bool {
 	if g.RateMin != nil && rate < *g.RateMin {
 		return false
 	}
-	if g.RateMax != nil && rate > *g.RateMax {
+	if g.RateMax != nil && rate >= *g.RateMax {
 		return false
 	}
 	return true

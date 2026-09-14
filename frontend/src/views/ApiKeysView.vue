@@ -97,7 +97,7 @@ function rateRangeText(g: RouteGroup) {
   const min = g.rate_min ?? null
   const max = g.rate_max ?? null
   if (min === null && max === null) return '不限'
-  return `${min === null ? '0' : `×${formatRate(min)}`} ~ ${max === null ? '∞' : `×${formatRate(max)}`}`
+  return `[${min === null ? '0' : `×${formatRate(min)}`}, ${max === null ? '∞' : `×${formatRate(max)}`})`
 }
 
 function renderGroupOption(option: SelectOption) {
@@ -708,9 +708,9 @@ onMounted(() => {
         </n-form-item>
         <n-form-item label="参考倍率">
           <n-space align="center" :wrap="false">
-            <n-input-number v-model:value="groupForm.rate_min" :min="0" :step="0.01" clearable placeholder="下限" style="width: 140px" />
+            <n-input-number v-model:value="groupForm.rate_min" :min="0" :step="0.01" clearable placeholder="下限（含）" style="width: 140px" />
             <span class="muted">~</span>
-            <n-input-number v-model:value="groupForm.rate_max" :min="0" :step="0.01" clearable placeholder="上限" style="width: 140px" />
+            <n-input-number v-model:value="groupForm.rate_max" :min="0" :step="0.01" clearable placeholder="上限（不含）" style="width: 140px" />
           </n-space>
           <template #feedback>
             <span class="muted">可选。成员倍率漂出区间会被标红，并在调度时跳过</span>

@@ -551,7 +551,7 @@ func (h *Admin) RouteGroupCandidates(c *gin.Context) {
 		if k.Upstream != nil {
 			d.UpstreamName = k.Upstream.Name
 			d.UpstreamKind = k.Upstream.Kind
-			d.Protocols = k.Upstream.ProtocolList()
+			d.Protocols = k.EffectiveProtocols()
 			d.LastBalance = k.Upstream.LastBalance
 		}
 		out = append(out, d)

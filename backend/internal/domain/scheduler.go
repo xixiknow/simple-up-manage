@@ -6,6 +6,7 @@ import (
 )
 
 type SchedulerSettings struct {
+	ProbeTimeoutSec  int     `gorm:"not null;default:30" json:"probe_timeout_sec"`
 	ID               uint    `gorm:"primaryKey" json:"id"`
 	WeightSuccess    float64 `gorm:"type:decimal(8,4);not null;default:0.45" json:"weight_success"`
 	WeightCache      float64 `gorm:"type:decimal(8,4);not null;default:0.30" json:"weight_cache"`
@@ -47,6 +48,7 @@ func (s *SchedulerSettings) ModelFilterEnabled() bool {
 func DefaultSchedulerSettings() SchedulerSettings {
 	filter := true
 	return SchedulerSettings{
+		ProbeTimeoutSec:     30,
 		FilterByModels:      &filter,
 		WeightSuccess:       0.45,
 		WeightCache:         0.30,
@@ -124,6 +126,12 @@ func (s *SchedulerSettings) ConfiguredProbeModels() map[string]string {
 }
 
 func (s *SchedulerSettings) Normalize() {
+	if s.ProbeTimeoutSec <= 0 {
+		s.ProbeTimeoutSec = 30
+	}
+	if s.ProbeTimeoutSec > 300 {
+		s.ProbeTimeoutSec = 300
+	}
 	d := DefaultSchedulerSettings()
 	if s.WeightSuccess < 0 {
 		s.WeightSuccess = 0

@@ -67,13 +67,13 @@ function rateRangeText(g: RouteGroup | null) {
   const min = g.rate_min ?? null
   const max = g.rate_max ?? null
   if (min === null && max === null) return ''
-  return `${min === null ? '0' : fmtRate(min)} ~ ${max === null ? '∞' : fmtRate(max)}`
+  return `[${min === null ? '0' : fmtRate(min)}, ${max === null ? '∞' : fmtRate(max)})`
 }
 
 function inRange(g: RouteGroup | null, rate: number) {
   if (!g) return true
-  if (g.rate_min !== null && g.rate_min !== undefined && rate < g.rate_min - 1e-9) return false
-  if (g.rate_max !== null && g.rate_max !== undefined && rate > g.rate_max + 1e-9) return false
+  if (g.rate_min !== null && g.rate_min !== undefined && rate < g.rate_min) return false
+  if (g.rate_max !== null && g.rate_max !== undefined && rate >= g.rate_max) return false
   return true
 }
 
@@ -113,8 +113,8 @@ const visibleCandidates = computed(() => {
   return candidates.value.filter((c) => {
     if (filters.upstream && c.upstream_id !== filters.upstream) return false
     if (filters.protocol && !c.protocols.includes(filters.protocol)) return false
-    if (filters.rateMin !== null && c.rate_multiplier < filters.rateMin - 1e-9) return false
-    if (filters.rateMax !== null && c.rate_multiplier > filters.rateMax + 1e-9) return false
+    if (filters.rateMin !== null && c.rate_multiplier < filters.rateMin) return false
+    if (filters.rateMax !== null && c.rate_multiplier >= filters.rateMax) return false
     if (filters.onlyUnassigned) {
       const others = c.route_group_ids.filter((id) => id !== current)
       if (others.length > 0) return false
@@ -141,7 +141,7 @@ const sections = computed<UpstreamSection[]>(() => {
       id: upstreamId,
       name: first.upstream_name,
       kind: first.upstream_kind,
-      protocols: first.protocols,
+      protocols: [...new Set(keys.flatMap((key) => key.protocols))],
       keyIds: keys.map((c) => c.id),
       keys,
     })
@@ -285,7 +285,7 @@ function requestClose(next: boolean) {
             <n-input-number
               v-model:value="filters.rateMax"
               size="small"
-              placeholder="≤"
+              placeholder="<"
               :step="0.01"
               :min="0"
               :show-button="false"

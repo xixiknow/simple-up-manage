@@ -73,6 +73,9 @@ const busy = ref<string | null>(null)
 const live = ref(true)
 const lastRefresh = ref('')
 let timer: number | undefined
+const statusNow = ref(Date.now())
+let statusTimer: number | undefined
+onMounted(() => { statusTimer = window.setInterval(() => { statusNow.value = Date.now() }, 1000) })
 
 const LIVE_MS = 15_000
 const LOW_BALANCE = 50
@@ -158,7 +161,7 @@ const rows = computed<ProviderRow[]>(() => {
   return visibleIds.value.flatMap<ProviderRow>((id) => {
     const upstream = providerMap.value.get(id)
     if (!upstream) return []
-    const group = grouped.get(id) ?? []
+    const group = (grouped.get(id) ?? []).sort((a, b) => a.rate_multiplier - b.rate_multiplier || a.id - b.id)
     if (!group.length) return [{ id: `up-${id}`, upstream, key: null, span: 1, first: true }]
     return group.map((key, i) => ({ id: `key-${key.id}`, upstream, key, span: i === 0 ? group.length : 0, first: i === 0 }))
   })
@@ -439,6 +442,8 @@ const editingKey = ref<PlatformKey | null>(null)
 const keyHost = ref<Upstream | null>(null)
 const keyFormRef = ref<FormInst | null>(null)
 const keyForm = reactive({
+  inherit_protocols: true,
+  protocols: [] as Protocol[],
   name_tag: '',
   api_key: '',
   rate_multiplier: 1 as number | null,
@@ -461,6 +466,8 @@ function openCreateKey(up: Upstream) {
   editingKey.value = null
   keyHost.value = up
   Object.assign(keyForm, {
+    inherit_protocols: true,
+    protocols: [...up.protocols],
     name_tag: '',
     api_key: '',
     rate_multiplier: null,
@@ -477,6 +484,8 @@ function openEditKey(row: PlatformKey) {
   editingKey.value = row
   keyHost.value = items.value.find((u) => u.id === row.upstream_id) ?? null
   Object.assign(keyForm, {
+    inherit_protocols: !row.protocols?.length,
+    protocols: [...(row.protocols?.length ? row.protocols : keyHost.value?.protocols || [])],
     name_tag: row.name_tag || inferNameTag(row.name, keyHost.value?.name),
     api_key: '',
     rate_multiplier: row.rate_multiplier ?? 1,
@@ -497,10 +506,15 @@ async function saveKey() {
   }
   const up = keyHost.value
   if (!up) return
+  if (!keyForm.inherit_protocols && !keyForm.protocols.length) {
+    message.warning('至少选择一种协议')
+    return
+  }
   keySaving.value = true
   try {
     const tag = keyForm.name_tag.trim()
     const payload: PlatformKeyPayload = {
+      protocols: keyForm.inherit_protocols ? [] : keyForm.protocols,
       name_tag: tag,
       api_key: keyForm.api_key.trim() || undefined,
       billing_group: keyFormIsNewAPI.value ? keyForm.billing_group.trim() : '',
@@ -810,10 +824,10 @@ const columns = computed<DataTableColumns<ProviderRow>>(() => {
       h('div', { class: 'provider-meta' }, [
         h(StatusTag, { status: up.status }),
         h(NTooltip, null, {
-          trigger: () => h(HealthTag, { status: up.health_status || 'healthy' }),
-          default: () => up.cooldown_until
+          trigger: () => h(HealthTag, { status: up.health_status === 'cooldown' && (!up.cooldown_until || new Date(up.cooldown_until).getTime() <= statusNow.value) ? 'healthy' : up.health_status || 'healthy' }),
+          default: () => up.cooldown_until && new Date(up.cooldown_until).getTime() > statusNow.value
             ? `冷却至 ${formatTime(up.cooldown_until)}${up.last_error ? ` · ${up.last_error}` : ''}`
-            : (up.last_error || '提供商运行状态'),
+            : (up.last_error ? `最近故障：${up.last_error}` : '提供商运行状态'),
         }),
         h('span', KIND_LABEL[up.kind]),
       ]),
@@ -846,6 +860,10 @@ const columns = computed<DataTableColumns<ProviderRow>>(() => {
         if (key === 'name') return h('div', { class: 'key-name', title: row.key.name }, [
           h('span', row.key.name_tag || inferNameTag(row.key.name, row.upstream.name)),
           h('small', { class: 'preview' }, row.key.key_preview),
+          h(NTooltip, {}, {
+            trigger: () => h('small', { class: 'muted' }, (row.key?.effective_protocols ?? row.upstream.protocols).map(p => PROTOCOL_LABEL[p]).join(' / ')),
+            default: () => row.key?.protocols?.length ? '单独配置' : '继承提供商',
+          }),
         ])
         return original.render ? original.render(row.key, index) : String(row.key[key as keyof PlatformKey] ?? '')
       },
@@ -891,6 +909,7 @@ watch(live, (on) => {
 })
 
 onUnmounted(() => {
+  if (statusTimer != null) window.clearInterval(statusTimer)
   disposed = true
   loadSequence++
   stopLive()
@@ -1023,6 +1042,16 @@ onUnmounted(() => {
             show-password-on="click"
             :placeholder="editingKey ? '留空则不修改' : '仅此次提交，列表不会回显'"
           />
+        </n-form-item>
+        <n-form-item label="继承提供商协议">
+          <n-switch v-model:value="keyForm.inherit_protocols" />
+        </n-form-item>
+        <n-form-item v-if="!keyForm.inherit_protocols" label="协议" path="protocols">
+          <n-checkbox-group v-model:value="keyForm.protocols">
+            <n-space>
+              <n-checkbox v-for="p in keyHost?.protocols || []" :key="p" :value="p">{{ PROTOCOL_LABEL[p] }}</n-checkbox>
+            </n-space>
+          </n-checkbox-group>
         </n-form-item>
         <n-form-item label="倍率" path="rate_multiplier">
           <div class="rate-field">

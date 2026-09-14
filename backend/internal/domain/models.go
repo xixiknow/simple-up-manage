@@ -74,6 +74,7 @@ func (u *Upstream) Supports(protocol string) bool {
 }
 
 type PlatformKey struct {
+	Protocols  string `gorm:"size:128;not null;default:''" json:"-"`
 	ID         uint   `gorm:"primaryKey" json:"id"`
 	UpstreamID uint   `gorm:"index;not null" json:"upstream_id"`
 	Name       string `gorm:"size:256;not null" json:"name"`
@@ -115,8 +116,34 @@ type PlatformKey struct {
 	Upstream *Upstream `gorm:"constraint:OnDelete:CASCADE" json:"-"`
 }
 
-// EffectiveBillingGroup returns the new-api group name to look up, defaulting
-// to "default" when unset.
+// EffectiveProtocols applies the provider's protocol ceiling to this key.
+func (k *PlatformKey) EffectiveProtocols() []string {
+	out := []string{}
+	if k == nil || k.Upstream == nil {
+		return out
+	}
+	configured := SplitCSV(k.Protocols)
+	if len(configured) == 0 {
+		configured = k.Upstream.ProtocolList()
+	}
+	for _, p := range configured {
+		if ValidProtocol(p) && k.Upstream.Supports(p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func (k *PlatformKey) SupportsProtocol(protocol string) bool {
+	for _, p := range k.EffectiveProtocols() {
+		if p == protocol {
+			return true
+		}
+	}
+	return false
+}
+
+// EffectiveBillingGroup returns the new-api group name, defaulting to "default".
 func (k *PlatformKey) EffectiveBillingGroup() string {
 	if g := strings.TrimSpace(k.BillingGroup); g != "" {
 		return g

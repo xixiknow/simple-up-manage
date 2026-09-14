@@ -58,6 +58,8 @@ export type ChannelScoreMeta = {
 }
 
 export type PlatformKey = {
+  protocols?: Protocol[]
+  effective_protocols?: Protocol[]
   id: number
   upstream_id: number
   upstream_name?: string
@@ -286,6 +288,7 @@ export type UpstreamPayload = {
 }
 
 export type PlatformKeyPayload = {
+  protocols?: Protocol[]
   name?: string
   name_tag: string
   api_key?: string
@@ -306,6 +309,7 @@ export type ConsumerKeyPayload = {
 }
 
 export type SchedulerSettings = {
+  probe_timeout_sec: number
   ranking_mode: 'adaptive' | 'fixed_order' | 'cache_affinity' | 'load_balance'
   weight_success: number
   weight_cache: number
@@ -399,6 +403,7 @@ export type SchedulerExplain = {
 }
 
 export type RequestLogQuery = ListParams & {
+  consumer_key_id?: number
   snapshot_id?: number
   snapshot_at?: string
   upstream_id?: number

@@ -34,6 +34,10 @@ type upstreamSummary struct {
 }
 
 func toUpstreamDTO(u domain.Upstream) upstreamDTO {
+	if u.HealthStatus == domain.HealthCooldown && (u.CooldownUntil == nil || !u.CooldownUntil.After(time.Now())) {
+		u.HealthStatus = domain.HealthHealthy
+		u.CooldownUntil = nil
+	}
 	return upstreamDTO{
 		ID:            u.ID,
 		Name:          u.Name,
@@ -74,6 +78,8 @@ type scoreMeta struct {
 }
 
 type keyDTO struct {
+	Protocols           []string    `json:"protocols"`
+	EffectiveProtocols  []string    `json:"effective_protocols"`
 	ID                  uint        `json:"id"`
 	UpstreamID          uint        `json:"upstream_id"`
 	UpstreamName        string      `json:"upstream_name,omitempty"`
@@ -136,6 +142,8 @@ func toRouteGroupRefs(groups []domain.RouteGroup) []refDTO {
 
 func toKeyDTO(k domain.PlatformKey) keyDTO {
 	d := keyDTO{
+		Protocols:           append([]string{}, domain.SplitCSV(k.Protocols)...),
+		EffectiveProtocols:  k.EffectiveProtocols(),
 		ID:                  k.ID,
 		UpstreamID:          k.UpstreamID,
 		Name:                k.Name,

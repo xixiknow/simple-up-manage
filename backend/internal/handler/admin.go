@@ -163,6 +163,24 @@ func (h *Admin) UpdateUpstream(c *gin.Context) {
 		return
 	}
 	next.ID = u.ID
+	var protocolKeys []domain.PlatformKey
+	if err := h.DB.Where("upstream_id = ?", u.ID).Find(&protocolKeys).Error; err != nil {
+		httpx.Internal(c, err.Error())
+		return
+	}
+	var affected []string
+	for _, key := range protocolKeys {
+		for _, p := range domain.SplitCSV(key.Protocols) {
+			if !next.Supports(p) {
+				affected = append(affected, fmt.Sprintf("%s (#%d)", key.Name, key.ID))
+				break
+			}
+		}
+	}
+	if len(affected) > 0 {
+		httpx.BadRequest(c, "协议仍被 Key 使用: "+strings.Join(affected, ", "))
+		return
+	}
 	next.CreatedAt = u.CreatedAt
 	if err := h.DB.Save(next).Error; err != nil {
 		httpx.Internal(c, err.Error())
@@ -172,6 +190,9 @@ func (h *Admin) UpdateUpstream(c *gin.Context) {
 		_ = h.recomposeKeyNames(c.Request.Context(), next.ID, next.Name)
 	}
 	_ = h.Ops.RefreshAllHealth(c.Request.Context())
+	if h.Picker != nil {
+		h.Picker.Reload()
+	}
 	httpx.OK(c, toUpstreamDTO(*next))
 }
 
@@ -337,20 +358,33 @@ func (h *Admin) ListUpstreamKeys(c *gin.Context) {
 }
 
 type keyBody struct {
-	Name             string   `json:"name"`
-	NameTag          string   `json:"name_tag"`
-	APIKey           string   `json:"api_key"`
-	Status           string   `json:"status"`
-	Concurrency      *int     `json:"concurrency"`
-	RateMultiplier   *float64 `json:"rate_multiplier"`
-	BillingGroup     *string  `json:"billing_group"`
-	ProbeIntervalSec *int     `json:"probe_interval_sec"`
-	RPMLimit         *int     `json:"rpm_limit"`
-	MaxConcurrency   *int     `json:"max_concurrency"`
+	Protocols        *[]string `json:"protocols"`
+	Name             string    `json:"name"`
+	NameTag          string    `json:"name_tag"`
+	APIKey           string    `json:"api_key"`
+	Status           string    `json:"status"`
+	Concurrency      *int      `json:"concurrency"`
+	RateMultiplier   *float64  `json:"rate_multiplier"`
+	BillingGroup     *string   `json:"billing_group"`
+	ProbeIntervalSec *int      `json:"probe_interval_sec"`
+	RPMLimit         *int      `json:"rpm_limit"`
+	MaxConcurrency   *int      `json:"max_concurrency"`
 }
 
 func validRate(r float64) bool {
 	return r >= 0 && r <= 1000
+}
+
+func keyProtocols(values []string, up *domain.Upstream) (string, error) {
+	for _, p := range values {
+		if !domain.ValidProtocol(strings.TrimSpace(p)) {
+			return "", errors.New("protocol must be openai or anthropic")
+		}
+		if !up.Supports(strings.TrimSpace(p)) {
+			return "", errors.New("key protocols must be enabled on the upstream")
+		}
+	}
+	return domain.JoinCSV(domain.NormalizeStrings(values)), nil
 }
 
 func (h *Admin) CreateUpstreamKey(c *gin.Context) {
@@ -448,6 +482,13 @@ func (h *Admin) CreateUpstreamKey(c *gin.Context) {
 		RPMLimit:         rpmLimit,
 		MaxConcurrency:   maxConcurrency,
 	}
+	if body.Protocols != nil {
+		k.Protocols, err = keyProtocols(*body.Protocols, &up)
+		if err != nil {
+			httpx.BadRequest(c, err.Error())
+			return
+		}
+	}
 	if err := h.DB.Create(&k).Error; err != nil {
 		httpx.Internal(c, err.Error())
 		return
@@ -455,6 +496,9 @@ func (h *Admin) CreateUpstreamKey(c *gin.Context) {
 	_ = h.Ops.RefreshKeyHealth(c.Request.Context(), k.ID)
 	h.Ops.BootstrapKey(c.Request.Context(), k.ID)
 	_ = h.DB.Preload("Upstream").First(&k, k.ID)
+	if h.Picker != nil {
+		h.Picker.Reload()
+	}
 	httpx.Created(c, h.keyOut(k))
 }
 
@@ -560,6 +604,14 @@ func (h *Admin) UpdateKey(c *gin.Context) {
 		}
 		updates["max_concurrency"] = *body.MaxConcurrency
 	}
+	if body.Protocols != nil {
+		protocols, err := keyProtocols(*body.Protocols, &up)
+		if err != nil {
+			httpx.BadRequest(c, err.Error())
+			return
+		}
+		updates["protocols"] = protocols
+	}
 	if len(updates) > 0 {
 		if err := h.DB.Model(&k).Updates(updates).Error; err != nil {
 			httpx.Internal(c, err.Error())
@@ -575,6 +627,9 @@ func (h *Admin) UpdateKey(c *gin.Context) {
 		h.Ops.BootstrapKey(c.Request.Context(), k.ID)
 	}
 	_ = h.DB.Preload("Upstream").First(&k, k.ID)
+	if h.Picker != nil {
+		h.Picker.Reload()
+	}
 	httpx.OK(c, h.keyOut(k))
 }
 
@@ -1057,6 +1112,14 @@ func (h *Admin) ListRequestLogs(c *gin.Context) {
 		snapshotAt = parsed.UTC()
 	}
 	q := h.DB.Model(&domain.RequestLog{})
+	if v := strings.TrimSpace(c.Query("consumer_key_id")); v != "" {
+		id, err := strconv.ParseUint(v, 10, 64)
+		if err != nil || id == 0 {
+			httpx.BadRequest(c, "invalid consumer_key_id")
+			return
+		}
+		q = q.Where("consumer_key_id = ?", id)
+	}
 	if v := strings.TrimSpace(c.Query("upstream_id")); v != "" {
 		q = q.Where("upstream_id = ?", v)
 	}

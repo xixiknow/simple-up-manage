@@ -78,6 +78,7 @@ const form = reactive<SchedulerSettings>({
   failure_window_sec: 60,
   failure_threshold: 8,
   probe_openai_model: 'gpt-4o-mini',
+  probe_timeout_sec: 30,
   probe_anthropic_model: 'claude-3-haiku-20240307',
   probe_grok_model: 'grok-3-mini',
   probe_zhipu_model: 'glm-4.5-flash',
@@ -452,6 +453,9 @@ onMounted(async () => {
             :loading="syncingCatalog"
             @update:value="(value: string) => setProbeValue(vendor, value)"
           />
+        </n-form-item>
+        <n-form-item label="探测超时（秒）">
+          <n-input-number v-model:value="form.probe_timeout_sec" :min="1" :max="300" :precision="0" :step="5" style="width: 100%" />
         </n-form-item>
       </n-form>
     </n-card>

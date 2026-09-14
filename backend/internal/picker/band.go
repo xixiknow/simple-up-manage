@@ -385,7 +385,7 @@ func hardReject(key *domain.PlatformKey, protocol, model string, filterByModels 
 	if key.Upstream.CooldownUntil != nil && key.Upstream.CooldownUntil.After(time.Now()) {
 		return "provider_cooldown"
 	}
-	if !key.Upstream.Supports(protocol) {
+	if !key.SupportsProtocol(protocol) {
 		return "protocol_mismatch"
 	}
 	if filterByModels && !key.SupportsModel(model) {

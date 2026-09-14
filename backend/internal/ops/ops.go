@@ -147,11 +147,22 @@ func (s *Service) ProbeKey(ctx context.Context, keyID uint, deep bool) (*ProbeOu
 	}
 	start := time.Now()
 	probeAt := s.DB.NowFunc()
+	settings := s.probeSettings(ctx)
+	timeout := time.Duration(settings.ProbeTimeoutSec) * time.Second
+	probeCtx, cancelProbe := context.WithTimeout(ctx, timeout)
+	defer cancelProbe()
+	// Keep the regular management client and the result-persistence context intact.
+	probeService := *s
+	probeService.Client = s.Client.WithTimeout(timeout)
 	var outcome ProbeOutcome
 	if deep {
-		outcome = s.deepProbe(ctx, &key, apiKey)
+		outcome = probeService.deepProbe(probeCtx, &key, apiKey)
 	} else {
-		outcome = s.lightProbe(ctx, &key, apiKey)
+		outcome = probeService.lightProbe(probeCtx, &key, apiKey)
+	}
+	if probeCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+		outcome.Success = false
+		outcome.Error = fmt.Sprintf("probe timed out after %d seconds", settings.ProbeTimeoutSec)
 	}
 	outcome.LatencyMs = int(time.Since(start).Milliseconds())
 
@@ -206,19 +217,19 @@ func (s *Service) ProbeKey(ctx context.Context, keyID uint, deep bool) (*ProbeOu
 	return &outcome, nil
 }
 
-// modelsHeaders returns extra headers for GET /v1/models. Anthropic-only
-// upstreams need x-api-key + anthropic-version; everyone else is fine with the
-// Bearer token GetJSON already sets.
-func modelsHeaders(up *domain.Upstream, apiKey string) http.Header {
-	if up != nil && up.Supports(domain.ProtocolAnthropic) && !up.Supports(domain.ProtocolOpenAI) {
+// getModels performs GET /v1/models against the key's upstream.
+func (s *Service) getModels(ctx context.Context, key *domain.PlatformKey, apiKey string) (*upstream.Result, error) {
+	if len(key.EffectiveProtocols()) == 0 {
+		return nil, fmt.Errorf("key has no effective protocol")
+	}
+	return s.Client.GetJSONWithHeaders(ctx, key.Upstream.BaseURL, "/v1/models", apiKey, keyProtocolHeaders(key, apiKey))
+}
+
+func keyProtocolHeaders(key *domain.PlatformKey, apiKey string) http.Header {
+	if key.SupportsProtocol(domain.ProtocolAnthropic) && !key.SupportsProtocol(domain.ProtocolOpenAI) {
 		return upstream.AnthropicHeaders(apiKey)
 	}
 	return nil
-}
-
-// getModels performs GET /v1/models against the key's upstream.
-func (s *Service) getModels(ctx context.Context, key *domain.PlatformKey, apiKey string) (*upstream.Result, error) {
-	return s.Client.GetJSONWithHeaders(ctx, key.Upstream.BaseURL, "/v1/models", apiKey, modelsHeaders(key.Upstream, apiKey))
 }
 
 // storeModels persists a freshly fetched model list on the key.
@@ -332,10 +343,13 @@ func usageProbePath(up *domain.Upstream) string {
 }
 
 func (s *Service) lightProbe(ctx context.Context, key *domain.PlatformKey, apiKey string) ProbeOutcome {
+	if len(key.EffectiveProtocols()) == 0 {
+		return ProbeOutcome{Error: "key has no effective protocol"}
+	}
 	usagePath := usageProbePath(key.Upstream)
 	res, err := s.getModels(ctx, key, apiKey)
 	if err != nil {
-		res, err2 := s.Client.GetJSON(ctx, key.Upstream.BaseURL, usagePath, apiKey)
+		res, err2 := s.Client.GetJSONWithHeaders(ctx, key.Upstream.BaseURL, usagePath, apiKey, keyProtocolHeaders(key, apiKey))
 		if err2 != nil {
 			return ProbeOutcome{Error: err.Error()}
 		}
@@ -352,7 +366,7 @@ func (s *Service) lightProbe(ctx context.Context, key *domain.PlatformKey, apiKe
 		return ProbeOutcome{Success: true, StatusCode: res.Status, Models: len(ids)}
 	}
 	if res.Status == 404 {
-		u, err := s.Client.GetJSON(ctx, key.Upstream.BaseURL, usagePath, apiKey)
+		u, err := s.Client.GetJSONWithHeaders(ctx, key.Upstream.BaseURL, usagePath, apiKey, keyProtocolHeaders(key, apiKey))
 		if err != nil {
 			return ProbeOutcome{StatusCode: res.Status, Error: truncate(string(res.Body), 500)}
 		}
@@ -378,6 +392,9 @@ func (s *Service) deepProbe(ctx context.Context, key *domain.PlatformKey, apiKey
 	var catalog []domain.CatalogModel
 	_ = s.DB.WithContext(ctx).Find(&catalog).Error
 	target := PickProbeTarget(key, cfg, catalog)
+	if target.Protocol == "" {
+		return ProbeOutcome{Error: "key has no effective protocol"}
+	}
 	if target.Protocol == domain.ProtocolAnthropic {
 		body := map[string]any{
 			"model":      target.Model,
@@ -385,7 +402,7 @@ func (s *Service) deepProbe(ctx context.Context, key *domain.PlatformKey, apiKey
 			"messages":   []map[string]any{{"role": "user", "content": "hi"}},
 			"stream":     false,
 		}
-		extra := map[string][]string{"Anthropic-Version": {"2023-06-01"}}
+		extra := upstream.AnthropicHeaders(apiKey)
 		res, err := s.Client.PostJSON(ctx, key.Upstream.BaseURL, "/v1/messages", apiKey, body, extra)
 		return probeHTTPOutcome(res, err, target)
 	}

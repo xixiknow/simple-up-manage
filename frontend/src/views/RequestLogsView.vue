@@ -2,7 +2,7 @@
 import { computed, h, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { NTag, NTimeline, NTimelineItem, useMessage } from 'naive-ui'
 import type { DataTableColumns, SelectOption } from 'naive-ui'
-import { allPages, getRequestLog, listKeyOptions, listRequestLogs, listUpstreams } from '@/api/admin'
+import { allPages, getRequestLog, listConsumerKeys, listKeyOptions, listRequestLogs, listUpstreams } from '@/api/admin'
 import type { RequestLog, RequestLogDetail, RequestLogQuery } from '@/api/types'
 import { copyText, errText, formatMoney, formatNumber, formatSeconds, formatTime, formatTokenCount, formatTps } from '@/utils/format'
 
@@ -22,8 +22,10 @@ const live = ref(true)
 const lastRefresh = ref('')
 const upstreamOptions = ref<SelectOption[]>([])
 const keyOptions = ref<SelectOption[]>([])
+const consumerOptions = ref<SelectOption[]>([])
 
 const filters = reactive({
+  consumer_key_id: null as number | null,
   upstream_id: null as number | null,
   key_id: null as number | null,
   model: '',
@@ -87,7 +89,8 @@ function stopClock() {
 }
 
 async function loadOptions() {
-  const [up, keys] = await Promise.all([allPages(listUpstreams), allPages(listKeyOptions)])
+  const [up, keys, consumers] = await Promise.all([allPages(listUpstreams), allPages(listKeyOptions), allPages(listConsumerKeys)])
+  consumerOptions.value = consumers.map((k) => ({ label: `${k.name} (${k.key_preview})`, value: k.id }))
   upstreamOptions.value = up.map((u) => ({ label: u.name, value: u.id }))
   keyOptions.value = keys.map((k) => ({ label: `${k.name} (${k.key_preview})`, value: k.id }))
 }
@@ -149,6 +152,7 @@ function search() {
   appliedFilters.value = {
     upstream_id: filters.upstream_id || undefined,
     key_id: filters.key_id || undefined,
+    consumer_key_id: filters.consumer_key_id || undefined,
     model: filters.model.trim() || undefined,
     success: filters.success === '' ? undefined : filters.success === 'true',
     from: filters.range ? new Date(filters.range[0]).toISOString() : undefined,
@@ -160,6 +164,7 @@ function search() {
 function reset() {
   filters.upstream_id = null
   filters.key_id = null
+  filters.consumer_key_id = null
   filters.model = ''
   filters.success = ''
   filters.range = null
@@ -434,6 +439,7 @@ onUnmounted(() => {
           placeholder="Key"
           style="width: 220px"
         />
+        <n-select v-model:value="filters.consumer_key_id" :options="consumerOptions" clearable filterable placeholder="API 密钥" style="width: 220px" />
         <n-input v-model:value="filters.model" clearable placeholder="模型" style="width: 160px" />
         <n-select v-model:value="filters.success" :options="successOptions" placeholder="成败" style="width: 110px" />
         <n-date-picker

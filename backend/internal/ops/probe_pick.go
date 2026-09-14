@@ -14,12 +14,15 @@ type ProbeTarget struct {
 
 func PickProbeTarget(key *domain.PlatformKey, cfg domain.SchedulerSettings, catalog []domain.CatalogModel) ProbeTarget {
 	cfg.Normalize()
+	if key == nil || len(key.EffectiveProtocols()) == 0 {
+		return ProbeTarget{}
+	}
 	fallback := ProbeTarget{
 		Vendor:   domain.VendorOpenAI,
 		Model:    cfg.ProbeOpenAIModel,
 		Protocol: domain.ProtocolOpenAI,
 	}
-	if key != nil && key.Upstream != nil && key.Upstream.Supports(domain.ProtocolAnthropic) {
+	if key.SupportsProtocol(domain.ProtocolAnthropic) {
 		fallback = ProbeTarget{
 			Vendor:   domain.VendorAnthropic,
 			Model:    cfg.ProbeAnthropicModel,
@@ -42,6 +45,9 @@ func PickProbeTarget(key *domain.PlatformKey, cfg domain.SchedulerSettings, cata
 	var hits []hit
 	costs := catalogCosts(catalog)
 	for i, v := range domain.ProbeVendors() {
+		if !key.SupportsProtocol(domain.VendorProtocol(v.ID)) {
+			continue
+		}
 		model := configured[v.ID]
 		if model == "" {
 			continue
@@ -77,6 +83,9 @@ func PickProbeTarget(key *domain.PlatformKey, cfg domain.SchedulerSettings, cata
 	bestVotes := 0
 	bestOrder := 99
 	for i, v := range domain.ProbeVendors() {
+		if !key.SupportsProtocol(domain.VendorProtocol(v.ID)) {
+			continue
+		}
 		n := votes[v.ID]
 		if n > bestVotes || (n == bestVotes && n > 0 && i < bestOrder) {
 			bestVendor = v.ID
