@@ -16,7 +16,8 @@ const labels: Record<PulseState, string> = {
   empty: '无数据',
 }
 
-const cells = computed(() => props.cells || [])
+const cells = computed(() => (props.cells || []).slice(-60))
+const emptyCount = computed(() => 60 - cells.value.length)
 
 function cellClass(cell: HealthPulseCell) {
   if (cell.state === 'empty' || (cell.ok || 0) + (cell.fail || 0) === 0) return 'empty'
@@ -43,6 +44,12 @@ function lines(cell: HealthPulseCell) {
 
 <template>
   <div class="pulse">
+    <span
+      v-for="i in emptyCount"
+      :key="`placeholder-${i}`"
+      class="pulse-cell empty"
+      aria-hidden="true"
+    />
     <n-tooltip
       v-for="(cell, i) in cells"
       :key="`${cell.start}-${i}`"
@@ -56,7 +63,6 @@ function lines(cell: HealthPulseCell) {
         <div v-for="(line, li) in lines(cell)" :key="li" :class="{ title: li === 0 }">{{ line }}</div>
       </div>
     </n-tooltip>
-    <span v-if="!cells.length" class="pulse-empty">暂无历史</span>
   </div>
 </template>
 
@@ -92,11 +98,6 @@ function lines(cell: HealthPulseCell) {
 }
 .pulse-cell.bad {
   background: #ef4444;
-}
-.pulse-empty {
-  grid-column: 1 / -1;
-  color: #98a2b3;
-  font-size: 12px;
 }
 .tip .title {
   font-weight: 600;
