@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { HealthPulseCell, PulseState } from '@/api/types'
-import { formatDurationMs } from '@/utils/format'
+import { formatDurationMs, formatTime } from '@/utils/format'
 
 const props = defineProps<{
   cells?: HealthPulseCell[] | null
@@ -18,13 +18,6 @@ const labels: Record<PulseState, string> = {
 
 const cells = computed(() => props.cells || [])
 
-function formatRange(start: string) {
-  const d = new Date(start)
-  if (Number.isNaN(d.getTime())) return start
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}`
-}
-
 function cellClass(cell: HealthPulseCell) {
   if (cell.state === 'empty' || (cell.ok || 0) + (cell.fail || 0) === 0) return 'empty'
   if (cell.state === 'bad' || cell.state === 'mix') return 'bad'
@@ -34,13 +27,13 @@ function cellClass(cell: HealthPulseCell) {
 
 function lines(cell: HealthPulseCell) {
   const total = (cell.ok || 0) + (cell.fail || 0)
-  const out = [formatRange(cell.start)]
+  const out = [formatTime(cell.start)]
   if (cell.state === 'empty' || total === 0) {
     out.push('无探测/请求')
     return out
   }
   out.push(`${labels[cell.state] || cell.state} · 成功 ${cell.ok} / 失败 ${cell.fail}`)
-  out.push(`最近耗时 ${formatDurationMs(cell.last_latency_ms)}`)
+  out.push(`耗时 ${formatDurationMs(cell.last_latency_ms)}`)
   if (total > 1 && cell.latency_p50_ms) {
     out.push(`耗时 p50 ${formatDurationMs(cell.latency_p50_ms)}`)
   }
@@ -69,7 +62,8 @@ function lines(cell: HealthPulseCell) {
 
 <style scoped>
 .pulse {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(60, minmax(2px, 1fr));
   align-items: stretch;
   gap: 1px;
   min-width: 180px;
@@ -100,6 +94,7 @@ function lines(cell: HealthPulseCell) {
   background: #ef4444;
 }
 .pulse-empty {
+  grid-column: 1 / -1;
   color: #98a2b3;
   font-size: 12px;
 }

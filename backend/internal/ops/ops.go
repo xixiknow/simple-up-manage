@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"simple-up-manage/internal/crypto"
@@ -145,6 +146,7 @@ func (s *Service) ProbeKey(ctx context.Context, keyID uint, deep bool) (*ProbeOu
 		kind = domain.ProbeDeep
 	}
 	start := time.Now()
+	probeAt := s.DB.NowFunc()
 	var outcome ProbeOutcome
 	if deep {
 		outcome = s.deepProbe(ctx, &key, apiKey)
@@ -181,6 +183,7 @@ func (s *Service) ProbeKey(ctx context.Context, keyID uint, deep bool) (*ProbeOu
 		LatencyMs:     outcome.LatencyMs,
 		ErrorMessage:  outcome.Error,
 		Extra:         extra,
+		CreatedAt:     probeAt,
 	}).Error
 	_ = s.RefreshKeyHealth(ctx, key.ID)
 	if outcome.Success {
@@ -860,6 +863,8 @@ func (s *Service) ProbeFiltered(ctx context.Context, deep bool, upstreamID *uint
 	return s.probeFilteredAt(ctx, deep, upstreamID, skipRecent, time.Now())
 }
 
+const probeConcurrency = 8
+
 func (s *Service) probeFilteredAt(ctx context.Context, deep bool, upstreamID *uint, skipRecent time.Duration, now time.Time) (int, int, int) {
 	q := s.DB.WithContext(ctx).Where("status = ?", domain.StatusEnabled)
 	if upstreamID != nil && *upstreamID > 0 {
@@ -879,6 +884,7 @@ func (s *Service) probeFilteredAt(ctx context.Context, deep bool, upstreamID *ui
 	recent := s.recentRequestAt(ctx, keys, win, now)
 	probed := s.lastProbeAt(ctx, keys)
 	ok, fail, skipped := 0, 0, 0
+	pending := make(chan uint, len(keys))
 	for _, k := range keys {
 		every := k.ProbeEvery(skipRecent)
 		if skipRecent > 0 && every > 0 {
@@ -888,25 +894,46 @@ func (s *Service) probeFilteredAt(ctx context.Context, deep bool, upstreamID *ui
 				skipped++
 				continue
 			}
-			if t, hit := recent[k.ID]; hit && now.Sub(t) < every {
-				skipped++
-				continue
-			}
-			if k.LastRequestAt != nil && now.Sub(*k.LastRequestAt) < every {
+			// Only completed traffic in this bucket replaces a probe. A request
+			// in the previous bucket cannot supply data for the current one.
+			if t, hit := recent[k.ID]; hit && !t.Before(now.Truncate(every)) {
 				skipped++
 				continue
 			}
 		}
 		if s.throttled(ctx, "probe", k.ID, 30*time.Second) {
+			skipped++
 			continue
 		}
-		out, err := s.ProbeKey(ctx, k.ID, deep)
-		if err != nil || out == nil || !out.Success {
-			fail++
-			continue
-		}
-		ok++
+		pending <- k.ID
 	}
+	close(pending)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	workers := min(probeConcurrency, len(pending))
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for id := range pending {
+				if ctx.Err() != nil {
+					mu.Lock()
+					skipped++
+					mu.Unlock()
+					continue
+				}
+				out, err := s.ProbeKey(ctx, id, deep)
+				mu.Lock()
+				if err != nil || out == nil || !out.Success {
+					fail++
+				} else {
+					ok++
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
 	return ok, fail, skipped
 }
 
@@ -953,7 +980,7 @@ func (s *Service) recentRequestAt(ctx context.Context, keys []domain.PlatformKey
 	}
 	_ = s.DB.WithContext(ctx).Model(&domain.RequestLog{}).
 		Select("platform_key_id, MAX(created_at) as last_at").
-		Where("platform_key_id IN ? AND created_at >= ?", ids, now.Add(-window)).
+		Where("platform_key_id IN ? AND created_at >= ? AND in_flight = ?", ids, now.Add(-window), false).
 		Group("platform_key_id").
 		Scan(&rows).Error
 	for _, r := range rows {
@@ -987,7 +1014,7 @@ func (s *Service) ObserveRequest(ctx context.Context, keyID uint, success bool, 
 	_ = s.RefreshKeyHealth(ctx, keyID)
 }
 
-const PulseBuckets = 60
+const PulseSamples = 60
 const CacheWindow = 15 * time.Minute
 
 // probeDegradedMs matches sub2api V1: a successful check slower than 6s is degraded.
@@ -1008,95 +1035,47 @@ type KeyCache struct {
 	Samples int     `json:"cache_samples"`
 }
 
-type pulseBucket struct {
-	ok, fail int
-	lats     []int
-	lastAt   time.Time
-	lastLat  int
-}
-
 func (s *Service) HealthPulses(ctx context.Context, keyIDs []uint) map[uint][]PulseCell {
 	out := make(map[uint][]PulseCell, len(keyIDs))
-	if len(keyIDs) == 0 {
-		return out
-	}
-	end := time.Now().Truncate(time.Minute)
-	start := end.Add(-time.Duration(PulseBuckets-1) * time.Minute)
-
-	buckets := make(map[uint][]pulseBucket, len(keyIDs))
 	for _, id := range keyIDs {
-		buckets[id] = make([]pulseBucket, PulseBuckets)
-	}
-
-	add := func(keyID uint, at time.Time, success bool, latency int) {
-		if at.Before(start) {
-			return
-		}
-		b := buckets[keyID]
-		if b == nil {
-			b = make([]pulseBucket, PulseBuckets)
-			buckets[keyID] = b
-		}
-		idx := int(at.Sub(start) / time.Minute)
-		if idx < 0 {
-			idx = 0
-		}
-		if idx >= PulseBuckets {
-			idx = PulseBuckets - 1
-		}
-		cell := &b[idx]
-		if success {
-			cell.ok++
-		} else {
-			cell.fail++
-		}
-		if latency > 0 {
-			cell.lats = append(cell.lats, latency)
-		}
-		if cell.lastAt.IsZero() || !at.Before(cell.lastAt) {
-			cell.lastAt = at
-			cell.lastLat = latency
-		}
-	}
-
-	var probes []domain.ProbeLog
-	_ = s.DB.WithContext(ctx).
-		Select("platform_key_id, success, latency_ms, created_at").
-		Where("platform_key_id IN ? AND created_at >= ? AND kind IN ?", keyIDs, start, []string{domain.ProbeLight, domain.ProbeDeep}).
-		Find(&probes).Error
-	for _, p := range probes {
-		add(p.PlatformKeyID, p.CreatedAt, p.Success, p.LatencyMs)
-	}
-
-	var reqs []domain.RequestLog
-	_ = s.DB.WithContext(ctx).
-		Select("platform_key_id, success, duration_ms, created_at").
-		Where("platform_key_id IN ? AND created_at >= ? AND in_flight = ?", keyIDs, start, false).
-		Find(&reqs).Error
-	for _, r := range reqs {
-		if r.PlatformKeyID == nil {
-			continue
-		}
-		add(*r.PlatformKeyID, r.CreatedAt, r.Success, r.DurationMs)
-	}
-
-	for _, id := range keyIDs {
-		cells := make([]PulseCell, PulseBuckets)
-		b := buckets[id]
-		for i := 0; i < PulseBuckets; i++ {
-			src := pulseBucket{}
-			if b != nil {
-				src = b[i]
-			}
+		cells := make([]PulseCell, 0, 2*PulseSamples)
+		add := func(at time.Time, success bool, latency int) {
 			cell := PulseCell{
-				Start:         start.Add(time.Duration(i) * time.Minute),
-				Ok:            src.ok,
-				Fail:          src.fail,
-				LastLatencyMs: src.lastLat,
-				LatencyP50Ms:  medianInt(src.lats),
+				Start:         at,
+				LastLatencyMs: latency,
+				LatencyP50Ms:  latency,
+			}
+			if success {
+				cell.Ok = 1
+			} else {
+				cell.Fail = 1
 			}
 			cell.State, cell.Score = pulseScore(cell.Ok, cell.Fail, cell.LatencyP50Ms)
-			cells[i] = cell
+			cells = append(cells, cell)
+		}
+		// Bound each source before merging, even when records span months.
+		var probes []domain.ProbeLog
+		_ = s.DB.WithContext(ctx).
+			Select("success, latency_ms, created_at").
+			Where("platform_key_id = ? AND kind IN ?", id, []string{domain.ProbeLight, domain.ProbeDeep}).
+			Order("created_at DESC, id DESC").Limit(PulseSamples).Find(&probes).Error
+		for _, p := range probes {
+			add(p.CreatedAt, p.Success, p.LatencyMs)
+		}
+		var reqs []domain.RequestLog
+		_ = s.DB.WithContext(ctx).
+			Select("success, duration_ms, created_at").
+			Where("platform_key_id = ? AND in_flight = ?", id, false).
+			Order("created_at DESC, id DESC").Limit(PulseSamples).Find(&reqs).Error
+		for _, r := range reqs {
+			add(r.CreatedAt, r.Success, r.DurationMs)
+		}
+		sort.SliceStable(cells, func(i, j int) bool { return cells[i].Start.After(cells[j].Start) })
+		if len(cells) > PulseSamples {
+			cells = cells[:PulseSamples]
+		}
+		for i, j := 0, len(cells)-1; i < j; i, j = i+1, j-1 {
+			cells[i], cells[j] = cells[j], cells[i]
 		}
 		out[id] = cells
 	}

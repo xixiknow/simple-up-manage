@@ -662,7 +662,7 @@ const keyColumns: DataTableColumns<PlatformKey> = [
     },
   },
   {
-    title: '近 60 分钟',
+    title: '近 60 次',
     key: 'health_pulse',
     width: 240,
     render(row) {

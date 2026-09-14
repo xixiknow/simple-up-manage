@@ -59,7 +59,7 @@ func TestHealthPulsesMixesProbeAndTraffic(t *testing.T) {
 	s := &Service{DB: db}
 	pulses := s.HealthPulses(context.Background(), []uint{keyID})
 	cells := pulses[keyID]
-	if len(cells) != PulseBuckets {
+	if len(cells) != 3 {
 		t.Fatalf("cells=%d", len(cells))
 	}
 	var bad, ok int
@@ -67,7 +67,7 @@ func TestHealthPulsesMixesProbeAndTraffic(t *testing.T) {
 		switch c.State {
 		case "bad":
 			bad++
-			if c.Ok != 1 || c.Fail != 1 {
+			if c.Ok != 0 || c.Fail != 1 {
 				t.Fatalf("bad counts %+v", c)
 			}
 		case "ok":
@@ -75,13 +75,82 @@ func TestHealthPulsesMixesProbeAndTraffic(t *testing.T) {
 			if c.Ok < 1 {
 				t.Fatalf("ok counts %+v", c)
 			}
-			if c.LastLatencyMs != 300 || c.Score != 10 {
+			if (c.LastLatencyMs != 200 && c.LastLatencyMs != 300) || c.Score != 10 {
 				t.Fatalf("ok latency/score %+v", c)
 			}
 		}
 	}
-	if bad != 1 || ok != 1 {
+	if bad != 1 || ok != 2 {
 		t.Fatalf("bad=%d ok=%d", bad, ok)
+	}
+}
+
+func TestHealthPulsesKeepsLatest60RecordsPerKey(t *testing.T) {
+	db := testDB(t)
+	now := time.Now().Truncate(time.Second)
+	keyID, sparseID, emptyID := uint(1), uint(2), uint(3)
+	// Interleave both sources beyond the old one-hour window.
+	for i := 0; i < 140; i++ {
+		at := now.Add(time.Duration(i-140) * time.Hour)
+		var err error
+		if i%2 == 0 {
+			err = db.Create(&domain.ProbeLog{PlatformKeyID: keyID, Kind: domain.ProbeDeep, Success: true, LatencyMs: i + 1, CreatedAt: at}).Error
+		} else {
+			err = db.Create(&domain.RequestLog{PlatformKeyID: &keyID, Success: true, DurationMs: i + 1, CreatedAt: at}).Error
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, kind := range []string{domain.ProbeBalance, domain.ProbeBilling, domain.ProbeModels} {
+		if err := db.Create(&domain.ProbeLog{PlatformKeyID: keyID, Kind: kind, CreatedAt: now}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Create(&domain.RequestLog{PlatformKeyID: &keyID, InFlight: true, CreatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&domain.ProbeLog{PlatformKeyID: sparseID, Kind: domain.ProbeLight, Success: true, LatencyMs: 7000, CreatedAt: now.Add(-24 * time.Hour)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	s := &Service{DB: db}
+	got := s.HealthPulses(context.Background(), []uint{keyID, sparseID, emptyID})
+	if len(got[keyID]) != PulseSamples {
+		t.Fatalf("samples=%d", len(got[keyID]))
+	}
+	for i, cell := range got[keyID] {
+		if cell.LastLatencyMs != i+81 || cell.Ok != 1 || cell.Fail != 0 {
+			t.Fatalf("sample %d: %+v", i, cell)
+		}
+		if i > 0 && !cell.Start.After(got[keyID][i-1].Start) {
+			t.Fatalf("samples are not chronological: %+v", got[keyID])
+		}
+	}
+	if len(got[sparseID]) != 1 || got[sparseID][0].State != "degraded" {
+		t.Fatalf("sparse history padded or dropped: %+v", got[sparseID])
+	}
+	if len(got[emptyID]) != 0 {
+		t.Fatalf("empty history padded: %+v", got[emptyID])
+	}
+}
+
+func TestHealthPulsesOrdersSameTimestampByID(t *testing.T) {
+	db := testDB(t)
+	at := time.Now()
+	for i := 1; i <= 65; i++ {
+		if err := db.Create(&domain.ProbeLog{PlatformKeyID: 1, Kind: domain.ProbeLight, Success: true, LatencyMs: i, CreatedAt: at}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := &Service{DB: db}
+	cells := s.HealthPulses(context.Background(), []uint{1})[1]
+	if len(cells) != PulseSamples {
+		t.Fatalf("samples=%d", len(cells))
+	}
+	for i, cell := range cells {
+		if cell.LastLatencyMs != i+6 {
+			t.Fatalf("sample %d has unstable ordering: %+v", i, cell)
+		}
 	}
 }
 

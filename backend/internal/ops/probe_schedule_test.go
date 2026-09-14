@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -23,6 +24,7 @@ func TestProbeFilteredCadence(t *testing.T) {
 		intervalSec int
 		requestAge  time.Duration
 		lastRequest bool
+		inFlight    bool
 		manual      bool
 		disabled    bool
 		wantProbe   bool
@@ -37,7 +39,10 @@ func TestProbeFilteredCadence(t *testing.T) {
 		{name: "light probe counts", probeAge: 10 * time.Second, probeKind: domain.ProbeLight, wantSkipped: 1},
 		{name: "balance does not suppress probes", probeAge: 10 * time.Second, probeKind: domain.ProbeBalance, wantProbe: true},
 		{name: "recent request still suppresses probes", probeAge: 59 * time.Second, requestAge: 10 * time.Second, wantSkipped: 1},
-		{name: "recent observed request still suppresses probes", probeAge: 59 * time.Second, requestAge: 10 * time.Second, lastRequest: true, wantSkipped: 1},
+		{name: "observed request without completed log does not suppress probes", probeAge: 59 * time.Second, requestAge: 10 * time.Second, lastRequest: true, wantProbe: true},
+		{name: "previous minute request does not leave current minute empty", probeAge: 59 * time.Second, requestAge: 40 * time.Second, wantProbe: true},
+		{name: "previous custom window request does not suppress probes", probeAge: 299 * time.Second, intervalSec: 300, requestAge: 250 * time.Second, wantProbe: true},
+		{name: "in flight request does not suppress probes", probeAge: 59 * time.Second, requestAge: 10 * time.Second, inFlight: true, wantProbe: true},
 		{name: "old request does not suppress probes", probeAge: 59 * time.Second, requestAge: 2 * time.Minute, wantProbe: true},
 		{name: "manual probe bypasses schedule", probeAge: 10 * time.Second, intervalSec: 300, requestAge: 5 * time.Second, manual: true, wantProbe: true},
 		{name: "disabled key stays excluded", probeAge: 2 * time.Minute, disabled: true},
@@ -87,7 +92,7 @@ func TestProbeFilteredCadence(t *testing.T) {
 				t.Fatal(err)
 			}
 			if tc.requestAge > 0 && !tc.lastRequest {
-				if err := db.Create(&domain.RequestLog{PlatformKeyID: &key.ID, Success: true, CreatedAt: requestAt}).Error; err != nil {
+				if err := db.Create(&domain.RequestLog{PlatformKeyID: &key.ID, Success: true, InFlight: tc.inFlight, CreatedAt: requestAt}).Error; err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -118,5 +123,127 @@ func TestProbeFilteredCadence(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestProbeFilteredRunsWithBoundedConcurrency(t *testing.T) {
+	entered := make(chan struct{}, probeConcurrency+1)
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		entered <- struct{}{}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"id":"fixture"}]}`)
+	}))
+	defer server.Close()
+	defer unblock()
+	db := testDB(t)
+	enc, err := crypto.New(strings.Repeat("01", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, err := enc.Encrypt("fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := domain.Upstream{Name: "fixture", BaseURL: server.URL, Kind: domain.KindOpenAICompat, Protocols: "openai"}
+	if err := db.Create(&up).Error; err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < probeConcurrency+1; i++ {
+		key := domain.PlatformKey{UpstreamID: up.ID, Name: "fixture", EncryptedKey: secret}
+		if err := db.Create(&key).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := New(db, enc, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan [3]int, 1)
+	go func() {
+		ok, fail, skipped := s.ProbeFiltered(ctx, false, nil, time.Minute)
+		done <- [3]int{ok, fail, skipped}
+	}()
+	defer func() {
+		unblock()
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("probe workers did not stop")
+		}
+	}()
+	for i := 0; i < probeConcurrency; i++ {
+		select {
+		case <-entered:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("only %d probes started while earlier probes were blocked", i)
+		}
+	}
+	select {
+	case <-entered:
+		t.Fatal("probe concurrency limit exceeded")
+	case <-time.After(100 * time.Millisecond):
+	}
+	unblock()
+	select {
+	case result := <-done:
+		done <- result
+		if result != [3]int{probeConcurrency + 1, 0, 0} {
+			t.Fatalf("unexpected probe counts: %v", result)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("probe batch did not finish")
+	}
+}
+
+func TestProbeLogUsesStartMinute(t *testing.T) {
+	started := time.Date(2026, 9, 14, 12, 0, 58, 0, time.UTC)
+	var clock atomic.Int64
+	clock.Store(started.UnixNano())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		clock.Store(started.Add(5 * time.Second).UnixNano())
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"id":"fixture"}]}`)
+	}))
+	defer server.Close()
+	db := testDB(t)
+	db.NowFunc = func() time.Time { return time.Unix(0, clock.Load()).UTC() }
+	enc, err := crypto.New(strings.Repeat("01", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, err := enc.Encrypt("fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := domain.Upstream{Name: "fixture", BaseURL: server.URL, Kind: domain.KindOpenAICompat, Protocols: "openai"}
+	if err := db.Create(&up).Error; err != nil {
+		t.Fatal(err)
+	}
+	key := domain.PlatformKey{UpstreamID: up.ID, Name: "fixture", EncryptedKey: secret}
+	if err := db.Create(&key).Error; err != nil {
+		t.Fatal(err)
+	}
+	s := New(db, enc, nil)
+	if _, err := s.ProbeKey(context.Background(), key.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	var probe domain.ProbeLog
+	if err := db.First(&probe).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !probe.CreatedAt.Equal(started) {
+		t.Fatalf("probe moved to completion minute: got %s want %s", probe.CreatedAt, started)
+	}
+	ok, fail, skipped := s.probeFilteredAt(context.Background(), false, nil, time.Minute, started.Add(time.Minute))
+	if ok != 1 || fail != 0 || skipped != 0 {
+		t.Fatalf("cross-minute completion suppressed next probe: %d/%d/%d", ok, fail, skipped)
 	}
 }
