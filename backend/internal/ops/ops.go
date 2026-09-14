@@ -548,13 +548,13 @@ func (s *Service) fetchKeyBalance(ctx context.Context, key *domain.PlatformKey, 
 	}
 	start := time.Now()
 	if up.Kind == domain.KindNewAPI {
-		balanceToken := apiKey
+		accessToken := ""
 		if up.EncryptedAccessToken != "" {
-			if token, decryptErr := s.Enc.Decrypt(up.EncryptedAccessToken); decryptErr == nil && strings.TrimSpace(token) != "" {
-				balanceToken = token
+			if token, decryptErr := s.Enc.Decrypt(up.EncryptedAccessToken); decryptErr == nil {
+				accessToken = strings.TrimSpace(token)
 			}
 		}
-		remaining, unlimited, source, status, err := s.newAPIBalance(ctx, up.BaseURL, balanceToken, up.NewAPIUserID)
+		remaining, unlimited, source, status, err := s.newAPIBalance(ctx, up.BaseURL, apiKey, accessToken, up.NewAPIUserID)
 		plog := domain.ProbeLog{PlatformKeyID: key.ID, Kind: domain.ProbeBalance, LatencyMs: int(time.Since(start).Milliseconds()), StatusCode: status}
 		if err != nil {
 			plog.ErrorMessage = truncate(err.Error(), 500)
@@ -593,32 +593,39 @@ func (s *Service) fetchKeyBalance(ctx context.Context, key *domain.PlatformKey, 
 	return bal.Remaining, false, nil
 }
 
-// newAPIBalance queries a new-api token's remaining quota.
-// Primary path is GET /api/usage/token/ (raw quota units, independent of the
-// site's QuotaDisplayType). Fallback is the OpenAI-compatible
-// /v1/dashboard/billing/{subscription,usage} pair. remaining==nil with
-// unlimited==true means the token has no cap.
-func (s *Service) newAPIBalance(ctx context.Context, baseURL, apiKey string, userIDs ...int) (remaining *float64, unlimited bool, source string, status int, err error) {
-	userID := 0
-	if len(userIDs) > 0 {
-		userID = userIDs[0]
-	}
+// newAPIBalance queries a new-api provider's remaining quota.
+// Primary path (when accessToken is set) is GET /api/user/self with the
+// session Cookie and New-Api-User header — the same request the new-api
+// dashboard uses. Fallbacks are GET /api/usage/token/ then the OpenAI-compatible
+// /v1/dashboard/billing/{subscription,usage} pair, using the platform sk- key.
+// remaining==nil with unlimited==true means the account has no cap.
+func (s *Service) newAPIBalance(ctx context.Context, baseURL, apiKey, accessToken string, userID int) (remaining *float64, unlimited bool, source string, status int, err error) {
 	var lastErr error
-	selfHeaders := http.Header{"Cookie": []string{apiKey}}
-	if userID > 0 {
-		selfHeaders.Set("New-Api-User", fmt.Sprintf("%d", userID))
-	}
-	if self, e := s.Client.GetJSONWithHeaders(ctx, baseURL, "/api/user/self", apiKey, selfHeaders); e == nil {
-		status = self.Status
-		if self.Status >= 200 && self.Status < 300 {
-			bal := upstream.ParseBalance(self.Body)
-			if bal.Remaining != nil {
-				return bal.Remaining, false, "api.user.self", self.Status, nil
-			}
+	if cookie := upstream.NewAPISessionCookie(accessToken); cookie != "" {
+		selfHeaders := http.Header{
+			"Cookie":        []string{cookie},
+			"Authorization": []string{},
 		}
-		lastErr = fmt.Errorf("new-api self status %d: %s", self.Status, truncate(string(self.Body), 200))
-		if self.Status == http.StatusTooManyRequests {
-			return nil, false, "api.user.self", self.Status, lastErr
+		if userID > 0 {
+			selfHeaders.Set("New-Api-User", fmt.Sprintf("%d", userID))
+		}
+		if self, e := s.Client.GetJSONWithHeaders(ctx, baseURL, "/api/user/self", "", selfHeaders); e == nil {
+			status = self.Status
+			if self.Status >= 200 && self.Status < 300 {
+				rem, isUnlimited, ok := upstream.ParseNewAPIUserSelf(self.Body)
+				if ok {
+					if isUnlimited {
+						return nil, true, "api.user.self", self.Status, nil
+					}
+					return &rem, false, "api.user.self", self.Status, nil
+				}
+			}
+			lastErr = fmt.Errorf("new-api self status %d: %s", self.Status, truncate(string(self.Body), 200))
+			if self.Status == http.StatusTooManyRequests {
+				return nil, false, "api.user.self", self.Status, lastErr
+			}
+		} else {
+			lastErr = e
 		}
 	}
 	sawUnlimited := false

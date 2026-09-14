@@ -59,6 +59,23 @@ func TestParseNewAPIBilling(t *testing.T) {
 	if _, _, ok = ParseNewAPITokenUsage([]byte(`{"success":false,"message":"No Authorization header"}`)); ok {
 		t.Fatal("failed body must not parse as ok")
 	}
+	rem, unlimited, ok = ParseNewAPIUserSelf([]byte(`{"success":true,"data":{"id":2809,"quota":2500000,"used_quota":100}}`))
+	if !ok || unlimited || rem != 5 {
+		t.Fatalf("user self: %v %v %v", rem, unlimited, ok)
+	}
+	rem, unlimited, ok = ParseNewAPIUserSelf([]byte(`{"success":true,"data":{"quota":0}}`))
+	if !ok || unlimited || rem != 0 {
+		t.Fatalf("user self zero: %v %v %v", rem, unlimited, ok)
+	}
+	if _, _, ok = ParseNewAPIUserSelf([]byte(`{"success":false,"message":"未登录"}`)); ok {
+		t.Fatal("failed self body must not parse as ok")
+	}
+	if got := NewAPISessionCookie("session=abc"); got != "session=abc" {
+		t.Fatalf("cookie passthrough: %s", got)
+	}
+	if got := NewAPISessionCookie("abc"); got != "session=abc" {
+		t.Fatalf("cookie prefix: %s", got)
+	}
 	if got := MaybeRawQuotaToUSD(12.5); got != 12.5 {
 		t.Fatalf("usd limit: %v", got)
 	}

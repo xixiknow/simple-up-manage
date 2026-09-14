@@ -233,16 +233,10 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 		for r := 0; r <= retries; r++ {
 			outcome = h.forwardOnce(c, ck, pk, up, protocol, model, session, reqID, body, reqSnap, lg, reqStart)
 			if outcome.ok {
-				lg.traceEvent(h, pk, up, "selected", "success")
 				settled = true
 				return
 			}
 			lastMsg = outcome.msg
-			if outcome.retrySame {
-				lg.traceEvent(h, pk, up, "retry", outcome.action)
-			} else if outcome.failOver {
-				lg.traceEvent(h, pk, up, "switch", outcome.action)
-			}
 			if outcome.retrySame && r < retries {
 				if err := sleepCtx(c.Request.Context(), sameKeyRetryDelay); err != nil {
 					if !c.Writer.Written() {
@@ -250,7 +244,13 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 					}
 					return
 				}
+				lg.traceEvent(h, pk, up, "retry", outcome.action)
 				continue
+			}
+			if outcome.failOver && attempt+1 < attempts {
+				lg.traceEvent(h, pk, up, "switch", outcome.action)
+			} else {
+				lg.traceEvent(h, pk, up, "failed", outcome.msg)
 			}
 			break
 		}
@@ -540,6 +540,9 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 	}
 	if success {
 		h.observeAttempt(pk, model, true, collector.usage, collector.ttftMs)
+		lg.traceEvent(h, pk, up, "selected", "success")
+	} else {
+		lg.traceEvent(h, pk, up, "failed", errMsg)
 	}
 	h.finishLog(lg, ck, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, success, collector.usage, collector.ttftMs, dur, errMsg, snap)
 	if success {
@@ -701,6 +704,7 @@ type liveLog struct {
 }
 
 type selectionTraceEvent struct {
+	KeyID        uint      `json:"key_id,omitempty"`
 	KeyName      string    `json:"key_name"`
 	UpstreamName string    `json:"upstream_name"`
 	Result       string    `json:"result"`
@@ -714,20 +718,23 @@ func (lg *liveLog) traceEvent(h *Gateway, pk *domain.PlatformKey, up *domain.Ups
 		return
 	}
 	lg.mu.Lock()
+	var keyID uint
 	name, provider := "", ""
 	if pk != nil {
+		keyID = pk.ID
 		name = pk.Name
 	}
 	if up != nil {
 		provider = up.Name
 	}
-	if len(lg.trace) > 0 && lg.trace[len(lg.trace)-1].KeyName == name && (result == "retry" || result == "selected") {
+	if len(lg.trace) > 0 && lg.trace[len(lg.trace)-1].KeyID == keyID && lg.trace[len(lg.trace)-1].KeyName == name && (result == "retry" || result == "selected") {
 		if result == "retry" {
 			lg.trace[len(lg.trace)-1].RetryCount++
 		}
 		lg.trace[len(lg.trace)-1].Result = result
+		lg.trace[len(lg.trace)-1].Reason = reason
 	} else {
-		lg.trace = append(lg.trace, selectionTraceEvent{KeyName: name, UpstreamName: provider, Result: result, Reason: reason, At: time.Now().UTC()})
+		lg.trace = append(lg.trace, selectionTraceEvent{KeyID: keyID, KeyName: name, UpstreamName: provider, Result: result, Reason: reason, At: time.Now().UTC()})
 	}
 	b, _ := json.Marshal(lg.trace)
 	if lg.updates == nil {

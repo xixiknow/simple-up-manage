@@ -206,6 +206,44 @@ func ParseBillingUsage(body []byte) (usedUSD float64, ok bool) {
 	return v / 100, true
 }
 
+// NewAPISessionCookie turns the operator-pasted access token into a Cookie
+// header for GET /api/user/self. new-api authenticates that endpoint with the
+// browser session cookie, typically `session=<value>`.
+func NewAPISessionCookie(token string) string {
+	token = strings.TrimSpace(token)
+	token = strings.TrimSpace(strings.TrimPrefix(token, "Cookie:"))
+	token = strings.TrimSpace(strings.TrimPrefix(token, "cookie:"))
+	if token == "" {
+		return ""
+	}
+	if strings.Contains(token, "=") {
+		return token
+	}
+	return "session=" + token
+}
+
+// ParseNewAPIUserSelf parses GET /api/user/self. Remaining quota lives on
+// data.quota as raw units (not a {remaining} object) and is converted with
+// QuotaPerUnit. quota==0 is a valid remaining balance of $0.
+func ParseNewAPIUserSelf(body []byte) (remainingUSD float64, unlimited bool, ok bool) {
+	var top map[string]any
+	if err := json.Unmarshal(body, &top); err != nil {
+		return 0, false, false
+	}
+	if success, isBool := top["success"].(bool); isBool && !success {
+		return 0, false, false
+	}
+	data, ok := asMap(top["data"])
+	if !ok {
+		return 0, false, false
+	}
+	v, ok := asFloat(data["quota"])
+	if !ok {
+		return 0, false, false
+	}
+	return v / NewAPIQuotaPerUnit, false, true
+}
+
 // ParseNewAPITokenUsage parses new-api's GET /api/usage/token/ which returns raw
 // quota units. Remaining is converted with the default QuotaPerUnit.
 func ParseNewAPITokenUsage(body []byte) (remainingUSD float64, unlimited bool, ok bool) {

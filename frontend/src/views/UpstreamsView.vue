@@ -979,10 +979,16 @@ onUnmounted(() => {
           </n-radio-group>
         </n-form-item>
         <n-form-item v-if="form.kind === 'new_api'" label="accessToken" path="access_token">
-          <n-input v-model:value="form.access_token" type="password" show-password-on="click" placeholder="Cookie（如 session=...）" />
+          <div class="rate-field">
+            <n-input v-model:value="form.access_token" type="password" show-password-on="click" placeholder="Cookie（如 session=...）" />
+            <div class="muted rate-hint">用于 GET /api/user/self 查余额。填浏览器 Cookie 的 session=...，不要带 Authorization。</div>
+          </div>
         </n-form-item>
         <n-form-item v-if="form.kind === 'new_api'" label="New-Api-User" path="new_api_user_id">
-          <n-input-number v-model:value="form.new_api_user_id" :min="1" :step="1" style="width: 100%" placeholder="例如 2809" />
+          <div class="rate-field">
+            <n-input-number v-model:value="form.new_api_user_id" :min="1" :step="1" style="width: 100%" placeholder="例如 2809" />
+            <div class="muted rate-hint">对应请求头 new-api-user，与 session 所属用户 id 一致。</div>
+          </div>
         </n-form-item>
         <n-form-item label="并发" path="concurrency">
           <div class="rate-field">
