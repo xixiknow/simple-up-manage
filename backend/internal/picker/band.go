@@ -429,6 +429,8 @@ func (p *BandPicker) backfillOnce(ctx context.Context, keyID uint, model string,
 	}
 	since := time.Now().Add(-time.Duration(cfg.WindowMinutes) * time.Minute)
 	q := p.db.WithContext(ctx).Where("platform_key_id = ? AND created_at >= ? AND in_flight = ?", keyID, since, false)
+	neutralActions := []string{"request_rejected", "client_cancelled", "exclude_busy_resource"}
+	q = q.Where("failure_action IS NULL OR failure_action NOT IN ?", neutralActions)
 	if strings.TrimSpace(model) != "" {
 		q = q.Where("model = ?", model)
 	}
@@ -439,6 +441,7 @@ func (p *BandPicker) backfillOnce(ctx context.Context, keyID uint, model string,
 		}
 		if err := p.db.WithContext(ctx).
 			Where("platform_key_id = ? AND created_at >= ? AND in_flight = ?", keyID, since, false).
+			Where("failure_action IS NULL OR failure_action NOT IN ?", neutralActions).
 			Order("id DESC").Limit(limit).Find(&logs).Error; err != nil || len(logs) == 0 {
 			return
 		}

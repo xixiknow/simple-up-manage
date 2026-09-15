@@ -86,3 +86,22 @@ func TestExpiredGateCanRecoverWithoutNormalCandidates(t *testing.T) {
 		t.Fatalf("no-candidate recovery: %+v %v", d, err)
 	}
 }
+
+func TestLegacyBackfillExcludesNeutralRequests(t *testing.T) {
+	p, _, keys := testBandPicker(t)
+	for _, action := range []string{"request_rejected", "client_cancelled", "exclude_busy_resource"} {
+		if err := p.db.Create(&domain.RequestLog{PlatformKeyID: &keys[0].ID, Model: "m", Success: false, FailureAction: action, CreatedAt: time.Now()}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := p.db.Create(&domain.RequestLog{PlatformKeyID: &keys[0].ID, Model: "m", Success: true, TTFTMs: 1000, CreatedAt: time.Now()}).Error; err != nil {
+		t.Fatal(err)
+	}
+	cands, err := p.Explain(context.Background(), Request{Protocol: "openai", Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cands[0].Samples != 1 || cands[0].SuccessRate != 1 {
+		t.Fatalf("neutral backfill corrupted metrics: %+v", cands[0])
+	}
+}
