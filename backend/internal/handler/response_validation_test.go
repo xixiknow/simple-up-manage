@@ -20,6 +20,7 @@ import (
 
 const testRateLimitsFrame = "data: {\"type\":\"codex.rate_limits\",\"rate_limits\":{\"allowed\":true,\"limit_reached\":false}}\n\n"
 const testResponseMetadata = "data: {\"type\":\"codex.response.metadata\",\"headers\":{\"x-models-etag\":\"test\",\"x-codex-turn-state\":\"opaque\"}}\n\n"
+const testResponseTiming = "data: {\"type\":\"responsesapi.websocket_timing\",\"timing_metrics\":{\"response_id\":\"r\",\"first_sampled_message_ttft_ms\":1,\"total_turn_time_s\":2}}\n\n"
 const testResponseDelta = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"
 const testResponseCompleted = "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"object\":\"response\",\"status\":\"completed\",\"output\":[]}}\n\n"
 
@@ -30,6 +31,12 @@ func TestResponsesMetadataStream(t *testing.T) {
 	}{
 		{"before output", testRateLimitsFrame + testResponseDelta + testResponseCompleted, true, true},
 		{"consecutive metadata", testRateLimitsFrame + testResponseMetadata + testResponseDelta + testResponseMetadata + testResponseCompleted, true, true},
+		{"full metadata sequence", testRateLimitsFrame + testResponseMetadata + testResponseDelta + testResponseTiming + testResponseCompleted, true, true},
+		{"timing without completion", testResponseDelta + testResponseTiming, false, true},
+		{"timing only", testResponseTiming, false, false},
+		{"timing is not first token", testResponseTiming + testResponseCompleted, true, false},
+		{"timing event name", "event: responsesapi.websocket_timing\ndata: {\"timing_metrics\":{}}\n\n" + testResponseCompleted, true, false},
+		{"timing with error", "data: {\"type\":\"responsesapi.websocket_timing\",\"error\":{\"message\":\"failed\"}}\n\n" + testResponseCompleted, false, false},
 		{"response metadata then eof", testResponseMetadata, false, false},
 		{"response metadata event name", "event: codex.response.metadata\ndata: {\"headers\":{}}\n\n" + testResponseCompleted, true, false},
 		{"text in response metadata", "data: {\"type\":\"codex.response.metadata\",\"delta\":{\"content\":\"metadata\"}}\n\n" + testResponseCompleted, true, false},
@@ -86,7 +93,7 @@ func TestResponsesMetadataDoNotReleaseOrStopFirstTokenWatch(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = io.WriteString(writer, testRateLimitsFrame+testResponseMetadata+testRateLimitsFrame)
+		_, _ = io.WriteString(writer, testRateLimitsFrame+testResponseMetadata+testRateLimitsFrame+testResponseTiming)
 		<-ctx.Done()
 		_ = writer.CloseWithError(ctx.Err())
 	}()
@@ -193,7 +200,7 @@ func TestGatewayResponseValidationRouting(t *testing.T) {
 				badCalls.Add(1)
 				if metadata {
 					w.Header().Set("Content-Type", "text/event-stream")
-					_, _ = io.WriteString(w, testRateLimitsFrame+testResponseMetadata+testResponseDelta+testRateLimitsFrame+testResponseMetadata+testResponseCompleted)
+					_, _ = io.WriteString(w, testRateLimitsFrame+testResponseMetadata+testResponseDelta+testRateLimitsFrame+testResponseMetadata+testResponseTiming+testResponseCompleted)
 					return
 				}
 				w.Header().Set("Content-Type", "text/plain")

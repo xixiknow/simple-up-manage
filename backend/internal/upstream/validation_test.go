@@ -7,6 +7,7 @@ import (
 
 const testResponsesRateLimits = "data: {\"type\":\"codex.rate_limits\",\"rate_limits\":{\"allowed\":true,\"limit_reached\":false}}\n\n"
 const testResponsesMetadata = "data: {\"type\":\"codex.response.metadata\",\"headers\":{\"x-models-etag\":\"test\",\"x-codex-turn-state\":\"opaque\"}}\n\n"
+const testResponsesTiming = "data: {\"type\":\"responsesapi.websocket_timing\",\"timing_metrics\":{\"response_id\":\"r\",\"first_sampled_message_ttft_ms\":1,\"total_turn_time_s\":2}}\n\n"
 const testResponsesDelta = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"
 const testResponsesCompleted = "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"object\":\"response\",\"status\":\"completed\",\"output\":[]}}\n\n"
 
@@ -33,6 +34,10 @@ func TestResponsesMetadataValidation(t *testing.T) {
 		{"response metadata with error", "/v1/responses", "", `{"type":"codex.response.metadata","error":{"message":"failed"}}`, false},
 		{"response metadata not completion", "/v1/responses", "response.completed", `{"type":"codex.response.metadata","response":{"id":"other"}}`, true},
 		{"response metadata chat", "/v1/chat/completions", "", `{"type":"codex.response.metadata","headers":{}}`, false},
+		{"timing metadata", "/v1/responses", "", `{"type":"responsesapi.websocket_timing","timing_metrics":{"first_sampled_message_ttft_ms":1}}`, true},
+		{"timing event name", "/v1/responses", "responsesapi.websocket_timing", `{"timing_metrics":{}}`, true},
+		{"timing with error", "/v1/responses", "", `{"type":"responsesapi.websocket_timing","error":{"message":"failed"}}`, false},
+		{"timing chat", "/v1/chat/completions", "", `{"type":"responsesapi.websocket_timing","timing_metrics":{}}`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v := StreamValidator{Path: tc.path, Strict: true, ResponseID: "original"}

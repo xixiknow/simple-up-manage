@@ -38,6 +38,10 @@ func TestProbeResponsesMetadata(t *testing.T) {
 	}{
 		{"before output", testResponsesRateLimits + testResponsesDelta + testResponsesCompleted, true},
 		{"consecutive metadata", testResponsesRateLimits + testResponsesMetadata + testResponsesDelta + testResponsesMetadata + testResponsesCompleted, true},
+		{"full metadata sequence", testResponsesRateLimits + testResponsesMetadata + testResponsesDelta + testResponsesTiming + testResponsesCompleted, true},
+		{"timing without completion", testResponsesDelta + testResponsesTiming, false},
+		{"timing only", testResponsesTiming, false},
+		{"timing with error", "data: {\"type\":\"responsesapi.websocket_timing\",\"error\":{\"message\":\"failed\"}}\n\n" + testResponsesCompleted, false},
 		{"response metadata then eof", testResponsesMetadata, false},
 		{"response metadata then failure", testResponsesMetadata + "data: {\"type\":\"response.failed\"}\n\n", false},
 		{"response metadata event name", "event: codex.response.metadata\ndata: {\"headers\":{}}\n\n" + testResponsesCompleted, true},

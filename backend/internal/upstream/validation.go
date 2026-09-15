@@ -8,7 +8,11 @@ import (
 )
 
 func IsResponsesMetadataEvent(name string) bool {
-	return name == "codex.rate_limits" || name == "codex.response.metadata"
+	switch name {
+	case "codex.rate_limits", "codex.response.metadata", "responsesapi.websocket_timing":
+		return true
+	}
+	return false
 }
 
 type StreamValidator struct {
