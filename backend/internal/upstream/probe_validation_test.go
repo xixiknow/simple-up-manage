@@ -31,12 +31,16 @@ func TestProbeProtocolValidation(t *testing.T) {
 	}
 }
 
-func TestProbeResponsesRateLimits(t *testing.T) {
+func TestProbeResponsesMetadata(t *testing.T) {
 	for _, tc := range []struct {
 		name, body string
 		ok         bool
 	}{
 		{"before output", testResponsesRateLimits + testResponsesDelta + testResponsesCompleted, true},
+		{"consecutive metadata", testResponsesRateLimits + testResponsesMetadata + testResponsesDelta + testResponsesMetadata + testResponsesCompleted, true},
+		{"response metadata then eof", testResponsesMetadata, false},
+		{"response metadata then failure", testResponsesMetadata + "data: {\"type\":\"response.failed\"}\n\n", false},
+		{"response metadata event name", "event: codex.response.metadata\ndata: {\"headers\":{}}\n\n" + testResponsesCompleted, true},
 		{"between output", testResponsesDelta + testResponsesRateLimits + testResponsesDelta + testResponsesCompleted, true},
 		{"repeated metadata", testResponsesRateLimits + testResponsesRateLimits + testResponsesCompleted, true},
 		{"event name only", "event: codex.rate_limits\ndata: {\"rate_limits\":{\"allowed\":true}}\n\n" + testResponsesCompleted, true},

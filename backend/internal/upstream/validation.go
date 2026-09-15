@@ -7,7 +7,9 @@ import (
 	"strings"
 )
 
-const CodexRateLimitsEvent = "codex.rate_limits"
+func IsResponsesMetadataEvent(name string) bool {
+	return name == "codex.rate_limits" || name == "codex.response.metadata"
+}
 
 type StreamValidator struct {
 	Path         string
@@ -90,7 +92,7 @@ func (s *StreamValidator) Event(name, data string) {
 	}
 	switch s.Path {
 	case "/v1/responses":
-		if name == CodexRateLimitsEvent {
+		if IsResponsesMetadataEvent(name) {
 			return
 		}
 		if !strings.HasPrefix(name, "response.") && name != "error" {

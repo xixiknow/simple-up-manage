@@ -19,15 +19,21 @@ import (
 )
 
 const testRateLimitsFrame = "data: {\"type\":\"codex.rate_limits\",\"rate_limits\":{\"allowed\":true,\"limit_reached\":false}}\n\n"
+const testResponseMetadata = "data: {\"type\":\"codex.response.metadata\",\"headers\":{\"x-models-etag\":\"test\",\"x-codex-turn-state\":\"opaque\"}}\n\n"
 const testResponseDelta = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"
 const testResponseCompleted = "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"object\":\"response\",\"status\":\"completed\",\"output\":[]}}\n\n"
 
-func TestResponsesRateLimitsStream(t *testing.T) {
+func TestResponsesMetadataStream(t *testing.T) {
 	for _, tc := range []struct {
 		name, body   string
 		ok, hasFirst bool
 	}{
 		{"before output", testRateLimitsFrame + testResponseDelta + testResponseCompleted, true, true},
+		{"consecutive metadata", testRateLimitsFrame + testResponseMetadata + testResponseDelta + testResponseMetadata + testResponseCompleted, true, true},
+		{"response metadata then eof", testResponseMetadata, false, false},
+		{"response metadata event name", "event: codex.response.metadata\ndata: {\"headers\":{}}\n\n" + testResponseCompleted, true, false},
+		{"text in response metadata", "data: {\"type\":\"codex.response.metadata\",\"delta\":{\"content\":\"metadata\"}}\n\n" + testResponseCompleted, true, false},
+		{"response metadata with error", "data: {\"type\":\"codex.response.metadata\",\"error\":{\"message\":\"failed\"}}\n\n" + testResponseCompleted, false, false},
 		{"between output", testResponseDelta + testRateLimitsFrame + testResponseDelta + testResponseCompleted, true, true},
 		{"repeated metadata", testRateLimitsFrame + testRateLimitsFrame + testResponseCompleted, true, false},
 		{"event name only", "event: codex.rate_limits\ndata: {\"rate_limits\":{\"allowed\":true}}\n\n" + testResponseCompleted, true, false},
@@ -69,7 +75,7 @@ func TestResponsesRateLimitsStream(t *testing.T) {
 	}
 }
 
-func TestResponsesRateLimitsDoNotReleaseOrStopFirstTokenWatch(t *testing.T) {
+func TestResponsesMetadataDoNotReleaseOrStopFirstTokenWatch(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	reader, writer := io.Pipe()
@@ -80,7 +86,7 @@ func TestResponsesRateLimitsDoNotReleaseOrStopFirstTokenWatch(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = io.WriteString(writer, testRateLimitsFrame+testRateLimitsFrame)
+		_, _ = io.WriteString(writer, testRateLimitsFrame+testResponseMetadata+testRateLimitsFrame)
 		<-ctx.Done()
 		_ = writer.CloseWithError(ctx.Err())
 	}()
@@ -179,7 +185,7 @@ func TestGatewayResponseValidationRouting(t *testing.T) {
 	for _, metadata := range []bool{false, true} {
 		name := "greeting fails over once"
 		if metadata {
-			name = "rate limits complete without failover"
+			name = "metadata completes without failover"
 		}
 		t.Run(name, func(t *testing.T) {
 			var badCalls, goodCalls atomic.Int32
@@ -187,7 +193,7 @@ func TestGatewayResponseValidationRouting(t *testing.T) {
 				badCalls.Add(1)
 				if metadata {
 					w.Header().Set("Content-Type", "text/event-stream")
-					_, _ = io.WriteString(w, testRateLimitsFrame+testResponseDelta+testRateLimitsFrame+testResponseCompleted)
+					_, _ = io.WriteString(w, testRateLimitsFrame+testResponseMetadata+testResponseDelta+testRateLimitsFrame+testResponseMetadata+testResponseCompleted)
 					return
 				}
 				w.Header().Set("Content-Type", "text/plain")
