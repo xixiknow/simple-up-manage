@@ -1,4 +1,4 @@
-import { del, get, getList, post, put } from './http'
+import { del, download, get, getList, post, put } from './http'
 import type {
   ConsumerKey,
   ConsumerKeyPayload,
@@ -198,6 +198,14 @@ export function listRequestLogs(params?: RequestLogQuery) {
 
 export function getRequestLog(id: number) {
   return get<RequestLogDetail>(`/request-logs/${id}`)
+}
+
+export function getLogBody(id: number, bodyId: string, offset = 0) {
+  return get<{ text: string; next_offset: number; eof: boolean }>(`/request-logs/${id}/bodies/${bodyId}`, { offset })
+}
+
+export function downloadLogBody(id: number, bodyId: string) {
+  return download(`/request-logs/${id}/bodies/${bodyId}?download=1`, `${id}-${bodyId}.txt`)
 }
 
 export function getScheduler() {

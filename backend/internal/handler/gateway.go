@@ -12,6 +12,7 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"strings"
 	"sync"
 	"time"
@@ -43,18 +44,20 @@ var hopByHop = map[string]struct{}{
 }
 
 const (
-	proxyOverallTimeout = 300 * time.Second
-	proxyFirstTokenWait = 30 * time.Second
+	proxyOverallTimeout  = 300 * time.Second
+	proxyFirstTokenWait  = 30 * time.Second
+	maxErrorInspectBytes = 64 << 10
 )
 
 type Gateway struct {
-	DB     *gorm.DB
-	Enc    *crypto.AESGCM
-	Ops    *ops.Service
-	Picker picker.Picker
-	Client *upstream.Client
-	rpm    *rpmLimiter
-	conc   *concLimiter
+	DB             *gorm.DB
+	Enc            *crypto.AESGCM
+	Ops            *ops.Service
+	Picker         picker.Picker
+	Client         *upstream.Client
+	firstTokenWait time.Duration
+	rpm            *rpmLimiter
+	conc           *concLimiter
 }
 
 func NewGateway(db *gorm.DB, enc *crypto.AESGCM, opsSvc *ops.Service, p picker.Picker) *Gateway {
@@ -158,6 +161,9 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 	path := c.Request.URL.Path
 	clientIP := requestClientIP(c)
 	lg := h.beginLog(ck, protocol, model, path, reqID, clientIP, reqSnap)
+	if lg != nil {
+		h.archiveRequest(lg.id, c.Request, body)
+	}
 	lastMsg := "no enabled upstream for protocol"
 	var settled bool
 	defer func() {
@@ -409,7 +415,20 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 		attempt.RequestLogID = lg.id
 	}
 	var collector *streamCollector
-	defer func() { h.completeAttempt(c.Request.Context(), pk, &attempt, collector, outcome) }()
+	phase := &attemptPhase{phase: "local"}
+	var archived *archivedResponse
+	defer func() {
+		attempt.FailureAction = outcome.action
+		if !outcome.validSuccess {
+			attempt.FailurePhase = phase.get()
+			attempt.ErrorMessage = truncateErr(outcome.msg)
+		}
+		if archived != nil {
+			attempt.ReceivedBytes = archived.received
+			archived.finish(outcome.validSuccess)
+		}
+		h.completeAttempt(c.Request.Context(), pk, &attempt, collector, outcome)
+	}()
 	defer func() {
 		if c.Request.Context().Err() != nil && !outcome.validSuccess {
 			outcome.failOver = false
@@ -461,6 +480,7 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 	if err != nil {
 		return forwardOutcome{msg: err.Error()}
 	}
+	upReq = upReq.WithContext(httptrace.WithClientTrace(upReq.Context(), phase.trace()))
 	copyForwardHeaders(c.Request.Header, upReq.Header)
 	upReq.Header.Set("Authorization", "Bearer "+apiKey)
 	if protocol == domain.ProtocolAnthropic {
@@ -476,8 +496,12 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 	clientIP := requestClientIP(c)
 	wantStream := reqSnap.ReqStream
 	firstWatch := &firstTokenWatch{}
+	firstWait := h.firstTokenWait
+	if firstWait <= 0 {
+		firstWait = proxyFirstTokenWait
+	}
 	if wantStream {
-		firstWatch.start(cancelAttempt, proxyFirstTokenWait, deadline)
+		firstWatch.start(cancelAttempt, firstWait, deadline)
 	}
 	defer firstWatch.stop()
 
@@ -492,9 +516,16 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 		return outcome
 	}
 	attempt.StatusCode = resp.StatusCode
+	attempt.HeadersMs = max(1, int(time.Since(attempt.StartedAt).Milliseconds()))
+	phase.set("awaiting_first_output")
+	archived = &archivedResponse{ReadCloser: resp.Body, binary: omitRawBody(mediaType(resp.Header.Get("Content-Type"))), contentType: resp.Header.Get("Content-Type")}
+	if h.Ops != nil && h.Ops.Archives != nil {
+		archived.archive = h.Ops.Archives.Begin(attempt.RequestLogID, attempt.ID, "response", resp.Header.Get("Content-Type"))
+	}
+	resp.Body = archived
 
 	if resp.StatusCode >= 400 && !c.Writer.Written() {
-		peek, _ := io.ReadAll(io.LimitReader(resp.Body, maxLogBodyBytes+1))
+		peek, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorInspectBytes+1))
 		defer resp.Body.Close()
 		failure := classifyHTTPFailure(resp.StatusCode, peek)
 		failure.retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
@@ -526,13 +557,16 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 
 	defer resp.Body.Close()
 
-	collector = &streamCollector{start: started, protocolPath: path, strict: isTextAPI(path), onProgress: func(ttft, dur int, usage upstream.TokenUsage) {
+	collector = &streamCollector{start: started, attemptStart: attempt.StartedAt, protocolPath: path, strict: isTextAPI(path), onProgress: func(ttft, dur int, usage upstream.TokenUsage) {
+		if ttft > 0 {
+			phase.set("streaming")
+		}
 		h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, usage, ttft, dur, "", ioCapture{}, true, false)
 	}}
 	ct := strings.ToLower(resp.Header.Get("Content-Type"))
 	streaming := isSSEContentType(ct)
 	if isTextAPI(path) && resp.StatusCode >= 200 && resp.StatusCode < 300 && !streaming && (wantStream || !isJSONContentType(ct)) {
-		peek, _ := io.ReadAll(io.LimitReader(resp.Body, maxLogBodyBytes+1))
+		peek, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorInspectBytes+1))
 		msg := "invalid upstream response protocol"
 		snap := reqSnap.withResponse(resp.Header, ct, peek, len(peek))
 		h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, int(time.Since(started).Milliseconds()), msg, snap, true, true)
@@ -543,7 +577,7 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 	if streaming {
 		elapsed := time.Since(attempt.StartedAt)
 		if !firstWatch.running() {
-			remain := proxyFirstTokenWait - elapsed
+			remain := firstWait - elapsed
 			firstWatch.start(cancelAttempt, remain, deadline)
 		}
 	} else {
@@ -644,6 +678,8 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 	}
 	dur := int(time.Since(started).Milliseconds())
 	snap := reqSnap.withResponse(resp.Header, resp.Header.Get("Content-Type"), respPrefix, respTotal)
+	snap.TTFTEvent = collector.firstEvent
+	snap.TTFTStatus = collector.ttftStatus(success)
 	if collector.usage.CostUSD == nil {
 		collector.usage.CostUSD = estimateRequestCost(h.DB, model, pk, collector.usage)
 	}
@@ -881,6 +917,7 @@ func (h *Gateway) beginLog(ck *domain.ConsumerKey, protocol, model, path, reqID,
 		Path:             path,
 		ClientIP:         clientIP,
 		InFlight:         true,
+		TTFTStatus:       "pending",
 		Stream:           snap.ReqStream,
 		StreamKnown:      snap.StreamKnown,
 		CreatedAt:        snap.StartedAt,
@@ -967,6 +1004,8 @@ func (h *Gateway) finishLog(lg *liveLog, ck *domain.ConsumerKey, pk *domain.Plat
 			CacheReadTokens:     usage.CacheReadTokens,
 			CacheCreationTokens: usage.CacheCreationTokens,
 			TTFTMs:              ttft,
+			TTFTStatus:          updates["ttft_status"].(string),
+			TTFTEvent:           snap.TTFTEvent,
 			DurationMs:          dur,
 			InFlight:            false,
 			Stream:              snap.ReqStream,
@@ -1013,7 +1052,21 @@ func (h *Gateway) finishLog(lg *liveLog, ck *domain.ConsumerKey, pk *domain.Plat
 }
 
 func logUpdates(ids ckIDs, protocol, model, path, reqID, clientIP string, status int, success bool, usage upstream.TokenUsage, ttft, dur int, errMsg string, snap ioCapture, inFlight bool) map[string]any {
+	ttftStatus := snap.TTFTStatus
+	if ttftStatus == "" {
+		switch {
+		case ttft > 0:
+			ttftStatus = "measured"
+		case inFlight:
+			ttftStatus = "pending"
+		case success:
+			ttftStatus = "no_output"
+		default:
+			ttftStatus = "interrupted"
+		}
+	}
 	updates := map[string]any{
+		"ttft_status":           ttftStatus,
 		"protocol":              protocol,
 		"model":                 model,
 		"path":                  path,
@@ -1030,6 +1083,9 @@ func logUpdates(ids ckIDs, protocol, model, path, reqID, clientIP string, status
 		"cost_usd":              usage.CostUSD,
 		"in_flight":             inFlight,
 		"error_message":         truncateErr(errMsg),
+	}
+	if snap.TTFTEvent != "" {
+		updates["ttft_event"] = snap.TTFTEvent
 	}
 	if snap.ReqHeaders != "" {
 		updates["request_headers"] = snap.ReqHeaders
@@ -1241,12 +1297,15 @@ func (u *usageCapture) Bytes() []byte {
 }
 
 type streamCollector struct {
+	firstEvent     string
+	events         eventDiagnostics
 	strict         bool
 	protocolPath   string
 	sawValid       bool
 	chatFinished   bool
 	responseID     string
 	start          time.Time
+	attemptStart   time.Time
 	firstAt        time.Time
 	ttftMs         int
 	buf            []byte
@@ -1338,6 +1397,7 @@ func (s *streamCollector) feed(p []byte) int {
 func (s *streamCollector) finishEvent() {
 	defer func() { s.eventBytes = 0; s.eventOversized = false; s.eventData = nil; s.eventName = "" }()
 	if s.eventOversized {
+		s.events.Oversized++
 		return
 	}
 	data := strings.Join(s.eventData, "\n")
@@ -1345,6 +1405,7 @@ func (s *streamCollector) finishEvent() {
 	s.eventData = nil
 	s.eventName = ""
 	if strings.TrimSpace(data) == "[DONE]" {
+		s.noteEvent("done", data)
 		s.validateEvent(name, strings.TrimSpace(data))
 		s.terminal = true
 		return
@@ -1356,6 +1417,7 @@ func (s *streamCollector) finishEvent() {
 	if json.Unmarshal([]byte(data), &event) == nil && event.Type != "" {
 		name = event.Type
 	}
+	s.noteEvent(name, data)
 	s.validateEvent(name, data)
 	if s.terminalErr != nil {
 		s.terminal = true
@@ -1364,7 +1426,11 @@ func (s *streamCollector) finishEvent() {
 	if s.protocolPath == "/v1/responses" && upstream.IsResponsesMetadataEvent(name) {
 		return
 	}
-	if upstream.SSELineHasText("data: "+data) && s.ttftMs == 0 {
+	if upstream.SSEEventHasText(name, []byte(data)) && s.ttftMs == 0 {
+		s.firstEvent = name
+		if name == "" {
+			s.firstEvent = "data"
+		}
 		s.markTTFT()
 	}
 	switch name {

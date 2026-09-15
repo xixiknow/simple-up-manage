@@ -2,6 +2,7 @@ package ops
 
 import (
 	"context"
+	"gorm.io/gorm"
 	"time"
 
 	"simple-up-manage/internal/domain"
@@ -14,6 +15,9 @@ func (s *Service) PurgeRequestLogs(ctx context.Context, retention time.Duration)
 		retention = 24 * time.Hour
 	}
 	cut := time.Now().Add(-retention)
+	if err := s.Archives.Purge(ctx, cut); err != nil {
+		return 0, err
+	}
 	if s.DB.Migrator().HasTable(&domain.RoutingObservation{}) {
 		if err := s.DB.WithContext(ctx).Where("created_at < ?", cut).Delete(&domain.RoutingObservation{}).Error; err != nil {
 			return 0, err
@@ -48,6 +52,7 @@ func (s *Service) FinalizeStaleInFlightLogs(ctx context.Context) (int64, error) 
 			"completed_at":  time.Now().UTC(),
 			"success":       false,
 			"error_message": "stale in-flight request",
+			"ttft_status":   gorm.Expr("CASE WHEN ttft_ms > 0 THEN 'measured' ELSE 'interrupted' END"),
 			"duration_ms":   int(staleInFlightAge / time.Millisecond),
 		})
 	return res.RowsAffected, res.Error

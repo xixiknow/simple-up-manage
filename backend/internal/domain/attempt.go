@@ -17,6 +17,14 @@ type RequestAttempt struct {
 	Result              string    `gorm:"size:32" json:"result"`
 	StatusCode          int       `json:"status_code"`
 	TTFTMs              int       `json:"ttft_ms"`
+	TTFTStatus          string    `json:"ttft_status"`
+	TTFTEvent           string    `json:"ttft_event"`
+	FailureAction       string    `json:"failure_action"`
+	FailurePhase        string    `json:"failure_phase"`
+	ErrorMessage        string    `json:"error_message"`
+	HeadersMs           int       `json:"headers_ms"`
+	ReceivedBytes       int64     `json:"received_bytes"`
+	EventSummary        string    `gorm:"type:text" json:"event_summary"`
 	DurationMs          int       `json:"duration_ms"`
 	InputTokens         int64     `json:"input_tokens"`
 	CacheReadTokens     int64     `json:"cache_read_tokens"`

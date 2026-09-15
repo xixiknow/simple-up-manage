@@ -285,6 +285,8 @@ type RequestLog struct {
 	CacheReadTokens     int64      `json:"cache_read_tokens"`
 	CacheCreationTokens int64      `json:"cache_creation_tokens"`
 	TTFTMs              int        `json:"ttft_ms"`
+	TTFTStatus          string     `json:"ttft_status"`
+	TTFTEvent           string     `json:"ttft_event"`
 	DurationMs          int        `json:"duration_ms"`
 	InFlight            bool       `gorm:"index" json:"in_flight"`
 	Stream              bool       `json:"stream"`

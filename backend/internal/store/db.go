@@ -71,6 +71,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&domain.ConsumerRouteGroup{},
 		&domain.RequestLog{},
 		&domain.RequestAttempt{},
+		&domain.LogBody{},
 		&domain.RoutingCircuit{},
 		&domain.RoutingObservation{},
 		&domain.RoutingBudget{},

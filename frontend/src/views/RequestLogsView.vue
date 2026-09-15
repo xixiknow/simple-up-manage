@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, h, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { NTag, NTimeline, NTimelineItem, useMessage } from 'naive-ui'
+import { ArrowBackOutline, ArrowForwardOutline, CopyOutline, DownloadOutline, RefreshOutline } from '@vicons/ionicons5'
 import type { DataTableColumns, SelectOption } from 'naive-ui'
-import { allPages, getRequestLog, listConsumerKeys, listKeyOptions, listRequestLogs, listUpstreams } from '@/api/admin'
+import { allPages, downloadLogBody, getLogBody, getRequestLog, listConsumerKeys, listKeyOptions, listRequestLogs, listUpstreams } from '@/api/admin'
 import type { RequestLog, RequestLogDetail, RequestLogQuery, SchedulerDecision, SchedulerCandidate, RequestAttempt } from '@/api/types'
 import { copyText, errText, formatMoney, formatNumber, formatSeconds, formatTime, formatTokenCount, formatTps } from '@/utils/format'
 
@@ -26,7 +27,15 @@ const attemptColumns: DataTableColumns<RequestAttempt> = [
   { title: 'HTTP', key: 'status_code', width: 65 },
   { title: '单次首字', key: 'ttft_ms', width: 100, render: r => r.ttft_ms ? formatSeconds(r.ttft_ms) : '-' },
   { title: '单次耗时', key: 'duration_ms', width: 100, render: r => formatSeconds(r.duration_ms) },
+  { title: '响应头', key: 'headers_ms', width: 90, render: r => r.headers_ms ? formatSeconds(r.headers_ms) : '-' },
+  { title: '阶段', key: 'failure_phase', width: 120, render: r => phaseLabel[r.failure_phase || ''] || r.failure_phase || '-' },
+  { title: '错误', key: 'error_message', width: 220, ellipsis: { tooltip: true } },
+  { title: '首字事件', key: 'ttft_event', width: 220, render: r => r.ttft_event || ttftLabel[r.ttft_status || ''] || '历史未记录' },
 ]
+const phaseLabel: Record<string, string> = { local: '本地准备', connecting: '连接上游', dns: 'DNS 解析', tls: 'TLS 握手', sending_request: '发送请求', awaiting_headers: '等待响应头', awaiting_first_output: '等待有效输出', streaming: '传输响应' }
+const ttftLabel: Record<string, string> = { measured: '已测量', pending: '等待首字', no_output: '未检测到有效输出', interrupted: '首字前中断', event_limit: '事件超出检测上限' }
+const bodyStatusLabel: Record<string, string> = { complete: '原文完整', saving: '保存中', partial: '原文不完整', omitted: '二进制已省略', error: '归档失败' }
+const bodyReasonLabel: Record<string, string> = { size_limit: '超过单份保存上限', queue_full: '归档缓冲已满', storage_error: '存储写入失败', storage_or_quota_error: '存储写入失败或容量不足', metadata_write_failed: '归档信息保存失败', stream_interrupted: '响应中断或提前结束', process_interrupted: '进程中断', binary_omitted: '二进制已省略', multipart_files_omitted: '上传文件仅保留元信息' }
 
 const loading = ref(false)
 const error = ref('')
@@ -72,7 +81,66 @@ const activeIo = computed(() => ioTabs.find((t) => t.key === ioTab.value) || ioT
 const activeIoRaw = computed(() => {
   const d = detail.value
   if (!d) return ''
+  if (activeBody.value && loadedBodyId.value === activeBody.value.id) return bodyPage.value
+  if (activeBody.value && selectedBodyId.value && activeBody.value.id !== bodyCandidates.value.at(-1)?.id) return ''
   return (d[activeIo.value.field] as string | undefined) || ''
+})
+
+const selectedBodyId = ref('')
+const bodyCandidates = computed(() => {
+  const direction = ioTab.value === 'req_body' ? 'request' : ioTab.value === 'resp_body' ? 'response' : ''
+  return (detail.value?.bodies || []).filter(b => b.direction === direction)
+})
+const activeBody = computed(() => bodyCandidates.value.find(b => b.id === selectedBodyId.value) || bodyCandidates.value.at(-1))
+const bodyOptions = computed(() => bodyCandidates.value.map(b => {
+  const attempt = detail.value?.attempts?.find(a => a.id === b.attempt_id)
+  return { value: b.id, label: `${attempt ? `Key ${attempt.platform_key_id} · ${formatTime(attempt.started_at)}` : '请求正文'} · ${bodyStatusLabel[b.status]}` }
+}))
+const bodyNotice = computed(() => {
+  const b = activeBody.value
+  if (b) return `${bodyStatusLabel[b.status]} · 接收 ${formatNumber(b.received_bytes)} B / 保存 ${formatNumber(b.saved_bytes)} B${b.reason ? ` · ${bodyReasonLabel[b.reason] || b.reason}` : ''}`
+  const truncated = ioTab.value === 'req_body' ? detail.value?.request_body_truncated : ioTab.value === 'resp_body' ? detail.value?.response_body_truncated : false
+  return truncated ? '历史正文已截断或省略，未保存完整原文' : ''
+})
+const bodyPage = ref('')
+const loadedBodyId = ref('')
+const bodyLoading = ref(false)
+const bodyDownloadLoading = ref(false)
+const bodyError = ref('')
+const bodyOffsets = ref<number[]>([0])
+const bodyNext = ref(0)
+const bodyEof = ref(true)
+let bodySequence = 0
+async function loadBody(offset = 0) {
+  const b = activeBody.value
+  const id = detail.value?.id
+  if (!b || !id || b.status === 'saving' || b.status === 'error') return
+  const seq = ++bodySequence
+  bodyLoading.value = true
+  bodyError.value = ''
+  try {
+    const result = await getLogBody(id, b.id, offset)
+    if (seq !== bodySequence) return
+    bodyPage.value = result.text
+    loadedBodyId.value = b.id
+    bodyNext.value = result.next_offset
+    bodyEof.value = result.eof
+  } catch (e) { if (seq === bodySequence) bodyError.value = errText(e) }
+  finally { if (seq === bodySequence) bodyLoading.value = false }
+}
+function nextBodyPage() { bodyOffsets.value.push(bodyNext.value); void loadBody(bodyNext.value) }
+function previousBodyPage() { bodyOffsets.value.pop(); void loadBody(bodyOffsets.value.at(-1) || 0) }
+async function downloadBody() {
+  const b = activeBody.value
+  if (!b || !detail.value) return
+  bodyDownloadLoading.value = true
+  try { await downloadLogBody(detail.value.id, b.id) } catch (e) { message.error(errText(e)) }
+  finally { bodyDownloadLoading.value = false }
+}
+watch(() => [activeBody.value?.id, activeBody.value?.status, showDetail.value], () => {
+  ++bodySequence
+  bodyPage.value = ''; loadedBodyId.value = ''; bodyOffsets.value = [0]; bodyNext.value = 0; bodyEof.value = true; bodyError.value = ''; bodyLoading.value = false
+  if (showDetail.value) void loadBody()
 })
 
 let timer: number | undefined
@@ -192,7 +260,7 @@ function startLive() {
   stopLive()
   timer = window.setInterval(() => {
     if (live.value) void load({ silent: true })
-    if (showDetail.value && detail.value?.in_flight) void refreshDetail(true)
+    if (showDetail.value && (detail.value?.in_flight || detail.value?.bodies?.some(b => b.status === 'saving'))) void refreshDetail(true)
   }, LIVE_MS)
 }
 
@@ -223,6 +291,7 @@ async function refreshDetail(silent = false) {
 }
 
 function openDetail(row: RequestLog) {
+  selectedBodyId.value = ''
   showDetail.value = true
   activeDetailId = row.id
   ioTab.value = 'req_headers'
@@ -536,6 +605,7 @@ onUnmounted(() => {
                 {{ formatSeconds(rowElapsedMs(detail)) }}
                 <span class="muted"> · {{ formatTps(detail.output_tokens, rowElapsedMs(detail), detail.ttft_ms) }}</span>
               </div>
+              <div class="ttft-meta"><span class="meta-k">首字检测</span>{{ ttftLabel[detail.ttft_status || ''] || '历史未记录' }}<span v-if="detail.ttft_event" class="mono"> · {{ detail.ttft_event }}</span></div>
               <div>
                 <span class="meta-k">Tokens</span>{{ formatNumber(detail.input_tokens) }} /
                 {{ formatNumber(detail.output_tokens) }}
@@ -566,16 +636,14 @@ onUnmounted(() => {
             </section>
             <section v-if="detail.attempts?.length" class="selection-trace">
               <h3>上游尝试</h3>
-              <n-data-table size="small" :columns="attemptColumns" :data="detail.attempts" :scroll-x="480" />
+              <n-data-table size="small" :columns="attemptColumns" :data="detail.attempts" :scroll-x="1130" />
+              <details v-for="attempt in detail.attempts.filter(a => a.event_summary)" :key="attempt.id" class="decision-details">
+                <summary>Key {{ attempt.platform_key_id }} · 事件摘要 · 接收 {{ formatNumber(attempt.received_bytes || 0) }} B</summary>
+                <pre class="log-pre">{{ pretty(attempt.event_summary || '') }}</pre>
+              </details>
             </section>
             <n-alert v-if="detail.error_message" type="error" :title="detail.error_message" style="margin: 10px 0" />
             <n-alert v-if="detail.error_message === 'stale in-flight request'" type="warning" title="请求异常中断，耗时为最后记录值" style="margin: 10px 0" />
-            <n-alert
-              v-if="detail.request_body_truncated || detail.response_body_truncated"
-              type="warning"
-              title="部分内容已截断或未保存二进制（上限 64KB；图片 / multipart 只记占位）"
-              style="margin: 10px 0"
-            />
 
             <div class="io-tabs">
               <button
@@ -591,11 +659,23 @@ onUnmounted(() => {
               </button>
             </div>
             <n-card size="small" :bordered="true" class="io-pane">
+              <n-select v-if="bodyCandidates.length > 1" v-model:value="selectedBodyId" :options="bodyOptions" :placeholder="bodyOptions.at(-1)?.label" size="small" />
+              <p v-if="bodyNotice" class="muted body-notice">{{ bodyNotice }}</p>
+              <n-alert v-if="bodyError" type="error" :title="bodyError" />
               <div class="block-head">
                 <h3>{{ activeIo.label }}</h3>
-                <n-button size="tiny" @click="copySection(activeIo.label, activeIoRaw)">复制</n-button>
+                <div class="body-tools">
+                  <n-button v-if="activeBody" size="tiny" quaternary title="重新读取" aria-label="重新读取" :loading="bodyLoading" @click="refreshDetail().then(() => loadBody(bodyOffsets.at(-1) || 0))"><n-icon :component="RefreshOutline" /></n-button>
+                  <n-button size="tiny" quaternary title="复制当前内容" aria-label="复制当前内容" @click="copySection(activeIo.label, activeIoRaw)"><n-icon :component="CopyOutline" /></n-button>
+                  <n-button v-if="activeBody" size="tiny" quaternary title="下载已保存正文" aria-label="下载已保存正文" :loading="bodyDownloadLoading" :disabled="activeBody.status === 'saving' || activeBody.status === 'error'" @click="downloadBody"><n-icon :component="DownloadOutline" /></n-button>
+                </div>
               </div>
-              <pre class="log-pre">{{ pretty(activeIoRaw) || '—' }}</pre>
+              <n-spin :show="bodyLoading"><pre class="log-pre">{{ pretty(activeIoRaw) || '—' }}</pre></n-spin>
+              <div v-if="activeBody && loadedBodyId" class="body-pagination">
+                <n-button size="tiny" quaternary title="上一段" aria-label="上一段" :disabled="bodyLoading || bodyOffsets.length < 2" @click="previousBodyPage"><n-icon :component="ArrowBackOutline" /></n-button>
+                <span>第 {{ bodyOffsets.length }} 段</span>
+                <n-button size="tiny" quaternary title="下一段" aria-label="下一段" :disabled="bodyLoading || bodyEof" @click="nextBodyPage"><n-icon :component="ArrowForwardOutline" /></n-button>
+              </div>
             </n-card>
           </template>
         </n-spin>
@@ -605,6 +685,10 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.body-tools, .body-pagination { display: flex; align-items: center; gap: 8px; }
+.body-pagination { justify-content: flex-end; margin-top: 8px; }
+.body-notice { font-size: 12px; overflow-wrap: anywhere; }
+.ttft-meta { grid-column: 1 / -1; }
 .decision-details { margin-top: 8px; max-width: 100%; }
 .decision-details summary { cursor: pointer; margin-bottom: 8px; }
 .live-ctl {

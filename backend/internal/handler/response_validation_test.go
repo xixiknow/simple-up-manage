@@ -30,6 +30,9 @@ func TestResponsesMetadataStream(t *testing.T) {
 		ok, hasFirst bool
 	}{
 		{"before output", testRateLimitsFrame + testResponseDelta + testResponseCompleted, true, true},
+		{"done without delta", testResponseMetadata + "event: response.function_call_arguments.done\ndata: {\"arguments\":\"{}\"}\n\n" + testResponseCompleted, true, true},
+		{"completion output only", "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"object\":\"response\",\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"arguments\":\"{}\"}]}}\n\n", true, true},
+		{"invalid completion with output", "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"arguments\":\"{}\"}]}}\n\n", false, false},
 		{"consecutive metadata", testRateLimitsFrame + testResponseMetadata + testResponseDelta + testResponseMetadata + testResponseCompleted, true, true},
 		{"full metadata sequence", testRateLimitsFrame + testResponseMetadata + testResponseDelta + testResponseTiming + testResponseCompleted, true, true},
 		{"timing without completion", testResponseDelta + testResponseTiming, false, true},

@@ -69,6 +69,7 @@ func New(cfg *config.Config, db *gorm.DB, enc *crypto.AESGCM, opsSvc *ops.Servic
 
 		a.GET("/request-logs", admin.ListRequestLogs)
 		a.GET("/request-logs/:id", admin.GetRequestLog)
+		a.GET("/request-logs/:id/bodies/:body_id", admin.GetLogBody)
 
 		a.GET("/rate-notices", admin.ListRateNotices)
 		a.GET("/rate-notices/unread-count", admin.RateNoticeUnreadCount)

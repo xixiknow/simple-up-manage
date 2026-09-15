@@ -21,6 +21,7 @@ services:
       - "6379:6379"
 
   backend:
+    stop_grace_period: 330s
     build:
       context: .
       dockerfile: deploy/Dockerfile
@@ -39,6 +40,10 @@ services:
       REDIS_URL: redis://redis:6379/0
       STATIC_DIR: /app/web
       CONFIG_FILE: ""
+      LOG_BODIES_DIR: /data/log-bodies
+    volumes:
+      - logbodies:/data/log-bodies
 
 volumes:
   pgdata:
+  logbodies:

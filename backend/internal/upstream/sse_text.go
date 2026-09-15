@@ -20,13 +20,24 @@ func SSELineHasText(line string) bool {
 }
 
 func JSONHasGeneratedText(raw []byte) bool {
+	return SSEEventHasText("", raw)
+}
+
+// SSEEventHasText also handles streams that provide the type only in event:.
+func SSEEventHasText(eventName string, raw []byte) bool {
 	var top map[string]any
 	if err := json.Unmarshal(raw, &top); err != nil {
 		return false
 	}
 	typ, _ := top["type"].(string)
-	if nonEmptyStr(top["delta"]) != "" && (typ == "response.output_text.delta" || typ == "response.reasoning_text.delta" || typ == "response.reasoning_summary_text.delta" || typ == "response.function_call_arguments.delta" || typ == "response.refusal.delta") {
-		return true
+	if typ == "" {
+		typ = eventName
+	}
+	if top["error"] != nil {
+		return false
+	}
+	if strings.HasPrefix(typ, "response.") {
+		return responsesHasOutput(typ, top)
 	}
 	if d, ok := asMap(top["delta"]); ok && deltaHasText(d) {
 		return true
@@ -52,6 +63,76 @@ func JSONHasGeneratedText(raw []byte) bool {
 				continue
 			}
 			if nonEmptyStr(m["text"]) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func responsesHasOutput(typ string, top map[string]any) bool {
+	switch typ {
+	case "response.output_text.delta", "response.reasoning_text.delta", "response.reasoning_summary_text.delta", "response.function_call_arguments.delta", "response.refusal.delta", "response.custom_tool_call_input.delta":
+		return nonEmptyStr(top["delta"]) != ""
+	case "response.output_text.done", "response.reasoning_text.done", "response.reasoning_summary_text.done":
+		return nonEmptyStr(top["text"]) != ""
+	case "response.function_call_arguments.done":
+		return nonEmptyStr(top["arguments"]) != ""
+	case "response.custom_tool_call_input.done":
+		return nonEmptyStr(top["input"]) != ""
+	case "response.refusal.done":
+		return nonEmptyStr(top["refusal"]) != ""
+	case "response.content_part.added", "response.content_part.done", "response.reasoning_summary_part.added", "response.reasoning_summary_part.done":
+		part, _ := asMap(top["part"])
+		return responsePartHasOutput(part)
+	case "response.output_item.added", "response.output_item.done":
+		item, _ := asMap(top["item"])
+		return responseItemHasOutput(item)
+	case "response.completed":
+		response, _ := asMap(top["response"])
+		if response["status"] != "completed" {
+			return false
+		}
+		items, _ := response["output"].([]any)
+		for _, value := range items {
+			item, _ := asMap(value)
+			if responseItemHasOutput(item) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func responsePartHasOutput(part map[string]any) bool {
+	switch part["type"] {
+	case "output_text", "reasoning_text", "summary_text":
+		return nonEmptyStr(part["text"]) != ""
+	case "refusal":
+		return nonEmptyStr(part["refusal"]) != ""
+	}
+	return false
+}
+
+func responseItemHasOutput(item map[string]any) bool {
+	switch item["type"] {
+	case "function_call":
+		return nonEmptyStr(item["arguments"]) != ""
+	case "custom_tool_call":
+		return nonEmptyStr(item["input"]) != ""
+	case "message":
+		if item["role"] != "assistant" {
+			return false
+		}
+	case "reasoning":
+	default:
+		return false
+	}
+	for _, field := range []string{"content", "summary"} {
+		parts, _ := item[field].([]any)
+		for _, value := range parts {
+			part, _ := asMap(value)
+			if responsePartHasOutput(part) {
 				return true
 			}
 		}

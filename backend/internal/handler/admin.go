@@ -1221,6 +1221,12 @@ func (h *Admin) GetRequestLog(c *gin.Context) {
 		httpx.Internal(c, err.Error())
 		return
 	}
+	if h.DB.Migrator().HasTable(&domain.LogBody{}) {
+		if err := h.DB.Where("request_log_id = ?", l.ID).Order("created_at, id").Find(&d.Bodies).Error; err != nil {
+			httpx.Internal(c, err.Error())
+			return
+		}
+	}
 	tmp := []logDTO{d.logDTO}
 	h.attachLogCosts(tmp)
 	d.logDTO = tmp[0]

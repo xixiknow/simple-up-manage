@@ -13,6 +13,7 @@ import (
 
 	"simple-up-manage/internal/crypto"
 	"simple-up-manage/internal/domain"
+	"simple-up-manage/internal/logarchive"
 	"simple-up-manage/internal/upstream"
 
 	"github.com/redis/go-redis/v9"
@@ -20,10 +21,11 @@ import (
 )
 
 type Service struct {
-	DB     *gorm.DB
-	Enc    *crypto.AESGCM
-	Client *upstream.Client
-	Redis  *redis.Client
+	DB       *gorm.DB
+	Enc      *crypto.AESGCM
+	Client   *upstream.Client
+	Redis    *redis.Client
+	Archives *logarchive.Store
 }
 
 func New(db *gorm.DB, enc *crypto.AESGCM, rdb *redis.Client) *Service {

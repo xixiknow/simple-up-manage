@@ -237,6 +237,8 @@ type logDTO struct {
 	CacheReadTokens     int64     `json:"cache_read_tokens"`
 	CacheCreationTokens int64     `json:"cache_creation_tokens"`
 	TTFTMs              int       `json:"ttft_ms"`
+	TTFTStatus          string    `json:"ttft_status"`
+	TTFTEvent           string    `json:"ttft_event"`
 	DurationMs          int       `json:"duration_ms"`
 	InFlight            bool      `json:"in_flight"`
 	Stream              bool      `json:"stream"`
@@ -254,6 +256,7 @@ type logDTO struct {
 type logDetailDTO struct {
 	logDTO
 	Attempts          []domain.RequestAttempt `json:"attempts"`
+	Bodies            []domain.LogBody        `json:"bodies"`
 	RequestHeaders    string                  `json:"request_headers"`
 	RequestBody       string                  `json:"request_body"`
 	RequestBodyTrunc  bool                    `json:"request_body_truncated"`
@@ -280,6 +283,8 @@ func toLogDTO(l domain.RequestLog, upstreamName, consumerName string) logDTO {
 		CacheReadTokens:     l.CacheReadTokens,
 		CacheCreationTokens: l.CacheCreationTokens,
 		TTFTMs:              l.TTFTMs,
+		TTFTStatus:          l.TTFTStatus,
+		TTFTEvent:           l.TTFTEvent,
 		DurationMs:          l.DurationMs,
 		InFlight:            l.InFlight,
 		Stream:              l.Stream,

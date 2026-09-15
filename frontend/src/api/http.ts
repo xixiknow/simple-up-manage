@@ -120,6 +120,19 @@ export function get<T>(path: string, query?: Record<string, unknown>) {
   return request<T>('GET', path, undefined, query)
 }
 
+export async function download(path: string, filename: string) {
+  const token = localStorage.getItem(TOKEN_KEY)
+  const res = await fetch(`${BASE}${path}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+  if (res.status === 401) onUnauthorized?.()
+  if (!res.ok) throw new ApiError('正文下载失败', 'download_failed', res.status)
+  const url = URL.createObjectURL(await res.blob())
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  anchor.click()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
 export function post<T>(path: string, body?: unknown, query?: Record<string, unknown>) {
   return request<T>('POST', path, body ?? {}, query)
 }

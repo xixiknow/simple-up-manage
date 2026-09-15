@@ -26,6 +26,8 @@ var redactHeaderKeys = map[string]struct{}{
 }
 
 type ioCapture struct {
+	TTFTStatus  string
+	TTFTEvent   string
 	StartedAt   time.Time
 	ReqStream   bool
 	StreamKnown bool

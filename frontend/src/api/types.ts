@@ -224,12 +224,27 @@ export type RequestLog = {
 
 export type RequestLogDetail = RequestLog & {
     attempts?: RequestAttempt[]
+  ttft_status?: string
+  ttft_event?: string
+  bodies?: LogBody[]
   request_headers?: string
   request_body?: string
   request_body_truncated?: boolean
   response_headers?: string
   response_body?: string
   response_body_truncated?: boolean
+}
+
+export type LogBody = {
+  id: string
+  attempt_id?: string
+  direction: 'request' | 'response'
+  content_type: string
+  status: 'saving' | 'complete' | 'partial' | 'omitted' | 'error'
+  reason?: string
+  received_bytes: number
+  saved_bytes: number
+  stored_bytes: number
 }
 
 export type RateChangeDirection = 'up' | 'down'
@@ -423,6 +438,14 @@ export type RequestAttempt = {
   duration_ms: number
   status_code: number
   started_at: string
+  ttft_status?: string
+  ttft_event?: string
+  failure_action?: string
+  failure_phase?: string
+  error_message?: string
+  headers_ms?: number
+  received_bytes?: number
+  event_summary?: string
 }
 
 export type SchedulerDecision = {

@@ -10,13 +10,16 @@ import (
 )
 
 type Config struct {
-	Listen      string `yaml:"listen"`
-	AdminToken  string `yaml:"admin_token"`
-	EncryptKey  string `yaml:"encrypt_key"`
-	DatabaseURL string `yaml:"database_url"`
-	RedisURL    string `yaml:"redis_url"`
-	StaticDir   string `yaml:"static_dir"`
-	Jobs        Jobs   `yaml:"jobs"`
+	Listen            string `yaml:"listen"`
+	AdminToken        string `yaml:"admin_token"`
+	EncryptKey        string `yaml:"encrypt_key"`
+	DatabaseURL       string `yaml:"database_url"`
+	RedisURL          string `yaml:"redis_url"`
+	StaticDir         string `yaml:"static_dir"`
+	LogBodiesDir      string `yaml:"log_bodies_dir"`
+	LogBodyMaxBytes   int64  `yaml:"log_body_max_bytes"`
+	LogBodiesMaxBytes int64  `yaml:"log_bodies_max_bytes"`
+	Jobs              Jobs   `yaml:"jobs"`
 }
 
 type Jobs struct {
@@ -30,7 +33,10 @@ type Jobs struct {
 
 func defaults() Config {
 	return Config{
-		Listen: ":8080",
+		Listen:            ":8080",
+		LogBodiesDir:      "data/log-bodies",
+		LogBodyMaxBytes:   64 << 20,
+		LogBodiesMaxBytes: 10 << 30,
 		Jobs: Jobs{
 			BalanceInterval:      time.Minute,
 			BillingInterval:      time.Minute,
@@ -81,6 +87,12 @@ func Load() (*Config, error) {
 	}
 	if v := os.Getenv("STATIC_DIR"); v != "" {
 		cfg.StaticDir = v
+	}
+	if v := os.Getenv("LOG_BODIES_DIR"); v != "" {
+		cfg.LogBodiesDir = v
+	}
+	if cfg.LogBodyMaxBytes <= 0 || cfg.LogBodiesMaxBytes <= 0 || cfg.LogBodiesDir == "" {
+		return nil, fmt.Errorf("log body directory and positive limits are required")
 	}
 
 	if cfg.Listen == "" {

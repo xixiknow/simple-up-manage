@@ -32,14 +32,19 @@ func (h *Gateway) completeAttempt(ctx context.Context, pk *domain.PlatformKey, a
 	}
 	a.DurationMs = int(a.CompletedAt.Sub(a.StartedAt).Milliseconds())
 	var usage upstream.TokenUsage
+	a.TTFTStatus = "interrupted"
 	if col != nil {
+		a.TTFTStatus = col.ttftStatus(a.Result == "success")
+		a.TTFTEvent = col.firstEvent
+		summary, _ := json.Marshal(col.events)
+		a.EventSummary = string(summary)
 		usage = col.usage
 		a.InputTokens, a.CacheReadTokens, a.CacheCreationTokens, a.OutputTokens = usage.InputTokens, usage.CacheReadTokens, usage.CacheCreationTokens, usage.OutputTokens
 		// OpenAI input usage includes cached tokens; Anthropic input excludes them.
 		if a.Protocol == domain.ProtocolOpenAI {
 			a.InputTokens = max(0, a.InputTokens-a.CacheReadTokens-a.CacheCreationTokens)
 		}
-		if a.Result == "success" && !col.firstAt.IsZero() {
+		if !col.firstAt.IsZero() {
 			a.TTFTMs = max(1, int(col.firstAt.Sub(a.StartedAt).Milliseconds()))
 		}
 	}
