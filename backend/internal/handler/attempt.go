@@ -16,6 +16,8 @@ func (h *Gateway) completeAttempt(ctx context.Context, pk *domain.PlatformKey, a
 	a.CompletedAt = time.Now()
 	a.Result = "upstream_failure"
 	switch {
+	case out.neutral:
+		a.Result = "request_rejected"
 	case out.capacityBusy:
 		a.Result = "capacity_rejected"
 	case ctx.Err() != nil && !out.validSuccess:

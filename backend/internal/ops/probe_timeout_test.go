@@ -33,7 +33,7 @@ func TestProbeTimeoutIndependent(t *testing.T) {
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(`{"data":[],"choices":[{"message":{"content":"hi"}}]}`))
+				_, _ = w.Write([]byte(`{"data":[],"choices":[{"message":{"content":"hi"},"finish_reason":"stop"}]}`))
 			}))
 			defer server.Close()
 			db := testDB(t)

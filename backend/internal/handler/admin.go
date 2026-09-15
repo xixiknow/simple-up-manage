@@ -1515,6 +1515,11 @@ func (h *Admin) ExplainScheduler(c *gin.Context) {
 		if bound {
 			req.AllowKeys = allow
 			req.DriftKeys = drift
+			req.RouteReasons, err = ops.ExplainRouteRejections(c.Request.Context(), h.DB, consumerID, protocol, model)
+			if err != nil {
+				httpx.Internal(c, err.Error())
+				return
+			}
 		}
 	}
 	cands, err := h.Picker.Explain(c.Request.Context(), req)

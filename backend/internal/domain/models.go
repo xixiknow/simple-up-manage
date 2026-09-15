@@ -319,6 +319,10 @@ type KeyModelCooldown struct {
 }
 
 type ProbeLog struct {
+	Protocol      string    `gorm:"size:16" json:"protocol"`
+	Model         string    `gorm:"size:128" json:"model"`
+	Path          string    `gorm:"size:256" json:"path"`
+	Stream        bool      `json:"stream"`
 	ID            uint      `gorm:"primaryKey" json:"id"`
 	PlatformKeyID uint      `gorm:"index;not null" json:"platform_key_id"`
 	Kind          string    `gorm:"size:16;not null" json:"kind"`

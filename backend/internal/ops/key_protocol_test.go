@@ -19,7 +19,7 @@ func TestKeyProtocolProbes(t *testing.T) {
 			t.Errorf("wrong path %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[],"content":[{"type":"text","text":"hi"}]}`))
+		_, _ = w.Write([]byte(`{"data":[],"type":"message","stop_reason":"end_turn","content":[{"type":"text","text":"hi"}]}`))
 	}))
 	defer server.Close()
 	s := New(testDB(t), nil, nil)

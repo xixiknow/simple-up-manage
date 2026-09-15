@@ -71,6 +71,10 @@ func AutoMigrate(db *gorm.DB) error {
 		&domain.ConsumerRouteGroup{},
 		&domain.RequestLog{},
 		&domain.RequestAttempt{},
+		&domain.RoutingCircuit{},
+		&domain.RoutingObservation{},
+		&domain.RoutingBudget{},
+		&domain.RoutingMigration{},
 		&domain.KeyModelCooldown{},
 		&domain.ProbeLog{},
 		&domain.RateChangeNotice{},
@@ -78,6 +82,9 @@ func AutoMigrate(db *gorm.DB) error {
 		&domain.CatalogModel{},
 		&domain.CatalogMeta{},
 	); err != nil {
+		return err
+	}
+	if err := migrateRoutingHealth(db); err != nil {
 		return err
 	}
 	if err := migrateRequestLogState(db); err != nil {

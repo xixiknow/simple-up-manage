@@ -10,6 +10,9 @@ import (
 var ErrNoUpstream = errors.New("no enabled upstream matching protocol")
 
 type Request struct {
+	Diagnostic       bool
+	BudgetReady      bool
+	ExplorationSlot  bool
 	ConsumerID       uint
 	Path             string
 	Stream           bool
@@ -27,10 +30,21 @@ type Request struct {
 	// every matching group's reference range. They are never picked, but are
 	// reported with skip reason "route_rate_drift" instead of the generic
 	// "not_in_route_group" so operators can tell the two apart.
-	DriftKeys map[uint]struct{}
+	DriftKeys    map[uint]struct{}
+	RouteReasons map[uint]string
 }
 
 type Candidate struct {
+	ProbeStatus         string              `json:"probe_status,omitempty"`
+	ProbeAt             int64               `json:"probe_at,omitempty"`
+	ProbeModel          string              `json:"probe_model,omitempty"`
+	ProbePath           string              `json:"probe_path,omitempty"`
+	ProbeStream         bool                `json:"probe_stream"`
+	CircuitState        string              `json:"circuit_state"`
+	CircuitScope        string              `json:"circuit_scope,omitempty"`
+	CircuitReason       string              `json:"circuit_reason,omitempty"`
+	CircuitUntil        int64               `json:"circuit_until,omitempty"`
+	Recovery            bool                `json:"recovery"`
 	LatencySamples      int                 `json:"latency_samples"`
 	LastSampleAt        int64               `json:"last_sample_at"`
 	Reliable            bool                `json:"reliable"`

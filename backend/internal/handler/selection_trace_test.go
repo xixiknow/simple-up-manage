@@ -128,7 +128,7 @@ func TestSelectionTracePersistsAttemptResults(t *testing.T) {
 			retries := 0
 			for _, event := range trace {
 				retries += event.RetryCount
-				if event.Result == "retry" && event.Reason != "cooldown_provider" {
+				if event.Result == "retry" && event.Reason != "request_scope_failure" {
 					t.Fatalf("retry reason lost: %+v", event)
 				}
 			}

@@ -34,12 +34,6 @@ type stickyEntry struct {
 	Expiry time.Time
 }
 
-type failureStats struct {
-	KeyID     uint  `gorm:"column:platform_key_id"`
-	Failures  int64 `gorm:"column:failures"`
-	Successes int64 `gorm:"column:successes"`
-}
-
 type runtimeState struct {
 	mu               sync.Mutex
 	keyInflight      map[uint]int
@@ -120,23 +114,17 @@ func (p *BandPicker) Observe(ctx context.Context, keyID uint, model string, succ
 }
 
 func (p *BandPicker) Pick(ctx context.Context, req Request) (*domain.PlatformKey, *domain.Upstream, error) {
-	if p.Settings().RankingMode == "stable_latency" {
-		key, up, _, err := p.PickDecision(ctx, req)
-		return key, up, err
-	}
-	cands, err := p.evaluate(ctx, req)
-	if err != nil {
-		return nil, nil, err
-	}
-	for i := range cands {
-		if cands[i].Selected && cands[i].Key != nil && cands[i].Upstream != nil {
-			return cands[i].Key, cands[i].Upstream, nil
-		}
-	}
-	return nil, nil, ErrNoUpstream
+	key, up, _, err := p.PickDecision(ctx, req)
+	return key, up, err
 }
 
 func (p *BandPicker) Explain(ctx context.Context, req Request) ([]Candidate, error) {
+	req.Diagnostic = true
+	var err error
+	req, err = p.prepareBudget(ctx, req, false)
+	if err != nil {
+		return nil, err
+	}
 	if p.Settings().RankingMode == "stable_latency" {
 		_, _, d, err := p.stableDecision(ctx, req, false)
 		if err == ErrNoUpstream {
@@ -171,23 +159,29 @@ func (p *BandPicker) evaluate(ctx context.Context, req Request) ([]Candidate, er
 	}
 
 	out := make([]Candidate, 0, len(keys))
-	var failureByKey map[uint]failureStats
-	if cfg.RankingMode == "stable_latency" {
-		failureByKey = p.recentAttemptFailures(ctx, req, cfg)
-	} else {
-		failureByKey = p.recentFailureStats(ctx, keys, cfg)
-	}
 	modelCooldowns := p.activeModelCooldowns(ctx, keys, req.Model)
 	var eligible []int
 	for i := range keys {
-		c := p.inspect(ctx, &keys[i], req, cfg, excluded, excludedProviders, excludedKeyModels, failureByKey, modelCooldowns)
+		c := p.inspect(ctx, &keys[i], req, cfg, excluded, excludedProviders, excludedKeyModels, modelCooldowns)
 		out = append(out, c)
+	}
+	if err := p.applyRoutingHealth(ctx, req, out); err != nil {
+		return nil, err
+	}
+	for i, c := range out {
 		if c.Eligible {
 			eligible = append(eligible, i)
 		}
 	}
 	if len(eligible) == 0 {
 		return out, nil
+	}
+	for _, i := range eligible {
+		if out[i].Recovery {
+			out[i].Selected = true
+			out[i].DecisionReason = "recovery_validation"
+			return out, nil
+		}
 	}
 	if cfg.RankingMode == "stable_latency" {
 		return out, nil
@@ -229,7 +223,7 @@ func (p *BandPicker) evaluate(ctx context.Context, req Request) ([]Candidate, er
 	return out, nil
 }
 
-func (p *BandPicker) inspect(ctx context.Context, key *domain.PlatformKey, req Request, cfg domain.SchedulerSettings, excluded, excludedProviders, excludedKeyModels map[uint]struct{}, failureByKey map[uint]failureStats, modelCooldowns map[uint]struct{}) Candidate {
+func (p *BandPicker) inspect(ctx context.Context, key *domain.PlatformKey, req Request, cfg domain.SchedulerSettings, excluded, excludedProviders, excludedKeyModels map[uint]struct{}, modelCooldowns map[uint]struct{}) Candidate {
 	c := Candidate{
 		Key:          key,
 		Upstream:     key.Upstream,
@@ -257,6 +251,9 @@ func (p *BandPicker) inspect(ctx context.Context, key *domain.PlatformKey, req R
 				c.SkipReason = "route_rate_drift"
 			} else {
 				c.SkipReason = "not_in_route_group"
+				if reason := req.RouteReasons[key.ID]; reason != "" {
+					c.SkipReason = reason
+				}
 			}
 			return c
 		}
@@ -287,10 +284,6 @@ func (p *BandPicker) inspect(ctx context.Context, key *domain.PlatformKey, req R
 	}
 	if key.Upstream != nil && key.Upstream.Concurrency > 0 && c.ProviderInflight >= key.Upstream.Concurrency {
 		c.SkipReason = "provider_concurrency_exceeded"
-		return c
-	}
-	if stats, ok := failureByKey[key.ID]; ok && stats.Successes == 0 && stats.Failures >= int64(cfg.FailureThreshold) {
-		c.SkipReason = "recent_failure_cooldown"
 		return c
 	}
 
@@ -373,31 +366,6 @@ func (p *BandPicker) activeModelCooldowns(ctx context.Context, keys []domain.Pla
 	return out
 }
 
-// recentFailureStats loads the short-window circuit counters used by
-// Aether-style schedulers. A recent success clears the guard; this prevents a
-// burst of transient failures from repeatedly entering the request path.
-func (p *BandPicker) recentFailureStats(ctx context.Context, keys []domain.PlatformKey, cfg domain.SchedulerSettings) map[uint]failureStats {
-	stats := make(map[uint]failureStats)
-	if cfg.FailureThreshold <= 0 || cfg.FailureWindowSec <= 0 || len(keys) == 0 {
-		return stats
-	}
-	ids := make([]uint, 0, len(keys))
-	for i := range keys {
-		ids = append(ids, keys[i].ID)
-	}
-	since := time.Now().Add(-time.Duration(cfg.FailureWindowSec) * time.Second)
-	var rows []failureStats
-	p.db.WithContext(ctx).Model(&domain.RequestLog{}).
-		Select("platform_key_id, SUM(CASE WHEN success = ? THEN 1 ELSE 0 END) AS failures, SUM(CASE WHEN success = ? THEN 1 ELSE 0 END) AS successes", false, true).
-		Where("platform_key_id IN ? AND created_at >= ? AND in_flight = ?", ids, since, false).
-		Where("failure_action IS NULL OR failure_action <> ?", "exclude_busy_resource").
-		Group("platform_key_id").Scan(&rows)
-	for _, row := range rows {
-		stats[row.KeyID] = row
-	}
-	return stats
-}
-
 func hardReject(key *domain.PlatformKey, protocol, model string, filterByModels bool, excluded map[uint]struct{}) string {
 	if _, skip := excluded[key.ID]; skip {
 		return "excluded"
@@ -427,8 +395,6 @@ func hardReject(key *domain.PlatformKey, protocol, model string, filterByModels 
 	switch key.HealthStatus {
 	case domain.HealthDisabled:
 		return "disabled"
-	case domain.HealthDown:
-		return "down"
 	case domain.HealthLowBalance:
 		return "low_balance"
 	}

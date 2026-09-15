@@ -21,6 +21,7 @@ import (
 	"simple-up-manage/internal/middleware"
 	"simple-up-manage/internal/ops"
 	"simple-up-manage/internal/picker"
+	"simple-up-manage/internal/routinghealth"
 	"simple-up-manage/internal/upstream"
 
 	"github.com/gin-gonic/gin"
@@ -200,6 +201,7 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 	}
 
 	var exclude, excludeProviders, excludeKeyModels []uint
+	businessRequestID := uuid.NewString()
 	for attempt := 0; attempt < attempts; attempt++ {
 		pickReq := picker.Request{
 			ConsumerID: ck.ID, Path: path, Stream: reqSnap.ReqStream, SessionSource: sessionSource,
@@ -244,9 +246,48 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 		lg.traceEvent(h, pk, up, "selected", "picker")
 		lg.recordDecision(h, decision)
 		var outcome forwardOutcome
+		finishRouting := func() {}
+		if controller, ok := h.Picker.(picker.CircuitController); ok {
+			health := controller.RoutingHealth()
+			dim := routinghealth.Dimension{KeyID: pk.ID, Protocol: protocol, Model: model, Path: path, Stream: reqSnap.ReqStream}
+			token, admitErr := health.Admit(c.Request.Context(), dim, decision.Reason == "recovery_validation")
+			if admitErr != nil {
+				if !errors.Is(admitErr, routinghealth.ErrUnavailable) {
+					lastMsg = "routing state unavailable"
+					gatewayError(c, http.StatusServiceUnavailable, "api_error", lastMsg)
+					return
+				}
+				exclude = append(exclude, pk.ID)
+				attempt--
+				continue
+			}
+			startedAt := time.Now()
+			recorded := false
+			finishRouting = func() {
+				if recorded {
+					return
+				}
+				recorded = true
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				neutral := outcome.capacityBusy || outcome.neutral || (!outcome.validSuccess && c.Request.Context().Err() != nil) || (!outcome.validSuccess && outcome.action == "")
+				err := health.Observe(ctx, dim, token, routinghealth.Outcome{
+					RequestID: businessRequestID, StartedAt: startedAt, Success: outcome.validSuccess, Neutral: neutral,
+					AuthFailure: outcome.scope == failureScopeKey, Limited: outcome.status == 429, RetryAfter: outcome.retryAfter, Reason: outcome.action,
+				})
+				if err != nil {
+					slog.Error("persist routing outcome", "key_id", pk.ID, "error", err)
+				}
+			}
+			defer finishRouting()
+		}
 		for r := 0; r <= retries; r++ {
 			outcome = h.forwardOnce(c, ck, pk, up, protocol, model, session, reqID, body, reqSnap, lg, reqStart)
+			if decision.Reason == "recovery_validation" {
+				outcome.retrySame = false
+			}
 			if outcome.ok {
+				finishRouting()
 				if outcome.validSuccess {
 					if dp, ok := h.Picker.(picker.DecisionPicker); ok {
 						dp.CommitSuccess(c.Request.Context(), pickReq, decision, pk.ID, outcome.responseID)
@@ -275,7 +316,8 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 			}
 			break
 		}
-		if outcome.failOver && !outcome.capacityBusy {
+		finishRouting()
+		if _, scoped := h.Picker.(picker.CircuitController); !scoped && outcome.failOver && !outcome.capacityBusy {
 			h.applyFailure(c.Request.Context(), pk, up, model, outcome)
 		}
 		switch outcome.scope {
@@ -301,6 +343,8 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 const sameKeyRetryDelay = 250 * time.Millisecond
 
 type forwardOutcome struct {
+	neutral      bool
+	retryAfter   time.Duration
 	validSuccess bool
 	responseID   string
 	ok           bool
@@ -443,43 +487,41 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 		dur := int(time.Since(started).Milliseconds())
 		msg := proxyTimeoutMessage(err, firstWatch.timedOut())
 		h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, 0, false, upstream.TokenUsage{}, 0, dur, msg, reqSnap, true, true)
-		outcome := forwardOutcome{failOver: true, retrySame: !firstWatch.timedOut() && !isTimeoutErr(err), scope: failureScopeProvider, action: "cooldown_provider", msg: msg}
+		outcome := forwardOutcome{failOver: true, retrySame: !firstWatch.timedOut() && !isTimeoutErr(err), scope: failureScopeKeyModel, action: "transport_failure", msg: msg}
 		lg.markFailure(h, outcome.scope, outcome.action)
 		return outcome
 	}
 	attempt.StatusCode = resp.StatusCode
 
-	if failure := classifyHTTPFailure(resp.StatusCode, nil); failure.failOver && resp.StatusCode != http.StatusForbidden && !c.Writer.Written() {
+	if resp.StatusCode >= 400 && !c.Writer.Written() {
 		peek, _ := io.ReadAll(io.LimitReader(resp.Body, maxLogBodyBytes+1))
-		_ = resp.Body.Close()
-		failure = classifyHTTPFailure(resp.StatusCode, peek)
+		defer resp.Body.Close()
+		failure := classifyHTTPFailure(resp.StatusCode, peek)
+		failure.retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		snap := reqSnap.withResponse(resp.Header, resp.Header.Get("Content-Type"), peek, len(peek))
 		h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, int(time.Since(started).Milliseconds()), http.StatusText(resp.StatusCode), snap, true, true)
 		failure.msg = http.StatusText(resp.StatusCode)
 		lg.markFailure(h, failure.scope, failure.action)
-		return failure
-	}
-
-	// new-api / one-api report an exhausted token as 403 with a quota error
-	// code instead of 402. Treat it as low balance and try the next key.
-	if resp.StatusCode == http.StatusForbidden && !c.Writer.Written() {
-		peek, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		if isQuotaExhaustedBody(peek) {
-			_ = resp.Body.Close()
-			msg := "upstream quota exhausted"
-			snap := reqSnap.withResponse(resp.Header, resp.Header.Get("Content-Type"), peek, len(peek))
-			h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, int(time.Since(started).Milliseconds()), msg, snap, true, true)
-			outcome := forwardOutcome{failOver: true, lowBalance: true, status: resp.StatusCode, scope: failureScopeProvider, action: "mark_low_balance", msg: msg}
-			lg.markFailure(h, outcome.scope, outcome.action)
-			return outcome
+		if !failure.failOver {
+			lg.traceEvent(h, pk, up, "failed", failure.action)
+			for k, vs := range resp.Header {
+				if _, skip := hopByHop[strings.ToLower(k)]; !skip {
+					for _, v := range vs {
+						c.Writer.Header().Add(k, v)
+					}
+				}
+			}
+			c.Writer.Header().Set("X-Request-Id", reqID)
+			c.Status(resp.StatusCode)
+			total, copyErr := io.Copy(c.Writer, io.MultiReader(bytes.NewReader(peek), resp.Body))
+			if copyErr != nil {
+				failure.msg = copyErr.Error()
+			}
+			snap = reqSnap.withResponse(resp.Header, resp.Header.Get("Content-Type"), peek, int(total))
+			failure.ok = true
+			h.finishLog(lg, ck, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, int(time.Since(started).Milliseconds()), failure.msg, snap)
 		}
-		_ = resp.Body.Close()
-		msg := http.StatusText(resp.StatusCode)
-		snap := reqSnap.withResponse(resp.Header, resp.Header.Get("Content-Type"), peek, len(peek))
-		h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, int(time.Since(started).Milliseconds()), msg, snap, true, true)
-		outcome := forwardOutcome{failOver: true, status: resp.StatusCode, scope: failureScopeKey, action: "cooldown_key", msg: msg}
-		lg.markFailure(h, outcome.scope, outcome.action)
-		return outcome
+		return failure
 	}
 
 	defer resp.Body.Close()
@@ -587,7 +629,7 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 			msg := proxyTimeoutMessage(err, false)
 			snap := reqSnap.withResponse(resp.Header, resp.Header.Get("Content-Type"), respPrefix, respTotal)
 			h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, dur, msg, snap, true, true)
-			outcome := forwardOutcome{failOver: true, retrySame: !isTimeoutErr(err), scope: failureScopeProvider, action: "cooldown_provider", msg: msg}
+			outcome := forwardOutcome{failOver: true, retrySame: !isTimeoutErr(err), scope: failureScopeKeyModel, action: "transport_failure", msg: msg}
 			lg.markFailure(h, outcome.scope, outcome.action)
 			return outcome
 		}
@@ -619,7 +661,12 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 			h.addQuotaUsed(ck.ID, *collector.usage.CostUSD)
 		}
 	}
-	return forwardOutcome{ok: true, validSuccess: success, responseID: collector.responseID, msg: errMsg}
+	outcome = forwardOutcome{ok: true, validSuccess: success, responseID: collector.responseID, msg: errMsg}
+	if !success {
+		outcome.scope = failureScopeKeyModel
+		outcome.action = "response_failure"
+	}
+	return outcome
 }
 
 // quotaErrorCodes are error codes new-api / one-api / OpenAI use when the
@@ -653,15 +700,18 @@ func isQuotaExhaustedBody(body []byte) bool {
 func classifyHTTPFailure(code int, body []byte) forwardOutcome {
 	switch {
 	case code == http.StatusPaymentRequired || code == http.StatusForbidden && isQuotaExhaustedBody(body):
-		return forwardOutcome{failOver: true, lowBalance: true, status: code, scope: failureScopeProvider, action: "mark_low_balance"}
-	case code == http.StatusUnauthorized || code == http.StatusForbidden:
+		return forwardOutcome{failOver: true, status: code, scope: failureScopeKey, action: "key_quota_exhausted"}
+	case code == http.StatusUnauthorized || code == http.StatusForbidden && authenticationFailure(body):
 		return forwardOutcome{failOver: true, status: code, scope: failureScopeKey, action: "cooldown_key"}
 	case code == http.StatusTooManyRequests:
 		return forwardOutcome{failOver: true, status: code, scope: failureScopeKeyModel, action: "cooldown_key_model"}
-	case code == http.StatusNotFound || code == 529 || code >= 500:
-		return forwardOutcome{failOver: true, retrySame: true, status: code, scope: failureScopeProvider, action: "cooldown_provider"}
+	case code == http.StatusForbidden || code == http.StatusNotFound || code == 529 || code >= 500:
+		return forwardOutcome{failOver: true, retrySame: code >= 500, status: code, scope: failureScopeKeyModel, action: "request_scope_failure"}
 	default:
-		return forwardOutcome{status: code}
+		if code == 400 && unsupportedCapability(body) {
+			return forwardOutcome{failOver: true, status: code, scope: failureScopeKeyModel, action: "capability_unsupported"}
+		}
+		return forwardOutcome{status: code, neutral: code >= 400 && code < 500, action: "request_rejected"}
 	}
 }
 

@@ -310,6 +310,10 @@ export type ConsumerKeyPayload = {
 }
 
 export type SchedulerSettings = {
+	circuit_window_sec: number
+	circuit_failure_threshold: number
+	circuit_cooldown_sec: number
+	circuit_max_cooldown_sec: number
   switch_improvement_ratio: number
   switch_improvement_ms: number
   switch_confirm_sec: number
@@ -370,6 +374,16 @@ export type ModelCatalog = {
 }
 
 export type SchedulerCandidate = {
+	probe_status?: string
+	probe_at?: number
+	probe_model?: string
+	probe_path?: string
+	probe_stream?: boolean
+	circuit_state?: string
+	circuit_scope?: string
+	circuit_reason?: string
+	circuit_until?: number
+	recovery?: boolean
   latency_samples?: number
   reliable?: boolean
   decision_reason?: string

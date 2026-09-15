@@ -18,18 +18,6 @@ type stableBinding struct {
 	Since      int64 `json:"since"`
 }
 
-func (p *BandPicker) recentAttemptFailures(ctx context.Context, req Request, cfg domain.SchedulerSettings) map[uint]failureStats {
-	var rows []failureStats
-	p.db.WithContext(ctx).Model(&domain.RequestAttempt{}).
-		Select("platform_key_id, SUM(CASE WHEN result = 'upstream_failure' THEN 1 ELSE 0 END) AS failures, SUM(CASE WHEN result = 'success' THEN 1 ELSE 0 END) AS successes").
-		Where("protocol = ? AND model = ? AND path = ? AND stream = ? AND stats_version = ? AND completed_at > ?", req.Protocol, req.Model, req.Path, req.Stream, domain.AttemptStatsVersion, time.Now().Add(-time.Duration(cfg.FailureWindowSec)*time.Second)).Group("platform_key_id").Scan(&rows)
-	out := map[uint]failureStats{}
-	for _, r := range rows {
-		out[r.KeyID] = r
-	}
-	return out
-}
-
 type responseSession struct {
 	Session string
 	Expires int64
@@ -38,7 +26,6 @@ type stableState struct {
 	Bindings  map[string]stableBinding   `json:"bindings"`
 	Responses map[string]responseSession `json:"responses"`
 	Explored  map[uint]int64             `json:"explored"`
-	Counter   int                        `json:"counter"`
 	Expires   int64                      `json:"expires"`
 }
 
@@ -276,6 +263,15 @@ func (p *BandPicker) stableDecision(ctx context.Context, req Request, mutate boo
 	if err != nil {
 		return nil, nil, d, err
 	}
+	for _, c := range cands {
+		if c.Selected && c.Recovery {
+			d.Candidates = cands
+			d.SelectedKeyID = c.KeyID
+			d.Reason = "recovery_validation"
+			d.Exploration = true
+			return c.Key, c.Upstream, d, nil
+		}
+	}
 	rows, err := p.attemptCandidates(ctx, req, cands)
 	if err != nil {
 		return nil, nil, d, err
@@ -348,12 +344,7 @@ func (p *BandPicker) stableDecision(ctx context.Context, req Request, mutate boo
 			return
 		}
 		if (req.Session == "" || !hasBinding) && cfg.ExplorationRatio > 0 {
-			interval := int(math.Ceil(1 / cfg.ExplorationRatio))
-			count := state.Counter + 1
-			if mutate {
-				state.Counter = count % interval
-			}
-			if count >= interval {
+			if req.ExplorationSlot {
 				explore := -1
 				for i, c := range cands {
 					if !c.Eligible || i == chosen || now-state.Explored[c.KeyID] < 60000 {
@@ -385,6 +376,11 @@ func (p *BandPicker) stableDecision(ctx context.Context, req Request, mutate boo
 }
 
 func (p *BandPicker) PickDecision(ctx context.Context, req Request) (*domain.PlatformKey, *domain.Upstream, Decision, error) {
+	var prepErr error
+	req, prepErr = p.prepareBudget(ctx, req, true)
+	if prepErr != nil {
+		return nil, nil, Decision{}, prepErr
+	}
 	if p.Settings().RankingMode == "stable_latency" {
 		return p.stableDecision(ctx, req, true)
 	}
@@ -396,6 +392,10 @@ func (p *BandPicker) PickDecision(ctx context.Context, req Request) (*domain.Pla
 	for _, c := range cands {
 		if c.Selected {
 			d.SelectedKeyID = c.KeyID
+			if c.Recovery {
+				d.Reason = "recovery_validation"
+				d.Exploration = true
+			}
 			return c.Key, c.Upstream, d, nil
 		}
 	}
@@ -403,6 +403,9 @@ func (p *BandPicker) PickDecision(ctx context.Context, req Request) (*domain.Pla
 }
 
 func (p *BandPicker) CommitSuccess(ctx context.Context, req Request, d Decision, key uint, responseID string) {
+	if d.Reason == "recovery_validation" {
+		return
+	}
 	if p.Settings().RankingMode != "stable_latency" {
 		p.SetSticky(ctx, req.Protocol, req.Session, key)
 		return

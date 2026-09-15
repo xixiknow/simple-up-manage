@@ -118,6 +118,9 @@ func (s *Service) throttled(ctx context.Context, kind string, keyID uint, ttl ti
 }
 
 type ProbeOutcome struct {
+	Protocol   string `json:"protocol,omitempty"`
+	Path       string `json:"path,omitempty"`
+	Stream     bool   `json:"stream"`
 	Success    bool   `json:"success"`
 	StatusCode int    `json:"status_code"`
 	LatencyMs  int    `json:"latency_ms"`
@@ -174,19 +177,13 @@ func (s *Service) ProbeKey(ctx context.Context, keyID uint, deep bool) (*ProbeOu
 			health = domain.HealthHealthy
 		}
 	}
-	updates := map[string]any{
-		"health_status": health,
-		"last_error":    outcome.Error,
-	}
-	if err := s.DB.WithContext(ctx).Model(&domain.PlatformKey{}).Where("id = ?", key.ID).Updates(updates).Error; err != nil {
-		return &outcome, err
-	}
 	extra := ""
 	if outcome.Model != "" {
 		payload, _ := json.Marshal(map[string]any{"model": outcome.Model, "vendor": outcome.Vendor})
 		extra = string(payload)
 	}
-	_ = s.DB.WithContext(ctx).Create(&domain.ProbeLog{
+	if err := s.DB.WithContext(ctx).Create(&domain.ProbeLog{
+		Protocol: outcome.Protocol, Model: outcome.Model, Path: outcome.Path, Stream: outcome.Stream,
 		PlatformKeyID: key.ID,
 		Kind:          kind,
 		Success:       outcome.Success,
@@ -195,8 +192,15 @@ func (s *Service) ProbeKey(ctx context.Context, keyID uint, deep bool) (*ProbeOu
 		ErrorMessage:  outcome.Error,
 		Extra:         extra,
 		CreatedAt:     probeAt,
-	}).Error
-	_ = s.RefreshKeyHealth(ctx, key.ID)
+	}).Error; err != nil {
+		return &outcome, err
+	}
+	if !outcome.Success {
+		var recent []domain.ProbeLog
+		if err := s.DB.WithContext(ctx).Where("platform_key_id = ? AND kind = ? AND protocol = ? AND model = ? AND path = ? AND stream = ?", key.ID, kind, outcome.Protocol, outcome.Model, outcome.Path, outcome.Stream).Order("id DESC").Limit(3).Find(&recent).Error; err == nil && len(recent) == 3 && !recent[0].Success && !recent[1].Success && !recent[2].Success {
+			log.Printf("probe alert: key=%d model=%s path=%s consecutive_failures=3", key.ID, outcome.Model, outcome.Path)
+		}
+	}
 	if outcome.Success {
 		if health == domain.HealthDegraded {
 			if outcome.Model != "" {
@@ -252,8 +256,7 @@ type ModelsOutcome struct {
 }
 
 // FetchModels pulls GET /v1/models for one key and stores the ids on the key.
-// It is an explicit admin action, separate from the light probe (which only
-// updates the list opportunistically).
+// Model discovery is explicit; diagnostic probes never change routing inputs.
 func (s *Service) FetchModels(ctx context.Context, keyID uint) (*ModelsOutcome, error) {
 	var key domain.PlatformKey
 	if err := s.DB.WithContext(ctx).Preload("Upstream").First(&key, keyID).Error; err != nil {
@@ -360,9 +363,6 @@ func (s *Service) lightProbe(ctx context.Context, key *domain.PlatformKey, apiKe
 	}
 	if res.Status >= 200 && res.Status < 300 {
 		ids := upstream.ParseModelIDs(res.Body)
-		if len(ids) > 0 {
-			_ = s.storeModels(ctx, key.ID, ids)
-		}
 		return ProbeOutcome{Success: true, StatusCode: res.Status, Models: len(ids)}
 	}
 	if res.Status == 404 {
@@ -388,99 +388,7 @@ func (s *Service) probeSettings(ctx context.Context) domain.SchedulerSettings {
 }
 
 func (s *Service) deepProbe(ctx context.Context, key *domain.PlatformKey, apiKey string) ProbeOutcome {
-	cfg := s.probeSettings(ctx)
-	var catalog []domain.CatalogModel
-	_ = s.DB.WithContext(ctx).Find(&catalog).Error
-	target := PickProbeTarget(key, cfg, catalog)
-	if target.Protocol == "" {
-		return ProbeOutcome{Error: "key has no effective protocol"}
-	}
-	if target.Protocol == domain.ProtocolAnthropic {
-		body := map[string]any{
-			"model":      target.Model,
-			"max_tokens": 1,
-			"messages":   []map[string]any{{"role": "user", "content": "hi"}},
-			"stream":     false,
-		}
-		extra := upstream.AnthropicHeaders(apiKey)
-		res, err := s.Client.PostJSON(ctx, key.Upstream.BaseURL, "/v1/messages", apiKey, body, extra)
-		return probeHTTPOutcome(res, err, target)
-	}
-	body := map[string]any{
-		"model":      target.Model,
-		"max_tokens": 1,
-		"messages":   []map[string]any{{"role": "user", "content": "hi"}},
-		"stream":     false,
-	}
-	res, err := s.Client.PostJSON(ctx, key.Upstream.BaseURL, "/v1/chat/completions", apiKey, body, nil)
-	return probeHTTPOutcome(res, err, target)
-}
-
-func probeHTTPOutcome(res *upstream.Result, err error, target ProbeTarget) ProbeOutcome {
-	if err != nil {
-		return ProbeOutcome{Error: err.Error(), Model: target.Model, Vendor: target.Vendor}
-	}
-	ok := res.Status >= 200 && res.Status < 300
-	errMsg := ""
-	if !ok {
-		errMsg = truncate(string(res.Body), 500)
-	} else if strings.TrimSpace(probeResponseText(res.Body)) == "" {
-		// V1 replace-mode: 2xx with empty extracted text is a failed check.
-		ok = false
-		errMsg = "upstream returned 2xx with empty text"
-	}
-	return ProbeOutcome{Success: ok, StatusCode: res.Status, Error: errMsg, Model: target.Model, Vendor: target.Vendor}
-}
-
-func probeResponseText(body []byte) string {
-	raw := strings.TrimSpace(string(body))
-	if raw == "" {
-		return ""
-	}
-	var openai struct {
-		Choices []struct {
-			Message struct {
-				Content json.RawMessage `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if json.Unmarshal(body, &openai) == nil && len(openai.Choices) > 0 {
-		return strings.TrimSpace(openaiContentText(openai.Choices[0].Message.Content))
-	}
-	var anth struct {
-		Content []struct {
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	if json.Unmarshal(body, &anth) == nil && len(anth.Content) > 0 {
-		var b strings.Builder
-		for _, part := range anth.Content {
-			b.WriteString(part.Text)
-		}
-		return strings.TrimSpace(b.String())
-	}
-	return raw
-}
-
-func openaiContentText(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		return s
-	}
-	var parts []struct {
-		Text string `json:"text"`
-	}
-	if json.Unmarshal(raw, &parts) == nil {
-		var b strings.Builder
-		for _, part := range parts {
-			b.WriteString(part.Text)
-		}
-		return b.String()
-	}
-	return ""
+	return s.businessProbe(ctx, key, apiKey)
 }
 
 func (s *Service) RefreshBalance(ctx context.Context, keyID uint) error {

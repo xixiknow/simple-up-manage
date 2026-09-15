@@ -37,6 +37,13 @@ const visibleCandidates = computed(() =>
 
 const SKIP_LABEL: Record<string, string> = {
   not_in_route_group: '不在分组',
+  model_required: '未指定模型',
+  route_model_mismatch: '分组模型不匹配',
+  route_protocol_mismatch: '分组协议不匹配',
+  route_group_disabled: '分组已停用',
+  business_cooldown: '业务熔断中',
+  recovery_pending: '等待恢复验证',
+  recovery_inflight: '恢复验证进行中',
   excluded: '已排除',
   key_disabled: 'Key 停用',
   upstream_disabled: '提供商停用',
@@ -49,6 +56,18 @@ const SKIP_LABEL: Record<string, string> = {
   route_rate_drift: '倍率漂出分组区间',
 }
 
+const CIRCUIT_LABEL: Record<string, string> = {
+  legacy_health_unverified: '旧故障状态待验证',
+  request_scope_failure: '接口请求失败',
+  transport_failure: '连接或超时失败',
+  invalid_response: '响应协议无效',
+  response_failure: '响应未正常完成',
+  cooldown_key_model: '接口限流',
+  cooldown_key: '认证失败',
+  key_quota_exhausted: 'Key 额度不足',
+  capability_unsupported: '模型或接口不支持',
+}
+
 async function loadConsumers() {
   try {
     const res = await listConsumerKeys({ page: 1, page_size: 200 })
@@ -59,6 +78,10 @@ async function loadConsumers() {
 }
 
 const form = reactive<SchedulerSettings>({
+	 circuit_window_sec: 60,
+	 circuit_failure_threshold: 3,
+	 circuit_cooldown_sec: 30,
+	 circuit_max_cooldown_sec: 300,
   switch_improvement_ratio: 0.20,
   switch_improvement_ms: 2000,
   switch_confirm_sec: 60,
@@ -238,7 +261,18 @@ function pct(n: number) {
 }
 
 const columns: DataTableColumns<SchedulerCandidate> = [
-  { title: '选路原因', key: 'decision_reason', width: 140, ellipsis: { tooltip: true } },
+	{ title: 'Key', key: 'key_name', width: 190, fixed: 'left', ellipsis: { tooltip: true } },
+	{ title: '提供商', key: 'upstream_name', width: 160, ellipsis: { tooltip: true } },
+	{ title: '探测时间', key: 'probe_at', width: 165, render: row => row.probe_at ? new Date(row.probe_at).toLocaleString() : '—' },
+	{ title: '探测状态', key: 'probe_status', width: 110, render: row => ({healthy:'正常',degraded:'慢响应',down:'失败',unknown:'暂无探测'}[row.probe_status ?? 'unknown'] ?? row.probe_status) },
+	{ title: '探测模型', key: 'probe_model', width: 150, ellipsis: { tooltip: true } },
+	{ title: '探测接口', key: 'probe_path', width: 175, ellipsis: { tooltip: true } },
+	{ title: '探测模式', key: 'probe_stream', width: 85, render: row => row.probe_path ? (row.probe_stream ? '流式' : '非流式') : '—' },
+	{ title: '业务熔断', key: 'circuit_state', width: 100, render: row => ({closed:'未熔断',open:'熔断',half_open:'恢复验证'}[row.circuit_state ?? 'closed'] ?? row.circuit_state) },
+	{ title: '影响范围', key: 'circuit_scope', width: 120, render: row => row.circuit_scope === 'key' ? '整个 Key' : row.circuit_scope === 'request' ? '当前模型与接口' : '—' },
+	{ title: '熔断原因', key: 'circuit_reason', width: 155, ellipsis: { tooltip: true }, render: row => CIRCUIT_LABEL[row.circuit_reason ?? ''] ?? row.circuit_reason ?? '—' },
+	{ title: '冷却 / 租约截止', key: 'circuit_until', width: 165, render: row => row.circuit_until ? new Date(row.circuit_until).toLocaleString() : '—' },
+  { title: '选路原因', key: 'decision_reason', width: 140, ellipsis: { tooltip: true }, render: row => row.decision_reason === 'recovery_validation' ? '恢复验证' : row.decision_reason },
   { title: '延迟样本', key: 'latency_samples', width: 85 },
   {
     title: '选中',
@@ -256,8 +290,6 @@ const columns: DataTableColumns<SchedulerCandidate> = [
       return row.in_band ? h(NTag, { type: 'info', size: 'small', bordered: false }, { default: () => '近优' }) : '—'
     },
   },
-  { title: '提供商', key: 'upstream_name', ellipsis: { tooltip: true } },
-  { title: 'Key', key: 'key_name', ellipsis: { tooltip: true } },
   {
     title: '健康',
     key: 'health_status',
@@ -378,7 +410,6 @@ onMounted(async () => {
             <n-form-item label="最小改善比例"><n-input-number v-model:value="form.switch_improvement_ratio" :min="0.01" :max="1" :step="0.05" /></n-form-item>
             <n-form-item label="最小改善 ms"><n-input-number v-model:value="form.switch_improvement_ms" :min="1" :step="500" /></n-form-item>
             <n-form-item label="改善确认秒数"><n-input-number v-model:value="form.switch_confirm_sec" :min="1" :step="10" /></n-form-item>
-            <n-form-item label="探索比例"><n-input-number v-model:value="form.exploration_ratio" :min="0" :max="0.05" :step="0.01" /></n-form-item>
           </div>
         </n-card>
         <n-card size="small" title="观测窗口" :bordered="false" :loading="loading">
@@ -414,24 +445,25 @@ onMounted(async () => {
           </div>
         </n-card>
         <n-card size="small" title="故障与粘滞" :bordered="false" :loading="loading">
-          <p class="muted card-hint">
-            连接失败、5xx、429、529 先在同一把 Key 上重试；次数用尽后再换下一把。额度不足（402 / 配额 403）直接转移，不重试。重试期间不冷却。
-          </p>
           <div class="grid">
+			<n-form-item label="探索 / 恢复比例"><n-input-number v-model:value="form.exploration_ratio" :min="0" :max="0.05" :step="0.01" style="width: 100%" /></n-form-item>
             <n-form-item label="故障转移次数">
               <n-input-number v-model:value="form.failover_max" :min="1" :max="5" style="width: 100%" />
             </n-form-item>
             <n-form-item label="故障重试次数">
               <n-input-number v-model:value="form.retry_max" :min="0" :max="5" style="width: 100%" />
             </n-form-item>
-            <n-form-item label="冷却秒">
-              <n-input-number v-model:value="form.cooldown_sec" :min="5" :max="600" style="width: 100%" />
+            <n-form-item label="熔断初始冷却秒">
+              <n-input-number v-model:value="form.circuit_cooldown_sec" :min="1" :max="600" style="width: 100%" />
             </n-form-item>
-            <n-form-item label="失败窗口秒">
-              <n-input-number v-model:value="form.failure_window_sec" :min="1" :max="3600" style="width: 100%" />
+            <n-form-item label="熔断最长冷却秒">
+              <n-input-number v-model:value="form.circuit_max_cooldown_sec" :min="form.circuit_cooldown_sec" :max="3600" style="width: 100%" />
             </n-form-item>
-            <n-form-item label="失败阈值">
-              <n-input-number v-model:value="form.failure_threshold" :min="1" :max="100" style="width: 100%" />
+            <n-form-item label="业务失败窗口秒">
+              <n-input-number v-model:value="form.circuit_window_sec" :min="1" :max="3600" style="width: 100%" />
+            </n-form-item>
+            <n-form-item label="连续失败请求数">
+              <n-input-number v-model:value="form.circuit_failure_threshold" :min="1" :max="100" style="width: 100%" />
             </n-form-item>
             <n-form-item label="粘滞 TTL 秒">
               <n-input-number v-model:value="form.sticky_ttl_sec" :min="60" :max="86400" style="width: 100%" />
@@ -459,10 +491,6 @@ onMounted(async () => {
           <n-button size="small" :loading="syncingCatalog" @click="syncCatalog()">同步模型库</n-button>
         </n-space>
       </template>
-      <p class="muted" style="margin-top: 0">
-        从 models.dev 同步厂商模型，按厂商选择探测用的真实模型。消息固定为 hi，max_tokens=1。
-        深度探测会优先用 Key 已有模型列表里能打到的最便宜探测模型。
-      </p>
       <n-form :model="form" label-placement="left" label-width="128" class="grid">
         <n-form-item v-for="vendor in catalogVendors" :key="vendor.id" :label="vendor.name">
           <n-select
@@ -513,7 +541,7 @@ onMounted(async () => {
         该 API 密钥绑定的分组里没有匹配此协议/模型的 Key，请求会返回 503
       </n-alert>
       <n-data-table
-        :scroll-x="1400"
+        :scroll-x="3300"
         size="small"
         :columns="columns"
         :data="visibleCandidates"
@@ -540,6 +568,9 @@ onMounted(async () => {
   gap: 0 16px;
 }
 @media (max-width: 640px) {
+  :deep(.n-card-header) { flex-wrap: wrap; gap: 8px; }
+  :deep(.n-card-header__main) { flex-shrink: 0; }
+  :deep(.n-card-header__extra) { margin-left: 0; max-width: 100%; }
   :deep(.n-form-item) { flex-direction: column; }
   :deep(.n-form-item-label) { width: auto !important; justify-content: flex-start; padding-bottom: 6px; }
   :deep(.n-form-item-blank), :deep(.n-input-number) { width: 100%; min-width: 0; }

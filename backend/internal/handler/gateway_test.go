@@ -102,14 +102,14 @@ func TestClassifyHTTPFailure(t *testing.T) {
 		body                []byte
 		failover, low       bool
 	}{
-		{name: "bad request", code: 400},
+		{name: "bad request", code: 400, action: "request_rejected"},
 		{name: "unauthorized", code: 401, failover: true, scope: failureScopeKey, action: "cooldown_key"},
-		{name: "forbidden", code: 403, failover: true, scope: failureScopeKey, action: "cooldown_key"},
-		{name: "quota forbidden", code: 403, body: quota, failover: true, low: true, scope: failureScopeProvider, action: "mark_low_balance"},
-		{name: "not found", code: 404, failover: true, scope: failureScopeProvider, action: "cooldown_provider"},
+		{name: "forbidden", code: 403, failover: true, scope: failureScopeKeyModel, action: "request_scope_failure"},
+		{name: "quota forbidden", code: 403, body: quota, failover: true, scope: failureScopeKey, action: "key_quota_exhausted"},
+		{name: "not found", code: 404, failover: true, scope: failureScopeKeyModel, action: "request_scope_failure"},
 		{name: "rate limit", code: 429, failover: true, scope: failureScopeKeyModel, action: "cooldown_key_model"},
-		{name: "server error", code: 500, failover: true, scope: failureScopeProvider, action: "cooldown_provider"},
-		{name: "overloaded", code: 529, failover: true, scope: failureScopeProvider, action: "cooldown_provider"},
+		{name: "server error", code: 500, failover: true, scope: failureScopeKeyModel, action: "request_scope_failure"},
+		{name: "overloaded", code: 529, failover: true, scope: failureScopeKeyModel, action: "request_scope_failure"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

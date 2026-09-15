@@ -14,6 +14,17 @@ func (s *Service) PurgeRequestLogs(ctx context.Context, retention time.Duration)
 		retention = 24 * time.Hour
 	}
 	cut := time.Now().Add(-retention)
+	if s.DB.Migrator().HasTable(&domain.RoutingObservation{}) {
+		if err := s.DB.WithContext(ctx).Where("created_at < ?", cut).Delete(&domain.RoutingObservation{}).Error; err != nil {
+			return 0, err
+		}
+		if err := s.DB.WithContext(ctx).Where("updated_at < ?", cut).Delete(&domain.RoutingBudget{}).Error; err != nil {
+			return 0, err
+		}
+		if err := s.DB.WithContext(ctx).Where("updated_at < ? AND open = ?", cut, false).Delete(&domain.RoutingCircuit{}).Error; err != nil {
+			return 0, err
+		}
+	}
 	if s.DB.Migrator().HasTable(&domain.RequestAttempt{}) {
 		if err := s.DB.WithContext(ctx).Where("completed_at < ?", cut).Delete(&domain.RequestAttempt{}).Error; err != nil {
 			return 0, err

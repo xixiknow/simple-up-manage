@@ -22,9 +22,10 @@ at least 20% and 2000ms, persist for 60 seconds, and have three new successful
 latency observations after confirmation began. Hard eligibility and reliability
 loss bypass this hold. Existing provider/key concurrency reservations still apply.
 
-The exploration ratio defaults to 0.05 and can be disabled with 0. Every twentieth
-new-session or unbound-session request can explore the least recently sampled
-eligible alternative. Existing sessions never explore. Each candidate has a
+The exploration ratio defaults to 0.05 and can be disabled with 0. A shared SQL
+budget assigns every twentieth incoming request an exploration/recovery slot.
+New or unbound sessions can explore the least recently sampled eligible alternative;
+existing sessions never explore. Each candidate has a
 one-minute exploration interval; previews do not increment counters. A successful
 exploration binds a new session but does not replace the sessionless preferred key.
 
@@ -45,8 +46,9 @@ HTML and error JSON. Streaming requests require SSE with valid protocol events a
 a valid terminal. Tool-only results and refusals are accepted. After any output is
 committed, failure ends that stream without replaying it through another key.
 Synchronous text JSON is validated before output and capped at 16 MiB; image
-passthrough behavior is unchanged. Protocol errors cool down the key/model, without
-retrying the same invalid response.
+passthrough behavior is unchanged. Protocol errors fail over without retrying the
+same invalid response and feed the scoped business circuit described in
+[probe-routing-isolation.md](probe-routing-isolation.md).
 
 `request_logs.ttft_ms` remains cumulative user waiting time. New `request_attempts`
 rows expose individual upstream times via the existing log-detail API's `attempts`

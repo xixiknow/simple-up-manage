@@ -8,7 +8,6 @@ import (
 
 	"simple-up-manage/internal/domain"
 	"simple-up-manage/internal/store"
-	"simple-up-manage/internal/upstream"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -172,28 +171,6 @@ func TestPulseScore(t *testing.T) {
 	}
 	if state, s := pulseScore(1, 1, 200); state != "bad" || s != 0 {
 		t.Fatalf("any fail should be bad, got %s score=%d", state, s)
-	}
-}
-
-func TestProbeHTTPOutcomeV1(t *testing.T) {
-	target := ProbeTarget{Model: "deepseek-chat", Vendor: "deepseek"}
-	ok := probeHTTPOutcome(&upstream.Result{
-		Status: 200,
-		Body:   []byte(`{"choices":[{"message":{"content":"hi"}}]}`),
-	}, nil, target)
-	if !ok.Success {
-		t.Fatalf("2xx with text should succeed: %+v", ok)
-	}
-	empty := probeHTTPOutcome(&upstream.Result{
-		Status: 200,
-		Body:   []byte(`{"choices":[{"message":{"content":""}}]}`),
-	}, nil, target)
-	if empty.Success {
-		t.Fatal("2xx with empty text should fail")
-	}
-	fail := probeHTTPOutcome(&upstream.Result{Status: 502, Body: []byte(`upstream down`)}, nil, target)
-	if fail.Success {
-		t.Fatal("502 should fail")
 	}
 }
 

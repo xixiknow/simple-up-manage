@@ -17,7 +17,7 @@ func testBandPicker(t *testing.T) (*BandPicker, domain.Upstream, []domain.Platfo
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&domain.Upstream{}, &domain.PlatformKey{}, &domain.RequestLog{}, &domain.KeyModelCooldown{}, &domain.SchedulerSettings{}); err != nil {
+	if err := db.AutoMigrate(&domain.Upstream{}, &domain.PlatformKey{}, &domain.RequestLog{}, &domain.KeyModelCooldown{}, &domain.SchedulerSettings{}, &domain.RoutingCircuit{}, &domain.RoutingObservation{}, &domain.RoutingBudget{}, &domain.ProbeLog{}); err != nil {
 		t.Fatal(err)
 	}
 	up := domain.Upstream{Name: "provider", BaseURL: "https://example.test", Kind: domain.KindOpenAICompat, Protocols: domain.ProtocolOpenAI, Status: domain.StatusEnabled, HealthStatus: domain.HealthHealthy}
