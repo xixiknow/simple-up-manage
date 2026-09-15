@@ -3,8 +3,11 @@ package upstream
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 )
+
+const CodexRateLimitsEvent = "codex.rate_limits"
 
 type StreamValidator struct {
 	Path         string
@@ -87,8 +90,11 @@ func (s *StreamValidator) Event(name, data string) {
 	}
 	switch s.Path {
 	case "/v1/responses":
+		if name == CodexRateLimitsEvent {
+			return
+		}
 		if !strings.HasPrefix(name, "response.") && name != "error" {
-			s.Err = errors.New("unexpected upstream Responses event")
+			s.Err = fmt.Errorf("unexpected upstream Responses event: %.128q", name)
 			return
 		}
 		var r struct {

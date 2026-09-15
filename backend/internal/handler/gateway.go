@@ -1361,6 +1361,9 @@ func (s *streamCollector) finishEvent() {
 		s.terminal = true
 		return
 	}
+	if s.protocolPath == "/v1/responses" && name == upstream.CodexRateLimitsEvent {
+		return
+	}
 	if upstream.SSELineHasText("data: "+data) && s.ttftMs == 0 {
 		s.markTTFT()
 	}

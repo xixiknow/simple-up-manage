@@ -3,6 +3,7 @@ package upstream
 import (
 	"strings"
 	"testing"
+	"testing/iotest"
 )
 
 func TestProbeProtocolValidation(t *testing.T) {
@@ -25,6 +26,32 @@ func TestProbeProtocolValidation(t *testing.T) {
 			err := ValidateProbeResponse(tc.path, tc.ct, tc.stream, strings.NewReader(tc.body))
 			if (err == nil) != tc.ok {
 				t.Fatalf("err=%v", err)
+			}
+		})
+	}
+}
+
+func TestProbeResponsesRateLimits(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		ok         bool
+	}{
+		{"before output", testResponsesRateLimits + testResponsesDelta + testResponsesCompleted, true},
+		{"between output", testResponsesDelta + testResponsesRateLimits + testResponsesDelta + testResponsesCompleted, true},
+		{"repeated metadata", testResponsesRateLimits + testResponsesRateLimits + testResponsesCompleted, true},
+		{"event name only", "event: codex.rate_limits\ndata: {\"rate_limits\":{\"allowed\":true}}\n\n" + testResponsesCompleted, true},
+		{"metadata then eof", testResponsesRateLimits, false},
+		{"metadata then failure", testResponsesRateLimits + "data: {\"type\":\"response.failed\"}\n\n", false},
+		{"metadata then error", testResponsesRateLimits + "data: {\"type\":\"error\",\"message\":\"failed\"}\n\n", false},
+		{"metadata with error", "data: {\"type\":\"codex.rate_limits\",\"error\":{\"message\":\"failed\"}}\n\n" + testResponsesCompleted, false},
+		{"metadata then wrong terminal", testResponsesRateLimits + "data: [DONE]\n\n", false},
+		{"metadata then malformed completion", testResponsesRateLimits + "data: {\"type\":\"response.completed\"}\n\n", false},
+		{"unknown extension", "data: {\"type\":\"codex.unknown\"}\n\n" + testResponsesCompleted, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateProbeResponse("/v1/responses", "text/event-stream", true, iotest.OneByteReader(strings.NewReader(tc.body)))
+			if (err == nil) != tc.ok {
+				t.Fatalf("error=%v", err)
 			}
 		})
 	}
