@@ -60,7 +60,7 @@ func TestSelectionTracePersistsAttemptResults(t *testing.T) {
 				}
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(tc.statuses[i])
-				_, _ = w.Write([]byte(`{}`))
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
 			}))
 			defer server.Close()
 			db := logTestDB(t)

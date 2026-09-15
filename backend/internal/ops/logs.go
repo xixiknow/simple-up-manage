@@ -14,6 +14,11 @@ func (s *Service) PurgeRequestLogs(ctx context.Context, retention time.Duration)
 		retention = 24 * time.Hour
 	}
 	cut := time.Now().Add(-retention)
+	if s.DB.Migrator().HasTable(&domain.RequestAttempt{}) {
+		if err := s.DB.WithContext(ctx).Where("completed_at < ?", cut).Delete(&domain.RequestAttempt{}).Error; err != nil {
+			return 0, err
+		}
+	}
 	res := s.DB.WithContext(ctx).Where("created_at < ?", cut).Delete(&domain.RequestLog{})
 	return res.RowsAffected, res.Error
 }

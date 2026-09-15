@@ -10,6 +10,10 @@ import (
 var ErrNoUpstream = errors.New("no enabled upstream matching protocol")
 
 type Request struct {
+	ConsumerID       uint
+	Path             string
+	Stream           bool
+	SessionSource    string
 	Protocol         string
 	Model            string
 	Session          string
@@ -27,6 +31,10 @@ type Request struct {
 }
 
 type Candidate struct {
+	LatencySamples      int                 `json:"latency_samples"`
+	LastSampleAt        int64               `json:"last_sample_at"`
+	Reliable            bool                `json:"reliable"`
+	DecisionReason      string              `json:"decision_reason,omitempty"`
 	Key                 *domain.PlatformKey `json:"-"`
 	Upstream            *domain.Upstream    `json:"-"`
 	KeyID               uint                `json:"key_id"`
@@ -59,6 +67,24 @@ type Candidate struct {
 
 // RuntimeController is optionally used by the gateway to atomically reserve
 // per-process provider/key capacity and record scoped failures.
+type Decision struct {
+	Reason        string      `json:"reason"`
+	PreviousKeyID uint        `json:"previous_key_id"`
+	SelectedKeyID uint        `json:"selected_key_id"`
+	Scope         string      `json:"scope"`
+	SessionSource string      `json:"session_source"`
+	SessionHash   string      `json:"session_hash,omitempty"`
+	Exploration   bool        `json:"exploration"`
+	Degraded      bool        `json:"degraded"`
+	Candidates    []Candidate `json:"candidates"`
+}
+
+type DecisionPicker interface {
+	PickDecision(context.Context, Request) (*domain.PlatformKey, *domain.Upstream, Decision, error)
+	CommitSuccess(context.Context, Request, Decision, uint, string)
+	ResolvePrevious(context.Context, Request, string) string
+}
+
 type RuntimeController interface {
 	TryAcquire(key *domain.PlatformKey, upstream *domain.Upstream) (bool, string)
 	Release(key *domain.PlatformKey, upstream *domain.Upstream)

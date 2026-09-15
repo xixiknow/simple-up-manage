@@ -17,14 +17,16 @@ import (
 )
 
 type BandPicker struct {
-	db      *gorm.DB
-	rdb     *redis.Client
-	metrics *metrics.Store
-	mu      sync.RWMutex
-	cfg     domain.SchedulerSettings
-	sticky  map[string]stickyEntry
-	filled  sync.Map
-	runtime *runtimeState
+	db           *gorm.DB
+	rdb          *redis.Client
+	metrics      *metrics.Store
+	mu           sync.RWMutex
+	cfg          domain.SchedulerSettings
+	sticky       map[string]stickyEntry
+	filled       sync.Map
+	runtime      *runtimeState
+	stableMu     sync.Mutex
+	stableStates map[string]stableState
 }
 
 type stickyEntry struct {
@@ -49,12 +51,13 @@ func NewBand(db *gorm.DB, rdb *redis.Client) *BandPicker {
 	cfg := loadSettings(db)
 	store := metrics.NewStore(rdb, time.Duration(cfg.WindowMinutes)*time.Minute, cfg.WindowMaxSamples)
 	return &BandPicker{
-		db:      db,
-		rdb:     rdb,
-		metrics: store,
-		cfg:     cfg,
-		sticky:  map[string]stickyEntry{},
-		runtime: &runtimeState{keyInflight: map[uint]int{}, providerInflight: map[uint]int{}, rpm: map[uint][]time.Time{}},
+		db:           db,
+		rdb:          rdb,
+		metrics:      store,
+		cfg:          cfg,
+		sticky:       map[string]stickyEntry{},
+		stableStates: map[string]stableState{},
+		runtime:      &runtimeState{keyInflight: map[uint]int{}, providerInflight: map[uint]int{}, rpm: map[uint][]time.Time{}},
 	}
 }
 
@@ -117,6 +120,10 @@ func (p *BandPicker) Observe(ctx context.Context, keyID uint, model string, succ
 }
 
 func (p *BandPicker) Pick(ctx context.Context, req Request) (*domain.PlatformKey, *domain.Upstream, error) {
+	if p.Settings().RankingMode == "stable_latency" {
+		key, up, _, err := p.PickDecision(ctx, req)
+		return key, up, err
+	}
 	cands, err := p.evaluate(ctx, req)
 	if err != nil {
 		return nil, nil, err
@@ -130,6 +137,13 @@ func (p *BandPicker) Pick(ctx context.Context, req Request) (*domain.PlatformKey
 }
 
 func (p *BandPicker) Explain(ctx context.Context, req Request) ([]Candidate, error) {
+	if p.Settings().RankingMode == "stable_latency" {
+		_, _, d, err := p.stableDecision(ctx, req, false)
+		if err == ErrNoUpstream {
+			err = nil
+		}
+		return d.Candidates, err
+	}
 	return p.evaluate(ctx, req)
 }
 
@@ -157,7 +171,12 @@ func (p *BandPicker) evaluate(ctx context.Context, req Request) ([]Candidate, er
 	}
 
 	out := make([]Candidate, 0, len(keys))
-	failureByKey := p.recentFailureStats(ctx, keys, cfg)
+	var failureByKey map[uint]failureStats
+	if cfg.RankingMode == "stable_latency" {
+		failureByKey = p.recentAttemptFailures(ctx, req, cfg)
+	} else {
+		failureByKey = p.recentFailureStats(ctx, keys, cfg)
+	}
 	modelCooldowns := p.activeModelCooldowns(ctx, keys, req.Model)
 	var eligible []int
 	for i := range keys {
@@ -168,6 +187,9 @@ func (p *BandPicker) evaluate(ctx context.Context, req Request) ([]Candidate, er
 		}
 	}
 	if len(eligible) == 0 {
+		return out, nil
+	}
+	if cfg.RankingMode == "stable_latency" {
 		return out, nil
 	}
 
@@ -272,6 +294,10 @@ func (p *BandPicker) inspect(ctx context.Context, key *domain.PlatformKey, req R
 		return c
 	}
 
+	if cfg.RankingMode == "stable_latency" {
+		c.Eligible = true
+		return c
+	}
 	w := p.window(ctx, key.ID, req.Model, cfg)
 	c.SuccessRate = w.SuccessRate
 	c.CacheRate = w.CacheRate

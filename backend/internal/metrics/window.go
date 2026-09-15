@@ -55,12 +55,20 @@ func NewStore(rdb *redis.Client, window time.Duration, maxSamples int) *Store {
 }
 
 func (s *Store) Configure(window time.Duration, maxSamples int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if window > 0 {
 		s.window = window
 	}
 	if maxSamples > 0 {
 		s.maxSamples = maxSamples
 	}
+}
+
+func (s *Store) config() (time.Duration, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.window, s.maxSamples
 }
 
 func bucket(keyID uint, model string) string {
@@ -75,6 +83,7 @@ func redisKey(keyID uint, model string) string {
 }
 
 func (s *Store) Observe(ctx context.Context, obs Observation) {
+	window, maxSamples := s.config()
 	if obs.At.IsZero() {
 		obs.At = time.Now()
 	}
@@ -92,13 +101,13 @@ func (s *Store) Observe(ctx context.Context, obs Observation) {
 	pipe := s.rdb.Pipeline()
 	k1 := redisKey(obs.KeyID, obs.Model)
 	pipe.LPush(ctx, k1, raw)
-	pipe.LTrim(ctx, k1, 0, int64(s.maxSamples-1))
-	pipe.Expire(ctx, k1, s.window*4)
+	pipe.LTrim(ctx, k1, 0, int64(maxSamples-1))
+	pipe.Expire(ctx, k1, window*4)
 	if obs.Model != "" {
 		k2 := redisKey(obs.KeyID, "")
 		pipe.LPush(ctx, k2, raw)
-		pipe.LTrim(ctx, k2, 0, int64(s.maxSamples-1))
-		pipe.Expire(ctx, k2, s.window*4)
+		pipe.LTrim(ctx, k2, 0, int64(maxSamples-1))
+		pipe.Expire(ctx, k2, window*4)
 	}
 	_, _ = pipe.Exec(ctx)
 }
@@ -115,7 +124,8 @@ func (s *Store) Snapshot(ctx context.Context, keyID uint, model string) Window {
 			return w
 		}
 	}
-	return summarize(s.memCopy(bucket(keyID, model)), s.window, s.maxSamples)
+	window, maxSamples := s.config()
+	return summarize(s.memCopy(bucket(keyID, model)), window, maxSamples)
 }
 
 func (s *Store) pushMem(key string, obs Observation) {
@@ -137,7 +147,8 @@ func (s *Store) memCopy(key string) []Observation {
 }
 
 func (s *Store) snapshotRedis(ctx context.Context, keyID uint, model string) (Window, bool) {
-	raws, err := s.rdb.LRange(ctx, redisKey(keyID, model), 0, int64(s.maxSamples-1)).Result()
+	window, maxSamples := s.config()
+	raws, err := s.rdb.LRange(ctx, redisKey(keyID, model), 0, int64(maxSamples-1)).Result()
 	if err != nil || len(raws) == 0 {
 		return Window{}, false
 	}
@@ -148,7 +159,7 @@ func (s *Store) snapshotRedis(ctx context.Context, keyID uint, model string) (Wi
 			items = append(items, obs)
 		}
 	}
-	return summarize(items, s.window, s.maxSamples), true
+	return summarize(items, window, maxSamples), true
 }
 
 func summarize(items []Observation, window time.Duration, maxSamples int) Window {
@@ -158,9 +169,6 @@ func summarize(items []Observation, window time.Duration, maxSamples int) Window
 		if it.At.IsZero() || it.At.After(cut) {
 			filtered = append(filtered, it)
 		}
-	}
-	if len(filtered) == 0 {
-		filtered = append(filtered, items...)
 	}
 	sort.Slice(filtered, func(i, j int) bool { return filtered[i].At.After(filtered[j].At) })
 	if len(filtered) > maxSamples {
@@ -179,7 +187,7 @@ func summarize(items []Observation, window time.Duration, maxSamples int) Window
 		in += it.InputTokens
 		cr += it.CacheReadTokens
 		cc += it.CacheCreationTokens
-		if it.TTFTMs > 0 {
+		if it.Success && it.TTFTMs > 0 {
 			ttfts = append(ttfts, it.TTFTMs)
 		}
 	}

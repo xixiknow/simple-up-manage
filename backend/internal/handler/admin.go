@@ -1217,6 +1217,10 @@ func (h *Admin) GetRequestLog(c *gin.Context) {
 		return
 	}
 	d := toLogDetailDTO(l, h.lookupUpstreamName(l.UpstreamID), h.lookupConsumerName(l.ConsumerKeyID))
+	if err := h.DB.Where("request_log_id = ?", l.ID).Order("started_at, id").Find(&d.Attempts).Error; err != nil {
+		httpx.Internal(c, err.Error())
+		return
+	}
 	tmp := []logDTO{d.logDTO}
 	h.attachLogCosts(tmp)
 	d.logDTO = tmp[0]
@@ -1483,6 +1487,14 @@ func (h *Admin) ExplainScheduler(c *gin.Context) {
 		Protocol: protocol,
 		Model:    model,
 		Session:  strings.TrimSpace(c.Query("session")),
+		Path:     strings.TrimSpace(c.DefaultQuery("path", "/v1/responses")),
+		Stream:   c.DefaultQuery("stream", "true") == "true",
+	}
+	if req.Protocol == domain.ProtocolAnthropic && c.Query("path") == "" {
+		req.Path = "/v1/messages"
+	}
+	if req.Session != "" {
+		req.Session, req.SessionSource, _ = picker.RequestSession(http.Header{"X-Session-Id": []string{req.Session}}, nil)
 	}
 	var consumerID uint
 	bound := false
@@ -1493,6 +1505,7 @@ func (h *Admin) ExplainScheduler(c *gin.Context) {
 			return
 		}
 		consumerID = uint(id)
+		req.ConsumerID = consumerID
 		allow, drift, b, err := ops.ResolveAllowKeys(c.Request.Context(), h.DB, consumerID, protocol, model)
 		if err != nil {
 			httpx.Internal(c, err.Error())

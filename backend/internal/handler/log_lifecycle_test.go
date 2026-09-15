@@ -38,19 +38,19 @@ func TestGatewayHTTPCompletion(t *testing.T) {
 	for _, mode := range []string{"sync", "stream", "request-stream-json-response", "stream-error", "log-create-failure"} {
 		t.Run(mode, func(t *testing.T) {
 			upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if mode == "stream" || mode == "stream-error" {
+				if mode == "stream" || mode == "stream-error" || mode == "log-create-failure" {
 					w.Header().Set("Content-Type", "text/event-stream")
 					if mode == "stream-error" {
 						_, _ = io.WriteString(w, "event: error\ndata: {\"type\":\"error\"}\n\n")
 					} else {
-						_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\ndata: {\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":8}}\n\ndata: [DONE]\n\n")
+						_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":8}}\n\ndata: [DONE]\n\n")
 					}
 					w.(http.Flusher).Flush()
 					<-r.Context().Done()
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = io.WriteString(w, `{"usage":{"prompt_tokens":3,"completion_tokens":8}}`)
+				_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"Hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":8}}`)
 			}))
 			defer upstreamServer.Close()
 			db := logTestDB(t)
@@ -116,10 +116,11 @@ func TestGatewayHTTPCompletion(t *testing.T) {
 				}
 				time.Sleep(time.Millisecond)
 			}
-			if row.ID == 0 || row.InFlight || row.Stream != stream || !row.StreamKnown || row.Success != (mode != "stream-error") || row.CompletedAt == nil {
+			wantSuccess := mode != "stream-error" && mode != "request-stream-json-response"
+			if row.ID == 0 || row.InFlight || row.Stream != stream || !row.StreamKnown || row.Success != wantSuccess || row.CompletedAt == nil {
 				t.Fatalf("state: inflight=%v stream=%v known=%v success=%v", row.InFlight, row.Stream, row.StreamKnown, row.Success)
 			}
-			if mode != "stream-error" && row.OutputTokens != 8 {
+			if wantSuccess && row.OutputTokens != 8 {
 				t.Fatalf("usage output=%d", row.OutputTokens)
 			}
 		})

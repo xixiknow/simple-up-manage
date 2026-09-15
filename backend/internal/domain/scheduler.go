@@ -6,21 +6,25 @@ import (
 )
 
 type SchedulerSettings struct {
-	ProbeTimeoutSec  int     `gorm:"not null;default:30" json:"probe_timeout_sec"`
-	ID               uint    `gorm:"primaryKey" json:"id"`
-	WeightSuccess    float64 `gorm:"type:decimal(8,4);not null;default:0.45" json:"weight_success"`
-	WeightCache      float64 `gorm:"type:decimal(8,4);not null;default:0.30" json:"weight_cache"`
-	WeightTTFT       float64 `gorm:"type:decimal(8,4);not null;default:0.25" json:"weight_ttft"`
-	Epsilon          float64 `gorm:"type:decimal(8,4);not null;default:0.08" json:"epsilon"`
-	WindowMinutes    int     `gorm:"not null;default:15" json:"window_minutes"`
-	WindowMaxSamples int     `gorm:"not null;default:50" json:"window_max_samples"`
-	MinSamples       int     `gorm:"not null;default:5" json:"min_samples"`
-	PriorSuccess     float64 `gorm:"type:decimal(8,4);not null;default:0.70" json:"prior_success"`
-	TTFTCapMs        int     `gorm:"not null;default:8000" json:"ttft_cap_ms"`
-	StickyAnthropic  bool    `gorm:"not null;default:true" json:"sticky_anthropic"`
-	StickyOpenAI     bool    `gorm:"not null;default:false" json:"sticky_openai"`
-	StickyTTLSec     int     `gorm:"not null;default:3600" json:"sticky_ttl_sec"`
-	FailoverMax      int     `gorm:"not null;default:2" json:"failover_max"`
+	SwitchImprovementRatio float64 `gorm:"not null;default:0.20" json:"switch_improvement_ratio"`
+	SwitchImprovementMs    int     `gorm:"not null;default:2000" json:"switch_improvement_ms"`
+	SwitchConfirmSec       int     `gorm:"not null;default:60" json:"switch_confirm_sec"`
+	ExplorationRatio       float64 `gorm:"not null;default:0.05" json:"exploration_ratio"`
+	ProbeTimeoutSec        int     `gorm:"not null;default:30" json:"probe_timeout_sec"`
+	ID                     uint    `gorm:"primaryKey" json:"id"`
+	WeightSuccess          float64 `gorm:"type:decimal(8,4);not null;default:0.45" json:"weight_success"`
+	WeightCache            float64 `gorm:"type:decimal(8,4);not null;default:0.30" json:"weight_cache"`
+	WeightTTFT             float64 `gorm:"type:decimal(8,4);not null;default:0.25" json:"weight_ttft"`
+	Epsilon                float64 `gorm:"type:decimal(8,4);not null;default:0.08" json:"epsilon"`
+	WindowMinutes          int     `gorm:"not null;default:15" json:"window_minutes"`
+	WindowMaxSamples       int     `gorm:"not null;default:50" json:"window_max_samples"`
+	MinSamples             int     `gorm:"not null;default:5" json:"min_samples"`
+	PriorSuccess           float64 `gorm:"type:decimal(8,4);not null;default:0.70" json:"prior_success"`
+	TTFTCapMs              int     `gorm:"not null;default:8000" json:"ttft_cap_ms"`
+	StickyAnthropic        bool    `gorm:"not null;default:true" json:"sticky_anthropic"`
+	StickyOpenAI           bool    `gorm:"not null;default:false" json:"sticky_openai"`
+	StickyTTLSec           int     `gorm:"not null;default:3600" json:"sticky_ttl_sec"`
+	FailoverMax            int     `gorm:"not null;default:2" json:"failover_max"`
 	// RetryMax is extra attempts on the same key after a retryable failure
 	// (network / 5xx / 429 / 529) before switching keys. 0 means no same-key retry.
 	RetryMax            int    `gorm:"not null;default:1" json:"retry_max"`
@@ -48,32 +52,36 @@ func (s *SchedulerSettings) ModelFilterEnabled() bool {
 func DefaultSchedulerSettings() SchedulerSettings {
 	filter := true
 	return SchedulerSettings{
-		ProbeTimeoutSec:     30,
-		FilterByModels:      &filter,
-		WeightSuccess:       0.45,
-		WeightCache:         0.30,
-		WeightTTFT:          0.25,
-		Epsilon:             0.08,
-		WindowMinutes:       15,
-		WindowMaxSamples:    50,
-		MinSamples:          5,
-		PriorSuccess:        0.70,
-		TTFTCapMs:           8000,
-		StickyAnthropic:     true,
-		StickyOpenAI:        false,
-		StickyTTLSec:        3600,
-		FailoverMax:         2,
-		RetryMax:            1,
-		CooldownSec:         30,
-		FailureWindowSec:    60,
-		FailureThreshold:    8,
-		RankingMode:         "adaptive",
-		ProbeOpenAIModel:    "gpt-4o-mini",
-		ProbeAnthropicModel: "claude-3-haiku-20240307",
-		ProbeGrokModel:      "grok-3-mini",
-		ProbeZhipuModel:     "glm-4.5-flash",
-		ProbeMoonshotModel:  "kimi-k2-turbo-preview",
-		ProbeDeepseekModel:  "deepseek-chat",
+		SwitchImprovementRatio: 0.20,
+		SwitchImprovementMs:    2000,
+		SwitchConfirmSec:       60,
+		ExplorationRatio:       0.05,
+		ProbeTimeoutSec:        30,
+		FilterByModels:         &filter,
+		WeightSuccess:          0.45,
+		WeightCache:            0.30,
+		WeightTTFT:             0.25,
+		Epsilon:                0.08,
+		WindowMinutes:          15,
+		WindowMaxSamples:       50,
+		MinSamples:             5,
+		PriorSuccess:           0.70,
+		TTFTCapMs:              8000,
+		StickyAnthropic:        true,
+		StickyOpenAI:           false,
+		StickyTTLSec:           3600,
+		FailoverMax:            2,
+		RetryMax:               1,
+		CooldownSec:            30,
+		FailureWindowSec:       60,
+		FailureThreshold:       8,
+		RankingMode:            "adaptive",
+		ProbeOpenAIModel:       "gpt-4o-mini",
+		ProbeAnthropicModel:    "claude-3-haiku-20240307",
+		ProbeGrokModel:         "grok-3-mini",
+		ProbeZhipuModel:        "glm-4.5-flash",
+		ProbeMoonshotModel:     "kimi-k2-turbo-preview",
+		ProbeDeepseekModel:     "deepseek-chat",
 	}
 }
 
@@ -126,6 +134,18 @@ func (s *SchedulerSettings) ConfiguredProbeModels() map[string]string {
 }
 
 func (s *SchedulerSettings) Normalize() {
+	if s.SwitchImprovementRatio <= 0 || s.SwitchImprovementRatio > 1 {
+		s.SwitchImprovementRatio = 0.20
+	}
+	if s.SwitchImprovementMs <= 0 {
+		s.SwitchImprovementMs = 2000
+	}
+	if s.SwitchConfirmSec <= 0 {
+		s.SwitchConfirmSec = 60
+	}
+	if s.ExplorationRatio < 0 || s.ExplorationRatio > 0.05 {
+		s.ExplorationRatio = 0.05
+	}
 	if s.ProbeTimeoutSec <= 0 {
 		s.ProbeTimeoutSec = 30
 	}
@@ -195,9 +215,13 @@ func (s *SchedulerSettings) Normalize() {
 		s.FailureThreshold = 100
 	}
 	switch s.RankingMode = strings.TrimSpace(s.RankingMode); s.RankingMode {
-	case "adaptive", "fixed_order", "cache_affinity", "load_balance":
+	case "adaptive", "fixed_order", "cache_affinity", "load_balance", "stable_latency":
 	default:
 		s.RankingMode = d.RankingMode
+	}
+	if s.RankingMode == "stable_latency" {
+		s.MinSamples = max(s.MinSamples, 5)
+		s.WindowMaxSamples = max(s.WindowMaxSamples, s.MinSamples)
 	}
 	if s.ProbeOpenAIModel = strings.TrimSpace(s.ProbeOpenAIModel); s.ProbeOpenAIModel == "" {
 		s.ProbeOpenAIModel = d.ProbeOpenAIModel

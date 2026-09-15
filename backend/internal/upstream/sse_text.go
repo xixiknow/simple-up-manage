@@ -24,7 +24,8 @@ func JSONHasGeneratedText(raw []byte) bool {
 	if err := json.Unmarshal(raw, &top); err != nil {
 		return false
 	}
-	if nonEmptyStr(top["delta"]) != "" {
+	typ, _ := top["type"].(string)
+	if nonEmptyStr(top["delta"]) != "" && (typ == "response.output_text.delta" || typ == "response.reasoning_text.delta" || typ == "response.reasoning_summary_text.delta" || typ == "response.function_call_arguments.delta" || typ == "response.refusal.delta") {
 		return true
 	}
 	if d, ok := asMap(top["delta"]); ok && deltaHasText(d) {
@@ -59,10 +60,22 @@ func JSONHasGeneratedText(raw []byte) bool {
 }
 
 func deltaHasText(d map[string]any) bool {
-	for _, k := range []string{"content", "text", "reasoning_content", "thinking", "reasoning"} {
+	for _, k := range []string{"content", "text", "reasoning_content", "thinking", "reasoning", "partial_json", "refusal"} {
 		if nonEmptyStr(d[k]) != "" {
 			return true
 		}
+	}
+	if tools, ok := d["tool_calls"].([]any); ok {
+		for _, tool := range tools {
+			if m, ok := asMap(tool); ok {
+				if f, ok := asMap(m["function"]); ok && nonEmptyStr(f["arguments"]) != "" {
+					return true
+				}
+			}
+		}
+	}
+	if f, ok := asMap(d["function_call"]); ok && nonEmptyStr(f["arguments"]) != "" {
+		return true
 	}
 	if parts, ok := d["content"].([]any); ok {
 		for _, p := range parts {

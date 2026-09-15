@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, ref } from 'vue'
+import { computed, h, ref, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { Component } from 'vue'
 import { NIcon } from 'naive-ui'
@@ -38,7 +38,12 @@ function readCollapsed() {
   }
 }
 
-const collapsed = ref(readCollapsed())
+const mobileMedia = window.matchMedia('(max-width: 640px)')
+const mobile = ref(mobileMedia.matches)
+const collapsed = ref(mobile.value || readCollapsed())
+function updateMobile() { mobile.value = mobileMedia.matches; collapsed.value = mobile.value || readCollapsed() }
+onMounted(() => mobileMedia.addEventListener('change', updateMobile))
+onUnmounted(() => mobileMedia.removeEventListener('change', updateMobile))
 const activeKey = computed(() => route.path)
 const pageTitle = computed(() => (route.meta.title as string) || '控制台')
 
@@ -69,7 +74,7 @@ function logout() {
       :collapsed="collapsed"
       :collapsed-width="64"
       :width="216"
-      show-trigger
+      :show-trigger="!mobile"
       :native-scrollbar="false"
       content-style="display:flex;flex-direction:column;height:100%"
       style="background: #10161c"
@@ -169,6 +174,10 @@ function logout() {
 .content {
   padding: 16px 18px 24px;
   background: #e8edf2;
+}
+@media (max-width: 640px) {
+  .content { padding: 12px 10px; }
+  .topbar { padding: 0 10px; }
 }
 :deep(.n-menu) {
   background: transparent;

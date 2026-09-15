@@ -59,6 +59,10 @@ async function loadConsumers() {
 }
 
 const form = reactive<SchedulerSettings>({
+  switch_improvement_ratio: 0.20,
+  switch_improvement_ms: 2000,
+  switch_confirm_sec: 60,
+  exploration_ratio: 0.05,
   ranking_mode: 'adaptive',
   weight_success: 0.45,
   weight_cache: 0.3,
@@ -88,6 +92,7 @@ const form = reactive<SchedulerSettings>({
 })
 
 const RANKING_OPTIONS = [
+  { label: '稳定首字优先', value: 'stable_latency' },
   { label: '自适应', value: 'adaptive' },
   { label: '固定顺序', value: 'fixed_order' },
   { label: '缓存亲和', value: 'cache_affinity' },
@@ -163,6 +168,9 @@ async function syncCatalog(showToast = true) {
 }
 
 const query = reactive({
+  path: '/v1/responses',
+  stream: true,
+  session: '',
   protocol: 'anthropic' as Protocol,
   model: '',
   consumer: null as number | null,
@@ -207,6 +215,9 @@ async function loadExplain() {
   explaining.value = true
   try {
     const data = await explainScheduler({
+      path: query.protocol === 'anthropic' ? '/v1/messages' : query.path,
+      stream: query.stream,
+      session: query.session || undefined,
       protocol: query.protocol,
       model: query.model.trim() || undefined,
       consumer_key_id: query.consumer ?? undefined,
@@ -227,6 +238,8 @@ function pct(n: number) {
 }
 
 const columns: DataTableColumns<SchedulerCandidate> = [
+  { title: '选路原因', key: 'decision_reason', width: 140, ellipsis: { tooltip: true } },
+  { title: '延迟样本', key: 'latency_samples', width: 85 },
   {
     title: '选中',
     key: 'selected',
@@ -337,7 +350,7 @@ onMounted(async () => {
     <div class="page-head">
       <div>
         <h2>调度</h2>
-        <p>硬过滤后，在近最优质量带内选有效成本最低的 Key</p>
+        <p>{{ RANKING_OPTIONS.find(option => option.value === form.ranking_mode)?.label }}</p>
       </div>
       <n-button type="primary" size="small" :loading="saving" @click="save">保存配置</n-button>
     </div>
@@ -346,7 +359,7 @@ onMounted(async () => {
 
     <n-form ref="formRef" :model="form" :rules="rules" label-placement="left" label-width="128">
       <div class="cards">
-        <n-card size="small" title="质量评分" :bordered="false" :loading="loading">
+        <n-card v-if="form.ranking_mode !== 'stable_latency'" size="small" title="质量评分" :bordered="false" :loading="loading">
           <p class="muted card-hint">三项是相对比例。没有真实调用时不计缓存，剩余权重按比例放大。</p>
           <div class="grid">
             <n-form-item label="成功率权重" path="weight_success">
@@ -360,6 +373,14 @@ onMounted(async () => {
             </n-form-item>
           </div>
         </n-card>
+        <n-card v-if="form.ranking_mode === 'stable_latency'" size="small" title="稳定首字优先" :bordered="false">
+          <div class="grid">
+            <n-form-item label="最小改善比例"><n-input-number v-model:value="form.switch_improvement_ratio" :min="0.01" :max="1" :step="0.05" /></n-form-item>
+            <n-form-item label="最小改善 ms"><n-input-number v-model:value="form.switch_improvement_ms" :min="1" :step="500" /></n-form-item>
+            <n-form-item label="改善确认秒数"><n-input-number v-model:value="form.switch_confirm_sec" :min="1" :step="10" /></n-form-item>
+            <n-form-item label="探索比例"><n-input-number v-model:value="form.exploration_ratio" :min="0" :max="0.05" :step="0.01" /></n-form-item>
+          </div>
+        </n-card>
         <n-card size="small" title="观测窗口" :bordered="false" :loading="loading">
           <div class="grid">
             <n-form-item label="窗口分钟">
@@ -371,7 +392,7 @@ onMounted(async () => {
             <n-form-item label="最少样本">
               <n-input-number v-model:value="form.min_samples" :min="1" :max="50" style="width: 100%" />
             </n-form-item>
-            <n-form-item label="TTFT 上限 ms">
+            <n-form-item v-if="form.ranking_mode !== 'stable_latency'" label="TTFT 上限 ms">
               <n-input-number v-model:value="form.ttft_cap_ms" :min="500" :max="30000" style="width: 100%" />
             </n-form-item>
           </div>
@@ -381,7 +402,7 @@ onMounted(async () => {
             <n-form-item label="候选排序">
               <n-select v-model:value="form.ranking_mode" :options="RANKING_OPTIONS" style="width: 100%" />
             </n-form-item>
-            <n-form-item label="近优带宽 ε" path="epsilon">
+            <n-form-item v-if="form.ranking_mode !== 'stable_latency'" label="近优带宽 ε" path="epsilon">
               <n-input-number v-model:value="form.epsilon" :min="0.01" :max="0.5" :step="0.01" style="width: 100%" />
             </n-form-item>
             <n-form-item label="按模型列表过滤">
@@ -462,6 +483,9 @@ onMounted(async () => {
 
     <n-card size="small" title="候选解释" :bordered="false">
       <n-space style="margin-bottom: 12px" align="center">
+        <n-select v-if="query.protocol === 'openai'" v-model:value="query.path" :options="[{ label: 'Responses', value: '/v1/responses' }, { label: 'Chat Completions', value: '/v1/chat/completions' }]" style="width: 180px" />
+        <n-checkbox v-model:checked="query.stream">流式</n-checkbox>
+        <n-input v-model:value="query.session" placeholder="会话 ID（可选）" style="width: 200px" />
         <n-select v-model:value="query.protocol" :options="PROTOCOL_OPTIONS" style="width: 150px" />
         <n-input v-model:value="query.model" placeholder="模型，如 claude-sonnet-4" style="width: 240px" />
         <n-select
@@ -489,6 +513,7 @@ onMounted(async () => {
         该 API 密钥绑定的分组里没有匹配此协议/模型的 Key，请求会返回 503
       </n-alert>
       <n-data-table
+        :scroll-x="1400"
         size="small"
         :columns="columns"
         :data="visibleCandidates"
@@ -511,8 +536,14 @@ onMounted(async () => {
 }
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
   gap: 0 16px;
+}
+@media (max-width: 640px) {
+  :deep(.n-form-item) { flex-direction: column; }
+  :deep(.n-form-item-label) { width: auto !important; justify-content: flex-start; padding-bottom: 6px; }
+  :deep(.n-form-item-blank), :deep(.n-input-number) { width: 100%; min-width: 0; }
+  :deep(.n-card__content) { padding: 12px; }
 }
 :deep(.row-selected td) {
   background: #ecfdf5 !important;

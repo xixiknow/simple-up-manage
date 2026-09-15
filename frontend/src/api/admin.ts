@@ -209,6 +209,8 @@ export function updateScheduler(payload: SchedulerSettings) {
 }
 
 export function explainScheduler(params: {
+  path?: string
+  stream?: boolean
   protocol: Protocol
   model?: string
   session?: string

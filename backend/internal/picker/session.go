@@ -4,7 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
+	"net/http"
 	"strings"
 )
 
@@ -17,8 +17,10 @@ func SessionFromRequest(header string, body []byte) string {
 
 func HashSession(body []byte) string {
 	var peek struct {
-		System   any `json:"system"`
-		Messages []struct {
+		System       any             `json:"system"`
+		Instructions any             `json:"instructions"`
+		Input        json.RawMessage `json:"input"`
+		Messages     []struct {
 			Role    string `json:"role"`
 			Content any    `json:"content"`
 		} `json:"messages"`
@@ -26,32 +28,65 @@ func HashSession(body []byte) string {
 	if json.Unmarshal(body, &peek) != nil {
 		return ""
 	}
-	var b strings.Builder
-	if peek.System != nil {
-		b.WriteString(truncateAny(peek.System, 2048))
-		b.WriteByte('\n')
+	system := []any{peek.System, peek.Instructions}
+	var first any
+	for _, m := range peek.Messages {
+		if m.Role == "system" || m.Role == "developer" {
+			system = append(system, m.Content)
+		}
+		if m.Role == "user" {
+			first = m.Content
+			break
+		}
 	}
-	n := len(peek.Messages)
-	if n > 3 {
-		n = 3
+	if first == nil && len(peek.Input) > 0 {
+		var text string
+		if json.Unmarshal(peek.Input, &text) == nil {
+			if text != "" {
+				first = text
+			}
+		} else {
+			var items []map[string]any
+			if json.Unmarshal(peek.Input, &items) == nil {
+				for _, item := range items {
+					if item["role"] == "user" {
+						first = item["content"]
+						break
+					}
+				}
+			}
+		}
 	}
-	for i := 0; i < n; i++ {
-		b.WriteString(peek.Messages[i].Role)
-		b.WriteByte(':')
-		b.WriteString(truncateAny(peek.Messages[i].Content, 1024))
-		b.WriteByte('\n')
-	}
-	if b.Len() == 0 {
+	if first == nil {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(b.String()))
-	return hex.EncodeToString(sum[:16])
+	b, err := json.Marshal([]any{system, first})
+	if err != nil {
+		return ""
+	}
+	return sessionDigest(string(b))
 }
 
-func truncateAny(v any, n int) string {
-	s := strings.TrimSpace(fmt.Sprint(v))
-	if len(s) > n {
-		return s[:n]
+func sessionDigest(s string) string {
+	b := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(b[:])
+}
+
+func RequestSession(headers http.Header, body []byte) (session, source, previous string) {
+	for _, name := range []string{"X-Session-Id", "Session_id"} {
+		if s := strings.TrimSpace(headers.Get(name)); s != "" {
+			return sessionDigest(s), name, ""
+		}
 	}
-	return s
+	var peek struct {
+		Previous string `json:"previous_response_id"`
+	}
+	_ = json.Unmarshal(body, &peek)
+	if peek.Previous != "" {
+		return "", "previous_response_id", peek.Previous
+	}
+	if s := HashSession(body); s != "" {
+		return s, "derived", ""
+	}
+	return "", "none", ""
 }

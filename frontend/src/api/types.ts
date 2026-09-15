@@ -223,6 +223,7 @@ export type RequestLog = {
 }
 
 export type RequestLogDetail = RequestLog & {
+    attempts?: RequestAttempt[]
   request_headers?: string
   request_body?: string
   request_body_truncated?: boolean
@@ -309,8 +310,12 @@ export type ConsumerKeyPayload = {
 }
 
 export type SchedulerSettings = {
+  switch_improvement_ratio: number
+  switch_improvement_ms: number
+  switch_confirm_sec: number
+  exploration_ratio: number
   probe_timeout_sec: number
-  ranking_mode: 'adaptive' | 'fixed_order' | 'cache_affinity' | 'load_balance'
+  ranking_mode: 'adaptive' | 'fixed_order' | 'cache_affinity' | 'load_balance' | 'stable_latency'
   weight_success: number
   weight_cache: number
   weight_ttft: number
@@ -365,6 +370,9 @@ export type ModelCatalog = {
 }
 
 export type SchedulerCandidate = {
+  latency_samples?: number
+  reliable?: boolean
+  decision_reason?: string
   key_id: number
   key_name: string
   key_preview: string
@@ -391,6 +399,26 @@ export type SchedulerCandidate = {
   rpm_limit: number
   max_concurrency: number
   provider_concurrency: number
+}
+
+export type RequestAttempt = {
+  id: string
+  platform_key_id: number
+  result: string
+  ttft_ms: number
+  duration_ms: number
+  status_code: number
+  started_at: string
+}
+
+export type SchedulerDecision = {
+  reason: string
+  previous_key_id: number
+  selected_key_id: number
+  session_source: string
+  exploration: boolean
+  degraded: boolean
+  candidates: SchedulerCandidate[]
 }
 
 export type SchedulerExplain = {

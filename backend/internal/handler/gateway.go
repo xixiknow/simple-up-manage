@@ -147,7 +147,7 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 		return
 	}
 	model := peekModelFrom(c.GetHeader("Content-Type"), body)
-	session := picker.SessionFromRequest(c.GetHeader("X-Session-Id"), body)
+	session, sessionSource, previousResponse := picker.RequestSession(c.Request.Header, body)
 	reqID := strings.TrimSpace(c.GetHeader("X-Request-Id"))
 	if reqID == "" {
 		reqID = uuid.NewString()
@@ -201,7 +201,8 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 
 	var exclude, excludeProviders, excludeKeyModels []uint
 	for attempt := 0; attempt < attempts; attempt++ {
-		pk, up, err := h.Picker.Pick(c.Request.Context(), picker.Request{
+		pickReq := picker.Request{
+			ConsumerID: ck.ID, Path: path, Stream: reqSnap.ReqStream, SessionSource: sessionSource,
 			Protocol:         protocol,
 			Model:            model,
 			Session:          session,
@@ -210,7 +211,19 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 			ExcludeKeyModels: excludeKeyModels,
 			AllowKeys:        allow,
 			DriftKeys:        drift,
-		})
+		}
+		var pk *domain.PlatformKey
+		var up *domain.Upstream
+		var decision picker.Decision
+		if dp, ok := h.Picker.(picker.DecisionPicker); ok {
+			if previousResponse != "" {
+				session = dp.ResolvePrevious(c.Request.Context(), pickReq, previousResponse)
+				pickReq.Session = session
+			}
+			pk, up, decision, err = dp.PickDecision(c.Request.Context(), pickReq)
+		} else {
+			pk, up, err = h.Picker.Pick(c.Request.Context(), pickReq)
+		}
 		if err != nil {
 			if errors.Is(err, picker.ErrNoUpstream) {
 				if attempt == 0 {
@@ -229,10 +242,18 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 			return
 		}
 		lg.traceEvent(h, pk, up, "selected", "picker")
+		lg.recordDecision(h, decision)
 		var outcome forwardOutcome
 		for r := 0; r <= retries; r++ {
 			outcome = h.forwardOnce(c, ck, pk, up, protocol, model, session, reqID, body, reqSnap, lg, reqStart)
 			if outcome.ok {
+				if outcome.validSuccess {
+					if dp, ok := h.Picker.(picker.DecisionPicker); ok {
+						dp.CommitSuccess(c.Request.Context(), pickReq, decision, pk.ID, outcome.responseID)
+					} else {
+						h.Picker.SetSticky(c.Request.Context(), protocol, session, pk.ID)
+					}
+				}
 				settled = true
 				return
 			}
@@ -280,6 +301,8 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 const sameKeyRetryDelay = 250 * time.Millisecond
 
 type forwardOutcome struct {
+	validSuccess bool
+	responseID   string
 	ok           bool
 	failOver     bool
 	retrySame    bool
@@ -336,7 +359,22 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
-func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain.PlatformKey, up *domain.Upstream, protocol, model, session, reqID string, body []byte, reqSnap ioCapture, lg *liveLog, reqStart time.Time) forwardOutcome {
+func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain.PlatformKey, up *domain.Upstream, protocol, model, session, reqID string, body []byte, reqSnap ioCapture, lg *liveLog, reqStart time.Time) (outcome forwardOutcome) {
+	attempt := domain.RequestAttempt{ID: uuid.NewString(), PlatformKeyID: pk.ID, Protocol: protocol, Model: model, Path: c.Request.URL.Path, Stream: reqSnap.ReqStream, StatsVersion: domain.AttemptStatsVersion}
+	if lg != nil {
+		attempt.RequestLogID = lg.id
+	}
+	var collector *streamCollector
+	defer func() { h.completeAttempt(c.Request.Context(), pk, &attempt, collector, outcome) }()
+	defer func() {
+		if c.Request.Context().Err() != nil && !outcome.validSuccess {
+			outcome.failOver = false
+			outcome.retrySame = false
+			outcome.scope = ""
+			outcome.action = "client_cancelled"
+			lg.markFailure(h, "client", "client_cancelled")
+		}
+	}()
 	if runtime, ok := h.Picker.(picker.RuntimeController); ok {
 		acquired, scope := runtime.TryAcquire(pk, up)
 		if !acquired {
@@ -399,23 +437,23 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 	}
 	defer firstWatch.stop()
 
+	attempt.StartedAt = time.Now()
 	resp, err := h.Client.DoRaw(upReq)
 	if err != nil {
 		dur := int(time.Since(started).Milliseconds())
 		msg := proxyTimeoutMessage(err, firstWatch.timedOut())
-		h.observeAttempt(pk, model, false, upstream.TokenUsage{}, 0)
 		h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, 0, false, upstream.TokenUsage{}, 0, dur, msg, reqSnap, true, true)
 		outcome := forwardOutcome{failOver: true, retrySame: !firstWatch.timedOut() && !isTimeoutErr(err), scope: failureScopeProvider, action: "cooldown_provider", msg: msg}
 		lg.markFailure(h, outcome.scope, outcome.action)
 		return outcome
 	}
+	attempt.StatusCode = resp.StatusCode
 
 	if failure := classifyHTTPFailure(resp.StatusCode, nil); failure.failOver && resp.StatusCode != http.StatusForbidden && !c.Writer.Written() {
 		peek, _ := io.ReadAll(io.LimitReader(resp.Body, maxLogBodyBytes+1))
 		_ = resp.Body.Close()
 		failure = classifyHTTPFailure(resp.StatusCode, peek)
 		snap := reqSnap.withResponse(resp.Header, resp.Header.Get("Content-Type"), peek, len(peek))
-		h.observeAttempt(pk, model, false, upstream.TokenUsage{}, 0)
 		h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, int(time.Since(started).Milliseconds()), http.StatusText(resp.StatusCode), snap, true, true)
 		failure.msg = http.StatusText(resp.StatusCode)
 		lg.markFailure(h, failure.scope, failure.action)
@@ -430,7 +468,6 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 			_ = resp.Body.Close()
 			msg := "upstream quota exhausted"
 			snap := reqSnap.withResponse(resp.Header, resp.Header.Get("Content-Type"), peek, len(peek))
-			h.observeAttempt(pk, model, false, upstream.TokenUsage{}, 0)
 			h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, int(time.Since(started).Milliseconds()), msg, snap, true, true)
 			outcome := forwardOutcome{failOver: true, lowBalance: true, status: resp.StatusCode, scope: failureScopeProvider, action: "mark_low_balance", msg: msg}
 			lg.markFailure(h, outcome.scope, outcome.action)
@@ -439,7 +476,6 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 		_ = resp.Body.Close()
 		msg := http.StatusText(resp.StatusCode)
 		snap := reqSnap.withResponse(resp.Header, resp.Header.Get("Content-Type"), peek, len(peek))
-		h.observeAttempt(pk, model, false, upstream.TokenUsage{}, 0)
 		h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, int(time.Since(started).Milliseconds()), msg, snap, true, true)
 		outcome := forwardOutcome{failOver: true, status: resp.StatusCode, scope: failureScopeKey, action: "cooldown_key", msg: msg}
 		lg.markFailure(h, outcome.scope, outcome.action)
@@ -448,13 +484,22 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 
 	defer resp.Body.Close()
 
-	collector := &streamCollector{start: started, onProgress: func(ttft, dur int, usage upstream.TokenUsage) {
+	collector = &streamCollector{start: started, protocolPath: path, strict: isTextAPI(path), onProgress: func(ttft, dur int, usage upstream.TokenUsage) {
 		h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, usage, ttft, dur, "", ioCapture{}, true, false)
 	}}
 	ct := strings.ToLower(resp.Header.Get("Content-Type"))
 	streaming := isSSEContentType(ct)
+	if isTextAPI(path) && resp.StatusCode >= 200 && resp.StatusCode < 300 && !streaming && (wantStream || !isJSONContentType(ct)) {
+		peek, _ := io.ReadAll(io.LimitReader(resp.Body, maxLogBodyBytes+1))
+		msg := "invalid upstream response protocol"
+		snap := reqSnap.withResponse(resp.Header, ct, peek, len(peek))
+		h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, int(time.Since(started).Milliseconds()), msg, snap, true, true)
+		outcome := forwardOutcome{failOver: true, scope: failureScopeKeyModel, action: "invalid_response", msg: msg}
+		lg.markFailure(h, outcome.scope, outcome.action)
+		return outcome
+	}
 	if streaming {
-		elapsed := time.Since(started)
+		elapsed := time.Since(attempt.StartedAt)
 		if !firstWatch.running() {
 			remain := proxyFirstTokenWait - elapsed
 			firstWatch.start(cancelAttempt, remain, deadline)
@@ -492,12 +537,35 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 			dur := int(time.Since(started).Milliseconds())
 			msg := proxyTimeoutMessage(err, firstWatch.timedOut())
 			snap := reqSnap.withResponse(resp.Header, resp.Header.Get("Content-Type"), respPrefix, respTotal)
-			h.observeAttempt(pk, model, false, upstream.TokenUsage{}, 0)
 			h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, collector.ttftMs, dur, msg, snap, true, true)
-			outcome := forwardOutcome{failOver: true, scope: failureScopeProvider, action: "cooldown_provider", msg: msg}
+			outcome := forwardOutcome{failOver: true, scope: failureScopeKeyModel, action: "invalid_response", msg: msg}
 			lg.markFailure(h, outcome.scope, outcome.action)
 			return outcome
 		}
+	} else if isTextAPI(path) && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		const maxJSONResponse = 16 << 20
+		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, maxJSONResponse+1))
+		respPrefix, respTotal = raw, len(raw)
+		responseID, validErr := validateJSONResponse(path, raw)
+		if readErr != nil {
+			validErr = readErr
+		}
+		if len(raw) > maxJSONResponse {
+			validErr = errors.New("upstream JSON response exceeds limit")
+		}
+		if validErr != nil {
+			msg := validErr.Error()
+			snap := reqSnap.withResponse(resp.Header, ct, raw, len(raw))
+			h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, int(time.Since(started).Milliseconds()), msg, snap, true, true)
+			outcome := forwardOutcome{failOver: true, scope: failureScopeKeyModel, action: "invalid_response", msg: msg}
+			lg.markFailure(h, outcome.scope, outcome.action)
+			return outcome
+		}
+		collector.responseID = responseID
+		collector.noteBytes(len(raw))
+		upstream.MergeUsage(&collector.usage, upstream.ParseUsageJSON(raw))
+		commitHeaders()
+		_, err = c.Writer.Write(raw)
 	} else {
 		commitHeaders()
 		// Stream the body through untouched (image responses with b64_json can be
@@ -518,7 +586,6 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 			dur := int(time.Since(started).Milliseconds())
 			msg := proxyTimeoutMessage(err, false)
 			snap := reqSnap.withResponse(resp.Header, resp.Header.Get("Content-Type"), respPrefix, respTotal)
-			h.observeAttempt(pk, model, false, upstream.TokenUsage{}, 0)
 			h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, dur, msg, snap, true, true)
 			outcome := forwardOutcome{failOver: true, retrySame: !isTimeoutErr(err), scope: failureScopeProvider, action: "cooldown_provider", msg: msg}
 			lg.markFailure(h, outcome.scope, outcome.action)
@@ -526,7 +593,7 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 		}
 	}
 
-	success := resp.StatusCode >= 200 && resp.StatusCode < 400 && err == nil
+	success := resp.StatusCode >= 200 && resp.StatusCode < 300 && err == nil
 	errMsg := ""
 	if err != nil {
 		errMsg = err.Error()
@@ -539,7 +606,6 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 		collector.usage.CostUSD = estimateRequestCost(h.DB, model, pk, collector.usage)
 	}
 	if success {
-		h.observeAttempt(pk, model, true, collector.usage, collector.ttftMs)
 		lg.traceEvent(h, pk, up, "selected", "success")
 	} else {
 		lg.traceEvent(h, pk, up, "failed", errMsg)
@@ -549,12 +615,11 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 		if runtime, ok := h.Picker.(picker.RuntimeController); ok {
 			runtime.RecordProviderSuccess(c.Request.Context(), up.ID)
 		}
-		h.Picker.SetSticky(c.Request.Context(), protocol, session, pk.ID)
 		if collector.usage.CostUSD != nil {
 			h.addQuotaUsed(ck.ID, *collector.usage.CostUSD)
 		}
 	}
-	return forwardOutcome{ok: true, msg: errMsg}
+	return forwardOutcome{ok: true, validSuccess: success, responseID: collector.responseID, msg: errMsg}
 }
 
 // quotaErrorCodes are error codes new-api / one-api / OpenAI use when the
@@ -704,13 +769,14 @@ type liveLog struct {
 }
 
 type selectionTraceEvent struct {
-	KeyID        uint      `json:"key_id,omitempty"`
-	KeyName      string    `json:"key_name"`
-	UpstreamName string    `json:"upstream_name"`
-	Result       string    `json:"result"`
-	Reason       string    `json:"reason,omitempty"`
-	RetryCount   int       `json:"retry_count,omitempty"`
-	At           time.Time `json:"at"`
+	Decision     *picker.Decision `json:"decision,omitempty"`
+	KeyID        uint             `json:"key_id,omitempty"`
+	KeyName      string           `json:"key_name"`
+	UpstreamName string           `json:"upstream_name"`
+	Result       string           `json:"result"`
+	Reason       string           `json:"reason,omitempty"`
+	RetryCount   int              `json:"retry_count,omitempty"`
+	At           time.Time        `json:"at"`
 }
 
 func (lg *liveLog) traceEvent(h *Gateway, pk *domain.PlatformKey, up *domain.Upstream, result, reason string) {
@@ -732,7 +798,9 @@ func (lg *liveLog) traceEvent(h *Gateway, pk *domain.PlatformKey, up *domain.Ups
 			lg.trace[len(lg.trace)-1].RetryCount++
 		}
 		lg.trace[len(lg.trace)-1].Result = result
-		lg.trace[len(lg.trace)-1].Reason = reason
+		if lg.trace[len(lg.trace)-1].Decision == nil {
+			lg.trace[len(lg.trace)-1].Reason = reason
+		}
 	} else {
 		lg.trace = append(lg.trace, selectionTraceEvent{KeyID: keyID, KeyName: name, UpstreamName: provider, Result: result, Reason: reason, At: time.Now().UTC()})
 	}
@@ -1123,6 +1191,11 @@ func (u *usageCapture) Bytes() []byte {
 }
 
 type streamCollector struct {
+	strict         bool
+	protocolPath   string
+	sawValid       bool
+	chatFinished   bool
+	responseID     string
 	start          time.Time
 	firstAt        time.Time
 	ttftMs         int
@@ -1198,7 +1271,7 @@ func (s *streamCollector) feed(p []byte) int {
 				s.eventData = append(s.eventData, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
 			}
 		}
-		if s.ttftMs == 0 && upstream.SSELineHasText(line) {
+		if !s.strict && s.ttftMs == 0 && upstream.SSELineHasText(line) {
 			s.markTTFT()
 		}
 		u := upstream.ParseSSEUsageLine(line)
@@ -1222,11 +1295,9 @@ func (s *streamCollector) finishEvent() {
 	s.eventData = nil
 	s.eventName = ""
 	if strings.TrimSpace(data) == "[DONE]" {
+		s.validateEvent(name, strings.TrimSpace(data))
 		s.terminal = true
 		return
-	}
-	if upstream.SSELineHasText("data: "+data) && s.ttftMs == 0 {
-		s.markTTFT()
 	}
 	upstream.MergeUsage(&s.usage, upstream.ParseSSEUsageLine("data: "+data))
 	var event struct {
@@ -1234,6 +1305,14 @@ func (s *streamCollector) finishEvent() {
 	}
 	if json.Unmarshal([]byte(data), &event) == nil && event.Type != "" {
 		name = event.Type
+	}
+	s.validateEvent(name, data)
+	if s.terminalErr != nil {
+		s.terminal = true
+		return
+	}
+	if upstream.SSELineHasText("data: "+data) && s.ttftMs == 0 {
+		s.markTTFT()
 	}
 	switch name {
 	case "message_stop", "response.completed":
@@ -1293,6 +1372,9 @@ func copySSE(w gin.ResponseWriter, r io.Reader, col *streamCollector, hold bool,
 				}
 			}
 			if col.terminal {
+				if col.terminalErr != nil {
+					return col.terminalErr
+				}
 				release()
 				if releaseErr != nil {
 					return releaseErr
@@ -1302,6 +1384,9 @@ func copySSE(w gin.ResponseWriter, r io.Reader, col *streamCollector, hold bool,
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
+				if col.strict && !col.terminal {
+					return errors.New("upstream stream ended without terminal event")
+				}
 				release()
 				return releaseErr
 			}

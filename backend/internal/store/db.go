@@ -70,6 +70,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&domain.RouteGroupKey{},
 		&domain.ConsumerRouteGroup{},
 		&domain.RequestLog{},
+		&domain.RequestAttempt{},
 		&domain.KeyModelCooldown{},
 		&domain.ProbeLog{},
 		&domain.RateChangeNotice{},

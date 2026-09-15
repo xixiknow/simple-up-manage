@@ -253,12 +253,13 @@ type logDTO struct {
 
 type logDetailDTO struct {
 	logDTO
-	RequestHeaders    string `json:"request_headers"`
-	RequestBody       string `json:"request_body"`
-	RequestBodyTrunc  bool   `json:"request_body_truncated"`
-	ResponseHeaders   string `json:"response_headers"`
-	ResponseBody      string `json:"response_body"`
-	ResponseBodyTrunc bool   `json:"response_body_truncated"`
+	Attempts          []domain.RequestAttempt `json:"attempts"`
+	RequestHeaders    string                  `json:"request_headers"`
+	RequestBody       string                  `json:"request_body"`
+	RequestBodyTrunc  bool                    `json:"request_body_truncated"`
+	ResponseHeaders   string                  `json:"response_headers"`
+	ResponseBody      string                  `json:"response_body"`
+	ResponseBodyTrunc bool                    `json:"response_body_truncated"`
 }
 
 func toLogDTO(l domain.RequestLog, upstreamName, consumerName string) logDTO {

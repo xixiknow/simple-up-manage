@@ -3,14 +3,30 @@ import { computed, h, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { NTag, NTimeline, NTimelineItem, useMessage } from 'naive-ui'
 import type { DataTableColumns, SelectOption } from 'naive-ui'
 import { allPages, getRequestLog, listConsumerKeys, listKeyOptions, listRequestLogs, listUpstreams } from '@/api/admin'
-import type { RequestLog, RequestLogDetail, RequestLogQuery } from '@/api/types'
+import type { RequestLog, RequestLogDetail, RequestLogQuery, SchedulerDecision, SchedulerCandidate, RequestAttempt } from '@/api/types'
 import { copyText, errText, formatMoney, formatNumber, formatSeconds, formatTime, formatTokenCount, formatTps } from '@/utils/format'
 
 const LIVE_MS = 4000
 const IN_FLIGHT_CAP_MS = 6 * 60 * 1000
 const message = useMessage()
 const traceResultLabel: Record<string, string> = { selected: '已选中', retry: '重试', switch: '切换', failed: '失败' }
-function selectionTrace(row: RequestLogDetail) { try { return row.selection_trace ? JSON.parse(row.selection_trace) as Array<{ key_name: string; upstream_name: string; result: string; reason?: string; retry_count?: number; at: string }> : [] } catch { return [] } }
+function selectionTrace(row: RequestLogDetail) { try { return row.selection_trace ? JSON.parse(row.selection_trace) as Array<{ key_name: string; upstream_name: string; result: string; reason?: string; retry_count?: number; at: string; decision?: SchedulerDecision }> : [] } catch { return [] } }
+const decisionColumns: DataTableColumns<SchedulerCandidate> = [
+  { title: 'Key', key: 'key_name', width: 190, ellipsis: { tooltip: true } },
+  { title: '成功率', key: 'success_rate', width: 85, render: r => r.samples ? `${(r.success_rate * 100).toFixed(1)}%` : '-' },
+  { title: '首字 P50', key: 'ttft_p50', width: 90, render: r => r.ttft_p50 ? formatSeconds(r.ttft_p50) : '-' },
+  { title: '样本 / 延迟', key: 'samples', width: 100, render: r => `${r.samples} / ${r.latency_samples ?? '-'}` },
+  { title: '成本', key: 'effective_cost', width: 80, render: r => r.effective_cost.toFixed(3) },
+  { title: '在途 / 上限', key: 'key_inflight', width: 100, render: r => `${r.key_inflight} / ${r.max_concurrency || '不限'}` },
+  { title: '状态', key: 'skip_reason', width: 160, render: r => r.selected ? '选中' : r.skip_reason || (r.reliable ? '可靠候选' : '样本不足或降级') },
+]
+const attemptColumns: DataTableColumns<RequestAttempt> = [
+  { title: 'Key ID', key: 'platform_key_id', width: 75 },
+  { title: '结果', key: 'result', width: 140 },
+  { title: 'HTTP', key: 'status_code', width: 65 },
+  { title: '单次首字', key: 'ttft_ms', width: 100, render: r => r.ttft_ms ? formatSeconds(r.ttft_ms) : '-' },
+  { title: '单次耗时', key: 'duration_ms', width: 100, render: r => formatSeconds(r.duration_ms) },
+]
 
 const loading = ref(false)
 const error = ref('')
@@ -541,8 +557,16 @@ onUnmounted(() => {
               <n-timeline>
                 <n-timeline-item v-for="(event, index) in selectionTrace(detail)" :key="`${event.at}-${index}`" :type="event.result === 'selected' ? 'success' : event.result === 'retry' ? 'warning' : 'error'" :title="`${traceResultLabel[event.result] || event.result} · ${event.key_name || '未知 Key'}`" :time="formatTime(event.at)">
                   <span>{{ event.upstream_name || '未知提供商' }}</span><span v-if="event.reason" class="muted"> · {{ event.reason }}</span><span v-if="event.retry_count && event.retry_count > 1" class="muted"> · 重试 {{ event.retry_count }} 次</span>
+                  <details v-if="event.decision" class="decision-details">
+                    <summary>候选依据 · 原 Key {{ event.decision.previous_key_id || '-' }} · 会话来源 {{ event.decision.session_source || 'none' }}</summary>
+                    <n-data-table size="small" :columns="decisionColumns" :data="event.decision.candidates" :scroll-x="905" />
+                  </details>
                 </n-timeline-item>
               </n-timeline>
+            </section>
+            <section v-if="detail.attempts?.length" class="selection-trace">
+              <h3>上游尝试</h3>
+              <n-data-table size="small" :columns="attemptColumns" :data="detail.attempts" :scroll-x="480" />
             </section>
             <n-alert v-if="detail.error_message" type="error" :title="detail.error_message" style="margin: 10px 0" />
             <n-alert v-if="detail.error_message === 'stale in-flight request'" type="warning" title="请求异常中断，耗时为最后记录值" style="margin: 10px 0" />
@@ -581,6 +605,8 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.decision-details { margin-top: 8px; max-width: 100%; }
+.decision-details summary { cursor: pointer; margin-bottom: 8px; }
 .live-ctl {
   display: flex;
   align-items: center;
