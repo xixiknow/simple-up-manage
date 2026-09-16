@@ -7,6 +7,7 @@ import {
   KeyOutline,
   ListOutline,
   LogOutOutline,
+  PulseOutline,
   ShuffleOutline,
   ServerOutline,
 } from '@vicons/ionicons5'
@@ -22,6 +23,7 @@ const router = useRouter()
 const auth = useAuthStore()
 
 const menuOptions = [
+  { label: '仪表盘', key: '/dashboard', icon: renderIcon(PulseOutline) },
   { label: '提供商', key: '/upstreams', icon: renderIcon(ServerOutline) },
   { label: 'API 密钥', key: '/api-keys', icon: renderIcon(KeyOutline) },
   { label: '调度', key: '/scheduler', icon: renderIcon(ShuffleOutline) },

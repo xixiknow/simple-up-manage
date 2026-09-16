@@ -12,6 +12,7 @@ import (
 
 	"simple-up-manage/internal/config"
 	"simple-up-manage/internal/crypto"
+	"simple-up-manage/internal/dashboard"
 	"simple-up-manage/internal/jobs"
 	"simple-up-manage/internal/logarchive"
 	"simple-up-manage/internal/ops"
@@ -56,11 +57,14 @@ func main() {
 	}
 	opsSvc.Archives = archives
 	pick := picker.NewBand(db, rdb)
+	dash := dashboard.New(db)
+	dash.Start(context.Background())
 	stop := make(chan struct{})
-	jobs.Start(cfg, opsSvc, pick.Reload, stop)
+	jobs.Start(cfg, opsSvc, pick.Reload, stop, dash)
 
-	engine := router.New(cfg, db, enc, opsSvc, pick)
-	server := &http.Server{Addr: cfg.Listen, Handler: engine, ReadHeaderTimeout: 10 * time.Second}
+	engine := router.New(cfg, db, enc, opsSvc, pick, dash)
+	requests := &drainingHandler{next: engine}
+	server := &http.Server{Addr: cfg.Listen, Handler: requests, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		log.Printf("listening on %s", cfg.Listen)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -72,6 +76,8 @@ func main() {
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
 	close(stop)
+	requests.StopAccepting()
+	dash.Metrics.CloseSubscriptions()
 	log.Printf("shutting down")
 	ctx, cancel := context.WithTimeout(context.Background(), 310*time.Second)
 	defer cancel()
@@ -79,6 +85,8 @@ func main() {
 		log.Printf("shutdown: %v", err)
 		_ = server.Close()
 	}
+	requests.Wait()
+	dash.Stop()
 	done := make(chan struct{})
 	go func() { archives.Wait(); close(done) }()
 	select {

@@ -20,6 +20,11 @@ func testStore(t *testing.T, body, total int64) *Store {
 	if err != nil {
 		t.Fatal(err)
 	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
 	if err = db.AutoMigrate(&domain.LogBody{}); err != nil {
 		t.Fatal(err)
 	}

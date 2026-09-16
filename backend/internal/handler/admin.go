@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"simple-up-manage/internal/crypto"
+	"simple-up-manage/internal/dashboard"
 	"simple-up-manage/internal/domain"
+	"simple-up-manage/internal/externalprobe"
 	"simple-up-manage/internal/httpx"
 	"simple-up-manage/internal/ops"
 	"simple-up-manage/internal/picker"
@@ -30,6 +32,7 @@ type Admin struct {
 	Ops     *ops.Service
 	Picker  picker.Picker
 	Gateway *Gateway
+	Dash    *dashboard.Service
 }
 
 func (h *Admin) ListUpstreams(c *gin.Context) {
@@ -367,6 +370,7 @@ type keyBody struct {
 	RateMultiplier   *float64  `json:"rate_multiplier"`
 	BillingGroup     *string   `json:"billing_group"`
 	ProbeIntervalSec *int      `json:"probe_interval_sec"`
+	ProbeEnabled     *bool     `json:"probe_enabled"`
 	RPMLimit         *int      `json:"rpm_limit"`
 	MaxConcurrency   *int      `json:"max_concurrency"`
 }
@@ -397,11 +401,18 @@ func (h *Admin) CreateUpstreamKey(c *gin.Context) {
 		writeGormErr(c, err)
 		return
 	}
-	var body keyBody
-	if err := c.ShouldBindJSON(&body); err != nil {
+	rawBody, err := io.ReadAll(c.Request.Body)
+	if err != nil {
 		httpx.BadRequest(c, "invalid json")
 		return
 	}
+	var body keyBody
+	if err := json.Unmarshal(rawBody, &body); err != nil {
+		httpx.BadRequest(c, "invalid json")
+		return
+	}
+	var fields map[string]json.RawMessage
+	_ = json.Unmarshal(rawBody, &fields)
 	tag := strings.TrimSpace(body.NameTag)
 	if tag == "" {
 		tag = strings.TrimSpace(body.Name)
@@ -452,6 +463,16 @@ func (h *Admin) CreateUpstreamKey(c *gin.Context) {
 		}
 		probeSec = *body.ProbeIntervalSec
 	}
+	probeEnabled := true
+	if raw, ok := fields["probe_enabled"]; ok {
+		if strings.TrimSpace(string(raw)) == "null" {
+			httpx.BadRequest(c, "probe_enabled must be true or false")
+			return
+		}
+		if body.ProbeEnabled != nil {
+			probeEnabled = *body.ProbeEnabled
+		}
+	}
 	rpmLimit := 0
 	if body.RPMLimit != nil {
 		if *body.RPMLimit < 0 {
@@ -479,6 +500,7 @@ func (h *Admin) CreateUpstreamKey(c *gin.Context) {
 		Status:           status,
 		HealthStatus:     domain.HealthHealthy,
 		ProbeIntervalSec: probeSec,
+		ProbeEnabled:     &probeEnabled,
 		RPMLimit:         rpmLimit,
 		MaxConcurrency:   maxConcurrency,
 	}
@@ -589,6 +611,17 @@ func (h *Admin) UpdateKey(c *gin.Context) {
 			return
 		}
 		updates["probe_interval_sec"] = *body.ProbeIntervalSec
+	}
+	if raw, ok := fields["probe_enabled"]; ok {
+		if strings.TrimSpace(string(raw)) == "null" {
+			httpx.BadRequest(c, "probe_enabled must be true or false")
+			return
+		}
+		if body.ProbeEnabled == nil {
+			httpx.BadRequest(c, "probe_enabled must be true or false")
+			return
+		}
+		updates["probe_enabled"] = *body.ProbeEnabled
 	}
 	if body.RPMLimit != nil {
 		if *body.RPMLimit < 0 {
@@ -735,6 +768,7 @@ func (h *Admin) ListAllKeys(c *gin.Context) {
 
 type probeBody struct {
 	Deep bool `json:"deep"`
+	ops.ProbeOptions
 }
 
 func (h *Admin) ProbeKey(c *gin.Context) {
@@ -743,8 +777,15 @@ func (h *Admin) ProbeKey(c *gin.Context) {
 		return
 	}
 	var body probeBody
-	_ = c.ShouldBindJSON(&body)
-	out, err := h.Ops.ProbeKey(c.Request.Context(), id, body.Deep)
+	if err := c.ShouldBindJSON(&body); err != nil && !errors.Is(err, io.EOF) {
+		httpx.BadRequest(c, "invalid probe request")
+		return
+	}
+	if err := body.ProbeOptions.Validate(body.Deep); err != nil {
+		httpx.BadRequest(c, err.Error())
+		return
+	}
+	out, err := h.Ops.ProbeKey(c.Request.Context(), id, body.Deep, body.ProbeOptions)
 	if err != nil {
 		writeGormErr(c, err)
 		return
@@ -867,6 +908,7 @@ type consumerBody struct {
 	Status        string   `json:"status"`
 	QuotaUSD      *float64 `json:"quota_usd"`
 	RPM           *int     `json:"rpm"`
+	RouteGroupID  *uint    `json:"route_group_id"`
 	RouteGroupIDs *[]uint  `json:"route_group_ids"`
 }
 
@@ -878,9 +920,21 @@ func (h *Admin) consumerOut(k domain.ConsumerKey, includeRaw bool) consumerDTO {
 }
 
 func (h *Admin) CreateConsumerKey(c *gin.Context) {
-	var body consumerBody
-	if err := c.ShouldBindJSON(&body); err != nil {
+	rawBody, err := io.ReadAll(c.Request.Body)
+	if err != nil {
 		httpx.BadRequest(c, "invalid json")
+		return
+	}
+	var body consumerBody
+	if err := json.Unmarshal(rawBody, &body); err != nil {
+		httpx.BadRequest(c, "invalid json")
+		return
+	}
+	var fields map[string]json.RawMessage
+	_ = json.Unmarshal(rawBody, &fields)
+	groups, err := resolveConsumerGroupIDs(fields, body)
+	if err != nil {
+		httpx.BadRequest(c, err.Error())
 		return
 	}
 	name := strings.TrimSpace(body.Name)
@@ -920,8 +974,8 @@ func (h *Admin) CreateConsumerKey(c *gin.Context) {
 		if err := tx.Create(&k).Error; err != nil {
 			return err
 		}
-		if body.RouteGroupIDs != nil {
-			return setConsumerRouteGroups(tx, k.ID, *body.RouteGroupIDs)
+		if groups != nil {
+			return setConsumerRouteGroups(tx, k.ID, *groups)
 		}
 		return nil
 	})
@@ -942,9 +996,21 @@ func (h *Admin) UpdateConsumerKey(c *gin.Context) {
 		writeGormErr(c, err)
 		return
 	}
-	var body consumerBody
-	if err := c.ShouldBindJSON(&body); err != nil {
+	rawBody, err := io.ReadAll(c.Request.Body)
+	if err != nil {
 		httpx.BadRequest(c, "invalid json")
+		return
+	}
+	var body consumerBody
+	if err := json.Unmarshal(rawBody, &body); err != nil {
+		httpx.BadRequest(c, "invalid json")
+		return
+	}
+	var fields map[string]json.RawMessage
+	_ = json.Unmarshal(rawBody, &fields)
+	groups, err := resolveConsumerGroupIDs(fields, body)
+	if err != nil {
+		httpx.BadRequest(c, err.Error())
 		return
 	}
 	if name := strings.TrimSpace(body.Name); name != "" {
@@ -963,12 +1029,12 @@ func (h *Admin) UpdateConsumerKey(c *gin.Context) {
 	if body.RPM != nil {
 		k.RPM = *body.RPM
 	}
-	err := h.DB.Transaction(func(tx *gorm.DB) error {
+	err = h.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Save(&k).Error; err != nil {
 			return err
 		}
-		if body.RouteGroupIDs != nil {
-			return setConsumerRouteGroups(tx, k.ID, *body.RouteGroupIDs)
+		if groups != nil {
+			return setConsumerRouteGroups(tx, k.ID, *groups)
 		}
 		return nil
 	})
@@ -1080,10 +1146,18 @@ func (h *Admin) RunProbes(c *gin.Context) {
 		Deep       bool  `json:"deep"`
 		UpstreamID *uint `json:"upstream_id"`
 		KeyID      *uint `json:"key_id"`
+		ops.ProbeOptions
 	}
-	_ = c.ShouldBindJSON(&body)
+	if err := c.ShouldBindJSON(&body); err != nil && !errors.Is(err, io.EOF) {
+		httpx.BadRequest(c, "invalid probe request")
+		return
+	}
+	if err := body.ProbeOptions.Validate(body.Deep); err != nil {
+		httpx.BadRequest(c, err.Error())
+		return
+	}
 	if body.KeyID != nil && *body.KeyID > 0 {
-		out, err := h.Ops.ProbeKey(c.Request.Context(), *body.KeyID, body.Deep)
+		out, err := h.Ops.ProbeKey(c.Request.Context(), *body.KeyID, body.Deep, body.ProbeOptions)
 		if err != nil {
 			writeGormErr(c, err)
 			return
@@ -1091,12 +1165,17 @@ func (h *Admin) RunProbes(c *gin.Context) {
 		httpx.OK(c, out)
 		return
 	}
-	ok, fail, skipped := h.Ops.ProbeFiltered(c.Request.Context(), body.Deep, body.UpstreamID, 0)
+	ok, fail, skipped, reasons := h.Ops.ProbeFilteredDetail(c.Request.Context(), body.Deep, body.UpstreamID, 0, body.ProbeOptions)
+	msg := fmt.Sprintf("成功 %d，失败 %d", ok, fail)
+	if skipped > 0 {
+		msg = fmt.Sprintf("%s，跳过 %d", msg, skipped)
+	}
 	httpx.OK(c, gin.H{
-		"ok":      ok,
-		"failed":  fail,
-		"skipped": skipped,
-		"message": fmt.Sprintf("成功 %d，失败 %d", ok, fail),
+		"ok":              ok,
+		"failed":          fail,
+		"skipped":         skipped,
+		"skipped_reasons": reasons,
+		"message":         msg,
 	})
 }
 
@@ -1112,6 +1191,17 @@ func (h *Admin) ListRequestLogs(c *gin.Context) {
 		snapshotAt = parsed.UTC()
 	}
 	q := h.DB.Model(&domain.RequestLog{})
+	if rule := strings.TrimSpace(c.Query("external_probe_rule")); rule != "" {
+		switch {
+		case rule == "any":
+			q = q.Where("external_probe_rule IS NOT NULL AND external_probe_rule <> ''")
+		case externalprobe.ValidRule(rule):
+			q = q.Where("external_probe_rule = ?", rule)
+		default:
+			httpx.BadRequest(c, "invalid external_probe_rule")
+			return
+		}
+	}
 	if v := strings.TrimSpace(c.Query("consumer_key_id")); v != "" {
 		id, err := strconv.ParseUint(v, 10, 64)
 		if err != nil || id == 0 {
@@ -1125,6 +1215,14 @@ func (h *Admin) ListRequestLogs(c *gin.Context) {
 	}
 	if v := strings.TrimSpace(c.Query("key_id")); v != "" {
 		q = q.Where("platform_key_id = ?", v)
+	}
+	if v := strings.TrimSpace(c.Query("route_group_id")); v != "" {
+		id, err := strconv.ParseUint(v, 10, 64)
+		if err != nil || id == 0 {
+			httpx.BadRequest(c, "invalid route_group_id")
+			return
+		}
+		q = q.Where("route_group_id = ?", id)
 	}
 	if v := strings.TrimSpace(c.Query("success")); v != "" {
 		q = q.Where("completed_at <= ?", snapshotAt)

@@ -6,11 +6,13 @@
   "scripts": {
     "dev": "vite",
     "typecheck": "vue-tsc --noEmit",
+    "test": "node --test tests/*.test.mjs",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview"
   },
   "dependencies": {
     "@vicons/ionicons5": "^0.13.0",
+    "echarts": "^6.1.0",
     "naive-ui": "^2.43.2",
     "pinia": "^3.0.3",
     "vue": "^3.5.21",

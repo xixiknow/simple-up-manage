@@ -13,6 +13,11 @@ func TestLegacyDownRequiresRecoveryOnlyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
 	if err := db.AutoMigrate(&domain.PlatformKey{}); err != nil {
 		t.Fatal(err)
 	}

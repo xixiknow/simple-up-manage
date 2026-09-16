@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"simple-up-manage/internal/dashboard"
 	"simple-up-manage/internal/domain"
 	"simple-up-manage/internal/httpx"
 	"simple-up-manage/internal/ops"
@@ -34,6 +35,9 @@ type consumerTestResult struct {
 	Model      string `json:"model"`
 	DurationMs int64  `json:"duration_ms"`
 	Error      string `json:"error,omitempty"`
+	Skipped    bool   `json:"skipped,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+	Message    string `json:"message,omitempty"`
 }
 
 func (h *Admin) TestConsumerKey(c *gin.Context) {
@@ -84,6 +88,13 @@ func (h *Admin) TestConsumerKey(c *gin.Context) {
 			out.Error = extractGatewayError(body, status)
 		}
 	}
+	if isProbeDisabledResult(out.Error, status) {
+		out.Skipped = true
+		out.Reason = domain.ProbeSkipDisabled
+		out.Message = "该 Key 已关闭探测"
+		out.Success = true
+		out.Error = ""
+	}
 	httpx.OK(c, out)
 }
 
@@ -115,7 +126,7 @@ func (h *Admin) runConsumerProbe(apiKey, protocol, model string) (status int, bo
 		req.Header.Set("x-api-key", apiKey)
 		req.Header.Set("anthropic-version", "2023-06-01")
 	}
-	ctx.Request = req
+	ctx.Request = req.WithContext(dashboard.WithSource(req.Context(), domain.SourceAdminTest))
 	if protocol == domain.ProtocolAnthropic {
 		h.Gateway.Messages(ctx)
 	} else {
@@ -173,6 +184,14 @@ func pickTestModel(groups []domain.RouteGroup, unbound bool, protocol, fallback 
 		}
 	}
 	return fallback
+}
+
+func isProbeDisabledResult(errMsg string, status int) bool {
+	if status != http.StatusServiceUnavailable && status != 0 {
+		return false
+	}
+	msg := strings.TrimSpace(errMsg)
+	return msg == domain.ProbeSkipDisabled || strings.Contains(msg, "该 Key 已关闭探测")
 }
 
 func extractGatewayError(body []byte, status int) string {

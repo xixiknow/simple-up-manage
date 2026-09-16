@@ -58,6 +58,9 @@ func parseDatabaseURL(raw string) (dsn, driver string) {
 }
 
 func AutoMigrate(db *gorm.DB) error {
+	if err := rejectMultiConsumerRouteGroups(db); err != nil {
+		return err
+	}
 	m := db.Migrator()
 	up := &domain.Upstream{}
 	backfillBalance := m.HasTable(up) && !m.HasColumn(up, "last_balance")
@@ -104,7 +107,10 @@ func AutoMigrate(db *gorm.DB) error {
 	if err := migrateKeyConcurrencyBalanceToUpstream(db, backfillConc, backfillBalance); err != nil {
 		return err
 	}
-	return migrateUpstreamGroupsToKeys(db)
+	if err := migrateUpstreamGroupsToKeys(db); err != nil {
+		return err
+	}
+	return migrateDashboard(db)
 }
 
 func migrateRequestLogState(db *gorm.DB) error {

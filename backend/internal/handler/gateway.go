@@ -18,7 +18,9 @@ import (
 	"time"
 
 	"simple-up-manage/internal/crypto"
+	"simple-up-manage/internal/dashboard"
 	"simple-up-manage/internal/domain"
+	"simple-up-manage/internal/externalprobe"
 	"simple-up-manage/internal/middleware"
 	"simple-up-manage/internal/ops"
 	"simple-up-manage/internal/picker"
@@ -55,6 +57,7 @@ type Gateway struct {
 	Ops            *ops.Service
 	Picker         picker.Picker
 	Client         *upstream.Client
+	Dash           *dashboard.Service
 	firstTokenWait time.Duration
 	rpm            *rpmLimiter
 	conc           *concLimiter
@@ -136,6 +139,19 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 	if !ok {
 		return
 	}
+	source := dashboard.SourceFrom(c.Request.Context())
+	var bizTok *dashboard.Token
+	if source == domain.SourceBusiness && h.Dash != nil && h.Dash.Metrics != nil {
+		bizTok = h.Dash.Metrics.BeginBusiness()
+		defer bizTok.End()
+	}
+	dashUUID := uuid.NewString()
+	groupID, groupName, sale, _, snapErr := snapshotConsumerBinding(c.Request.Context(), h.DB, ck.ID)
+	if snapErr != nil {
+		gatewayError(c, http.StatusInternalServerError, "api_error", snapErr.Error())
+		return
+	}
+	catalogVer := dashboard.CurrentCatalogVersion(h.DB)
 	reader := c.Request.Body
 	if isImagePath(c.Request.URL.Path) {
 		reader = http.MaxBytesReader(c.Writer, c.Request.Body, maxImageRequestBytes)
@@ -160,9 +176,37 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 	reqSnap.StartedAt = reqStart
 	path := c.Request.URL.Path
 	clientIP := requestClientIP(c)
+	var probeRule *string
+	if source == domain.SourceBusiness {
+		if rule := externalprobe.Classify(path, c.Request.Header, body); rule != "" {
+			probeRule = &rule
+			c.Set("external_probe_rule", rule)
+		}
+	}
 	lg := h.beginLog(ck, protocol, model, path, reqID, clientIP, reqSnap)
 	if lg != nil {
+		lg.dashUUID = dashUUID
+		lg.source = source
+		lg.groupID = groupID
+		lg.groupName = groupName
+		lg.sale = sale
+		lg.catalogVer = catalogVer
+		lg.price = dashboard.LookupVersionPrice(h.DB, catalogVer, model)
 		h.archiveRequest(lg.id, c.Request, body)
+		h.writeLog(lg, map[string]any{
+			"dash_uuid":           dashUUID,
+			"source":              source,
+			"route_group_id":      groupID,
+			"route_group_name":    groupName,
+			"external_probe_rule": probeRule,
+		}, false)
+	}
+	if h.Dash != nil {
+		h.Dash.EnqueueStart(dashboard.RequestStart{
+			UUID: dashUUID, ConsumerKeyID: ck.ID, RouteGroupID: groupID, RouteGroupName: groupName,
+			SaleMultiplier: sale, CatalogVersionID: catalogVer, Protocol: protocol, Path: path,
+			Stream: reqSnap.ReqStream, Source: source, StartedAt: reqStart, RequestLogID: logID(lg),
+		})
 	}
 	lastMsg := "no enabled upstream for protocol"
 	var settled bool
@@ -188,7 +232,7 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 			retries = s.RetryMax
 		}
 	}
-	allow, drift, bound, err := ops.ResolveAllowKeys(c.Request.Context(), h.DB, ck.ID, protocol, model)
+	allow, drift, bound, err := ops.ResolveSnapshotAllowKeys(c.Request.Context(), h.DB, groupID, protocol, model)
 	if err != nil {
 		lastMsg = err.Error()
 		gatewayError(c, http.StatusInternalServerError, "api_error", err.Error())
@@ -204,6 +248,20 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 	}
 	if !bound {
 		allow, drift = nil, nil
+	}
+	if requiresProbePermission(c) {
+		filtered, empty, probeErr := h.restrictProbeEnabled(c.Request.Context(), allow, bound)
+		if probeErr != nil {
+			lastMsg = "failed to check probe settings"
+			gatewayError(c, http.StatusInternalServerError, "api_error", lastMsg)
+			return
+		}
+		if empty {
+			lastMsg = "probe_disabled"
+			gatewayError(c, http.StatusServiceUnavailable, "api_error", domain.ProbeSkipDisabled)
+			return
+		}
+		allow = filtered
 	}
 
 	var exclude, excludeProviders, excludeKeyModels []uint
@@ -234,7 +292,7 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 		}
 		if err != nil {
 			if errors.Is(err, picker.ErrNoUpstream) {
-				if attempt == 0 {
+				if attempt == 0 || lastMsg == domain.ProbeSkipDisabled {
 					lastMsg = "no enabled upstream for protocol"
 					if bound {
 						lastMsg = "no healthy key in bound route groups"
@@ -249,7 +307,11 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 			gatewayError(c, http.StatusInternalServerError, "api_error", err.Error())
 			return
 		}
-		lg.traceEvent(h, pk, up, "selected", "picker")
+		reason := "picker"
+		if attempt > 0 {
+			reason = "failover"
+		}
+		lg.traceEvent(h, pk, up, "selected", reason)
 		lg.recordDecision(h, decision)
 		var outcome forwardOutcome
 		finishRouting := func() {}
@@ -333,6 +395,17 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 			excludeKeyModels = append(excludeKeyModels, pk.ID)
 		case failureScopeKey:
 			exclude = append(exclude, pk.ID)
+		}
+		if outcome.action == domain.ProbeSkipDisabled {
+			// A locally skipped key is not an upstream attempt. Remove it even
+			// when the picker has a sticky binding, and retain the send budget.
+			delete(allow, pk.ID)
+			if len(allow) == 0 {
+				gatewayError(c, http.StatusServiceUnavailable, "api_error", domain.ProbeSkipDisabled)
+				return
+			}
+			attempt--
+			continue
 		}
 		if !outcome.failOver {
 			if !c.Writer.Written() {
@@ -427,7 +500,7 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 			attempt.ReceivedBytes = archived.received
 			archived.finish(outcome.validSuccess)
 		}
-		h.completeAttempt(c.Request.Context(), pk, &attempt, collector, outcome)
+		h.completeAttempt(c.Request.Context(), pk, up, &attempt, collector, outcome, lg)
 	}()
 	defer func() {
 		if c.Request.Context().Err() != nil && !outcome.validSuccess {
@@ -439,7 +512,15 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 		}
 	}()
 	if runtime, ok := h.Picker.(picker.RuntimeController); ok {
-		acquired, scope := runtime.TryAcquire(pk, up)
+		var acquired bool
+		var scope string
+		var release func(bool)
+		if reservations, ok := h.Picker.(picker.AttemptRuntimeController); ok {
+			release, scope = reservations.TryAcquireAttempt(pk, up)
+			acquired = release != nil
+		} else {
+			acquired, scope = runtime.TryAcquire(pk, up)
+		}
 		if !acquired {
 			msg := "key capacity exceeded"
 			if scope == failureScopeProvider {
@@ -449,7 +530,13 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 			lg.markFailure(h, outcome.scope, outcome.action)
 			return outcome
 		}
-		defer runtime.Release(pk, up)
+		defer func() {
+			if release != nil {
+				release(!attempt.StartedAt.IsZero())
+			} else {
+				runtime.Release(pk, up)
+			}
+		}()
 	} else if up != nil {
 		if !h.conc.Acquire(up.ID, up.Concurrency) {
 			outcome := forwardOutcome{failOver: true, capacityBusy: true, scope: failureScopeProvider, action: "exclude_busy_resource", msg: "upstream concurrency exceeded"}
@@ -457,6 +544,10 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 			return outcome
 		}
 		defer h.conc.Release(up.ID, up.Concurrency)
+	}
+	if dashboard.SourceFrom(c.Request.Context()) == domain.SourceBusiness && h.Dash != nil {
+		tok := h.Dash.Metrics.BeginUpstream()
+		defer tok.End()
 	}
 	lg.attachRoute(h, pk, up)
 
@@ -505,7 +596,25 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 	}
 	defer firstWatch.stop()
 
+	// Re-read immediately before each diagnostic send, including same-key retries.
+	if requiresProbePermission(c) {
+		var current domain.PlatformKey
+		if err := h.DB.WithContext(c.Request.Context()).Select("id", "probe_enabled").First(&current, pk.ID).Error; err != nil {
+			return forwardOutcome{msg: "failed to check probe settings"}
+		}
+		if !current.AllowsProbe() {
+			return forwardOutcome{failOver: true, capacityBusy: true, scope: failureScopeKey, action: domain.ProbeSkipDisabled, msg: domain.ProbeSkipDisabled}
+		}
+	}
 	attempt.StartedAt = time.Now()
+	if h.Dash != nil && dashboard.SourceFrom(c.Request.Context()) == domain.SourceBusiness {
+		h.Dash.Metrics.MarkUpstreamHTTP()
+	}
+	if lg != nil {
+		lg.mu.Lock()
+		lg.httpAttempts++
+		lg.mu.Unlock()
+	}
 	resp, err := h.Client.DoRaw(upReq)
 	if err != nil {
 		dur := int(time.Since(started).Milliseconds())
@@ -680,21 +789,24 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 	snap := reqSnap.withResponse(resp.Header, resp.Header.Get("Content-Type"), respPrefix, respTotal)
 	snap.TTFTEvent = collector.firstEvent
 	snap.TTFTStatus = collector.ttftStatus(success)
-	if collector.usage.CostUSD == nil {
-		collector.usage.CostUSD = estimateRequestCost(h.DB, model, pk, collector.usage)
+	// Preserve upstream evidence for attempt settlement; legacy logs and quota
+	// continue to use their existing fallback estimate.
+	logUsage := collector.usage
+	if logUsage.CostUSD == nil {
+		logUsage.CostUSD = estimateRequestCost(h.DB, model, pk, logUsage)
 	}
 	if success {
 		lg.traceEvent(h, pk, up, "selected", "success")
 	} else {
 		lg.traceEvent(h, pk, up, "failed", errMsg)
 	}
-	h.finishLog(lg, ck, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, success, collector.usage, collector.ttftMs, dur, errMsg, snap)
+	h.finishLog(lg, ck, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, success, logUsage, collector.ttftMs, dur, errMsg, snap)
 	if success {
 		if runtime, ok := h.Picker.(picker.RuntimeController); ok {
 			runtime.RecordProviderSuccess(c.Request.Context(), up.ID)
 		}
-		if collector.usage.CostUSD != nil {
-			h.addQuotaUsed(ck.ID, *collector.usage.CostUSD)
+		if logUsage.CostUSD != nil {
+			h.addQuotaUsed(ck.ID, *logUsage.CostUSD)
 		}
 	}
 	outcome = forwardOutcome{ok: true, validSuccess: success, responseID: collector.responseID, msg: errMsg}
@@ -844,14 +956,23 @@ func (h *Gateway) observeAttempt(pk *domain.PlatformKey, model string, success b
 }
 
 type liveLog struct {
-	id        uint
-	mu        sync.Mutex
-	lastFlush time.Time
-	ttftSent  bool
-	revision  uint64
-	closed    bool
-	updates   map[string]any
-	trace     []selectionTraceEvent
+	id           uint
+	mu           sync.Mutex
+	lastFlush    time.Time
+	ttftSent     bool
+	revision     uint64
+	closed       bool
+	updates      map[string]any
+	trace        []selectionTraceEvent
+	dashUUID     string
+	source       string
+	groupID      *uint
+	groupName    string
+	sale         *float64
+	catalogVer   uint
+	price        dashboard.ModelPrice
+	httpAttempts int
+	ended        bool
 }
 
 type selectionTraceEvent struct {
@@ -933,7 +1054,8 @@ func (h *Gateway) beginLog(ck *domain.ConsumerKey, protocol, model, path, reqID,
 	defer cancel()
 	if err := h.DB.WithContext(ctx).Create(&row).Error; err != nil {
 		slog.Error("create request log", "request_id", reqID, "error", err)
-		return nil
+		// Dashboard lifecycle state must survive a diagnostic log write failure.
+		return &liveLog{}
 	}
 	return &liveLog{id: row.ID}
 }
@@ -1033,6 +1155,8 @@ func (h *Gateway) finishLog(lg *liveLog, ck *domain.ConsumerKey, pk *domain.Plat
 			id := up.ID
 			row.UpstreamID = &id
 		}
+		interrupted := !success && (strings.Contains(strings.ToLower(errMsg), "cancel") || strings.Contains(strings.ToLower(errMsg), "interrupt"))
+		h.emitDashEnd(lg, pk, up, protocol, model, success, usage, ttft, interrupted)
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -1043,6 +1167,8 @@ func (h *Gateway) finishLog(lg *liveLog, ck *domain.ConsumerKey, pk *domain.Plat
 		}()
 		return
 	}
+	interrupted := !success && (strings.Contains(strings.ToLower(errMsg), "cancel") || strings.Contains(strings.ToLower(errMsg), "interrupt"))
+	h.emitDashEnd(lg, pk, up, protocol, model, success, usage, ttft, interrupted)
 	h.writeLog(lg, updates, true)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -78,6 +78,8 @@ export type PlatformKey = {
   last_probe_at?: string | null
   /** Scheduled probe cadence in seconds. 0 follows the global job interval. */
   probe_interval_sec?: number
+  /** Independent of Key status: false keeps the key in business routing but skips diagnostic probes. */
+  probe_enabled?: boolean
   health_status: HealthStatus
   health_pulse?: HealthPulseCell[]
   cache_rate?: number | null
@@ -131,6 +133,7 @@ export type RouteGroup = {
   models: string[]
   rate_min?: number | null
   rate_max?: number | null
+  sale_multiplier?: number | null
   description?: string
   status: EnableStatus
   member_count: number
@@ -148,6 +151,7 @@ export type RouteGroupPayload = {
   models?: string[]
   rate_min?: number | null
   rate_max?: number | null
+  sale_multiplier?: number | null
   clear_rate?: boolean
   description?: string
   status?: EnableStatus
@@ -180,6 +184,7 @@ export type ConsumerKey = {
   quota_used: number
   rpm: number
   last_used_at?: string | null
+  route_group_id?: number | null
   route_groups?: RouteGroupRef[]
 }
 
@@ -189,14 +194,28 @@ export type ConsumerKeyTestResult = {
   model: string
   duration_ms: number
   error?: string
+  skipped?: boolean
+  reason?: string
+  message?: string
+}
+
+export type ExternalProbeRule = 'rp_arithmetic' | 'example_arithmetic' | 'health_manager'
+
+export const EXTERNAL_PROBE_LABEL: Record<ExternalProbeRule, string> = {
+  rp_arithmetic: 'RP 算术探测',
+  example_arithmetic: '示例加减法探测',
+  health_manager: 'health-manager 探测',
 }
 
 export type RequestLog = {
+  external_probe_rule?: ExternalProbeRule | null
   id: number
   request_id: string
   consumer_key_id?: number | null
   upstream_id?: number | null
   platform_key_id?: number | null
+  route_group_id?: number | null
+  route_group_name?: string
   protocol: Protocol
   model: string
   path: string
@@ -312,6 +331,7 @@ export type PlatformKeyPayload = {
   rate_multiplier?: number
   billing_group?: string
   probe_interval_sec?: number
+  probe_enabled?: boolean
   rpm_limit?: number
   max_concurrency?: number
 }
@@ -321,6 +341,7 @@ export type ConsumerKeyPayload = {
   status: EnableStatus
   quota_usd: number
   rpm: number
+  route_group_id?: number | null
   route_group_ids?: number[]
 }
 
@@ -468,11 +489,13 @@ export type SchedulerExplain = {
 }
 
 export type RequestLogQuery = ListParams & {
+  external_probe_rule?: ExternalProbeRule | 'any'
   consumer_key_id?: number
   snapshot_id?: number
   snapshot_at?: string
   upstream_id?: number
   key_id?: number
+  route_group_id?: number
   success?: boolean
   model?: string
   from?: string
@@ -523,4 +546,213 @@ export const STATUS_OPTIONS = (Object.keys(STATUS_LABEL) as EnableStatus[]).map(
 export const RATE_CHANGE_SOURCE_LABEL: Record<RateChangeSource, string> = {
   billing: '同步',
   manual: '手动',
+}
+
+export type DashRange = { from: string; to: string }
+
+export type DashGap = { from: string; to: string; reason: string }
+
+export type DashDataQuality = {
+  complete: boolean
+  gaps?: DashGap[]
+  unmeasured?: Record<string, number>
+  overflow?: boolean
+  queue_depth?: number
+  window_warmup?: boolean
+}
+
+export type DashMeta = {
+  generated_at: string
+  available_from: string
+  timezone: string
+  range: DashRange
+  data_quality: DashDataQuality
+}
+
+export type DashFinance = {
+  known_revenue_usd?: number | null
+  known_estimated_cost_usd?: number | null
+  consumption_usd?: number | null
+  reported_consumption_usd?: number | null
+  estimated_consumption_usd?: number | null
+  unknown_consumption?: number
+  covered_revenue_usd?: number | null
+  covered_cost_usd?: number | null
+  estimated_profit_usd?: number | null
+  margin?: number | null
+  coverage?: number | null
+  known_partial?: boolean
+}
+
+export type DashProviderBalance = {
+  id: number
+  name: string
+  enabled: boolean
+  balance_usd?: number | null
+  balance_at?: string | null
+  kind: string
+  unlimited: boolean
+  unknown: boolean
+  stale: boolean
+}
+
+export type DashBalance = {
+  total_known_usd?: number | null
+  enabled_known_usd?: number | null
+  unlimited_count: number
+  unknown_count: number
+  disabled_count: number
+  stale_count: number
+  providers: DashProviderBalance[]
+  refreshed_at?: string | null
+}
+
+export type DashOverview = {
+  meta: DashMeta
+  requests_started: number
+  requests_completed: number
+  requests_success: number
+  success_rate?: number | null
+  retry_rate?: number | null
+  provider_success_rate?: number | null
+  ttft_p50_ms?: number | null
+  ttft_p95_ms?: number | null
+  ttft_samples: number
+  ttft_approx: boolean
+  ttft_overflow: boolean
+  inflight_mean?: number | null
+  inflight_peak: number
+  finance: DashFinance
+  balance: DashBalance
+}
+
+export type DashTrendPoint = {
+  bucket: string
+  complete: boolean
+  requests_started: number
+  requests_completed: number
+  failure_rate?: number | null
+  success_rate?: number | null
+  retry_rate?: number | null
+  provider_success_rate?: number | null
+  ttft_p50_ms?: number | null
+  ttft_p95_ms?: number | null
+  ttft_samples: number
+  inflight_mean?: number | null
+  inflight_peak: number
+  consumption_usd?: number | null
+  covered_profit_usd?: number | null
+  known_revenue_usd?: number | null
+}
+
+export type DashTrends = {
+  meta: DashMeta
+  granularity: string
+  points: DashTrendPoint[]
+}
+
+export type DashRankingRow = {
+  id: number
+  name: string
+  requests_completed: number
+  success_rate?: number | null
+  known_revenue_usd?: number | null
+  covered_revenue_usd?: number | null
+  covered_cost_usd?: number | null
+  estimated_profit_usd?: number | null
+  margin?: number | null
+  coverage?: number | null
+  consumption_usd?: number | null
+  excluded: boolean
+  exclude_reason?: string
+}
+
+export type DashRankings = {
+  meta: DashMeta
+  dimension: string
+  items: DashRankingRow[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export type DashUrgentItem = {
+  provider_id: number
+  name: string
+  balance_usd?: number | null
+  hours_left?: number | null
+  consumed_24h_usd?: number | null
+  coverage?: number | null
+  reason: string
+  insufficient: boolean
+  zero_consumption: boolean
+  health_note?: string
+}
+
+export type DashInvestItem = {
+  provider_id: number
+  name: string
+  profit_per_cost?: number | null
+  margin?: number | null
+  coverage?: number | null
+  samples: number
+  success_rate?: number | null
+  ttft_p95_ms?: number | null
+  cost_multiplier?: number | null
+  balance_usd?: number | null
+  reason: string
+}
+
+export type DashWatchItem = {
+  provider_id: number
+  name: string
+  reason: string
+  demand_key?: string
+}
+
+export type DashDemandBoard = {
+  key: string
+  label: string
+  weight: number
+  items: DashInvestItem[]
+}
+
+export type DashRecommendations = {
+  meta: DashMeta
+  urgent: DashUrgentItem[]
+  invest: DashInvestItem[]
+  watch: DashWatchItem[]
+  demand_boards: DashDemandBoard[]
+  common_coverage?: number | null
+  note: string
+}
+
+export type DashSettings = {
+  renewal_horizon_hours: number
+  min_quality_samples: number
+  min_success_rate: number
+  min_ttft_samples: number
+  max_ttft_p95_ms: number
+  min_finance_coverage: number
+  min_common_demand_coverage: number
+  updated_at?: string
+}
+
+export type DashLiveSnapshot = {
+  schema_version: number
+  instance_id: string
+  sequence: number
+  server_time: string
+  started_at: string
+  window_seconds: number
+  window_complete: boolean
+  business_inflight: number
+  business_rpm: number
+  upstream_inflight: number
+  upstream_rpm: number
+}
+
+export type DashHeartbeat = {
+  instance_id: string
+  server_time: string
 }

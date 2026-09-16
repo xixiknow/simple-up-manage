@@ -10,6 +10,11 @@ import (
 )
 
 const (
+	SourceBusiness    = "business"
+	SourceAdminTest   = "admin_test"
+	SourceProbe       = "probe"
+	ProbeSkipDisabled = "probe_disabled"
+
 	KindSub2API         = "sub2api"
 	KindNewAPI          = "new_api"
 	KindOpenAICompat    = "openai_compat"
@@ -105,7 +110,10 @@ type PlatformKey struct {
 	HealthStatus   string     `gorm:"size:32;not null;default:healthy" json:"health_status"`
 	// ProbeIntervalSec is this key's scheduled probe cadence. 0 follows the
 	// global jobs.probe_interval.
-	ProbeIntervalSec    int         `gorm:"not null;default:0" json:"probe_interval_sec"`
+	ProbeIntervalSec int `gorm:"not null;default:0" json:"probe_interval_sec"`
+	// ProbeEnabled allows status=enabled keys to skip diagnostic probes while
+	// still serving business traffic. Existing rows migrate to true.
+	ProbeEnabled        *bool       `gorm:"not null;default:true" json:"probe_enabled"`
 	BillingUnsupported  bool        `gorm:"not null;default:false" json:"billing_unsupported"`
 	BillingBackoffUntil *time.Time  `json:"billing_backoff_until"`
 	LastModels          JSONStrings `gorm:"type:text" json:"last_models"`
@@ -158,6 +166,10 @@ func (k *PlatformKey) ProbeEvery(fallback time.Duration) time.Duration {
 		return time.Duration(k.ProbeIntervalSec) * time.Second
 	}
 	return fallback
+}
+
+func (k *PlatformKey) AllowsProbe() bool {
+	return k == nil || k.ProbeEnabled == nil || *k.ProbeEnabled
 }
 
 // FormatRate formats a multiplier for display names: 1 → "1", 0.08 → "0.08".
@@ -236,16 +248,19 @@ type ConsumerKey struct {
 // RouteGroup is an operator-defined pool of platform keys. Consumer keys bind to
 // route groups to restrict which platform keys may serve their traffic.
 type RouteGroup struct {
-	ID          uint        `gorm:"primaryKey" json:"id"`
-	Name        string      `gorm:"size:128;uniqueIndex;not null" json:"name"`
-	Protocol    string      `gorm:"size:16" json:"protocol"`
-	Models      JSONStrings `gorm:"type:text" json:"models"`
-	RateMin     *float64    `gorm:"type:decimal(12,6)" json:"rate_min"`
-	RateMax     *float64    `gorm:"type:decimal(12,6)" json:"rate_max"`
-	Description string      `gorm:"size:1024" json:"description"`
-	Status      string      `gorm:"size:16;not null;default:enabled" json:"status"`
-	CreatedAt   time.Time   `json:"created_at"`
-	UpdatedAt   time.Time   `json:"updated_at"`
+	ID       uint        `gorm:"primaryKey" json:"id"`
+	Name     string      `gorm:"size:128;uniqueIndex;not null" json:"name"`
+	Protocol string      `gorm:"size:16" json:"protocol"`
+	Models   JSONStrings `gorm:"type:text" json:"models"`
+	RateMin  *float64    `gorm:"type:decimal(12,6)" json:"rate_min"`
+	RateMax  *float64    `gorm:"type:decimal(12,6)" json:"rate_max"`
+	// SaleMultiplier is the group selling price as a multiple of catalog base.
+	// nil means unconfigured (excluded from profit); 0 means complimentary.
+	SaleMultiplier *float64  `gorm:"type:decimal(12,6)" json:"sale_multiplier"`
+	Description    string    `gorm:"size:1024" json:"description"`
+	Status         string    `gorm:"size:16;not null;default:enabled" json:"status"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // MatchesProtocol reports whether the group accepts the given protocol.
@@ -263,7 +278,7 @@ type RouteGroupKey struct {
 
 // ConsumerRouteGroup binds a consumer key to a route group.
 type ConsumerRouteGroup struct {
-	ConsumerKeyID uint      `gorm:"primaryKey;autoIncrement:false" json:"consumer_key_id"`
+	ConsumerKeyID uint      `gorm:"primaryKey;autoIncrement:false;uniqueIndex:idx_consumer_route_groups_consumer" json:"consumer_key_id"`
 	RouteGroupID  uint      `gorm:"primaryKey;autoIncrement:false;index" json:"route_group_id"`
 	CreatedAt     time.Time `json:"created_at"`
 }
@@ -274,6 +289,11 @@ type RequestLog struct {
 	ConsumerKeyID       *uint      `gorm:"index" json:"consumer_key_id"`
 	UpstreamID          *uint      `gorm:"index" json:"upstream_id"`
 	PlatformKeyID       *uint      `gorm:"index" json:"platform_key_id"`
+	RouteGroupID        *uint      `gorm:"index" json:"route_group_id"`
+	RouteGroupName      string     `gorm:"size:128" json:"route_group_name"`
+	Source              string     `gorm:"size:16;index" json:"source"`
+	ExternalProbeRule   *string    `gorm:"size:32;index" json:"external_probe_rule"`
+	DashUUID            string     `gorm:"size:36;index" json:"dash_uuid"`
 	Protocol            string     `gorm:"size:16;index" json:"protocol"`
 	Model               string     `gorm:"size:128;index" json:"model"`
 	Path                string     `gorm:"size:256" json:"path"`

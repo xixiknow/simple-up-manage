@@ -14,11 +14,30 @@ import (
 	"simple-up-manage/internal/upstream"
 )
 
-func (s *Service) businessProbe(ctx context.Context, key *domain.PlatformKey, apiKey string) ProbeOutcome {
+func (s *Service) businessProbe(ctx context.Context, key *domain.PlatformKey, apiKey string, options ...ProbeOptions) ProbeOutcome {
+	opts := firstProbeOptions(options)
 	cfg := s.probeSettings(ctx)
 	var catalog []domain.CatalogModel
 	_ = s.DB.WithContext(ctx).Find(&catalog).Error
 	target := PickProbeTarget(key, cfg, catalog)
+	if opts.Protocol != "" {
+		if !key.SupportsProtocol(opts.Protocol) {
+			return ProbeOutcome{Skipped: true, Reason: "protocol_mismatch", Message: "该 Key 不支持所选探测协议"}
+		}
+		protocolKey := *key
+		protocolKey.Protocols = opts.Protocol
+		target = PickProbeTarget(&protocolKey, cfg, catalog)
+	}
+	if opts.Model != "" {
+		target.Model = opts.Model
+		target.Vendor = InferVendor(opts.Model, catalog)
+		if opts.Protocol == "" && target.Vendor != "" {
+			inferred := domain.VendorProtocol(target.Vendor)
+			if key.SupportsProtocol(inferred) {
+				target.Protocol = inferred
+			}
+		}
+	}
 	out := ProbeOutcome{Protocol: target.Protocol, Model: target.Model, Vendor: target.Vendor, Path: "/v1/chat/completions"}
 	if target.Protocol == "" {
 		out.Error = "key has no effective protocol"
@@ -38,6 +57,12 @@ func (s *Service) businessProbe(ctx context.Context, key *domain.PlatformKey, ap
 	chosen := false
 	for _, d := range dims {
 		if !key.SupportsProtocol(d.Protocol) {
+			continue
+		}
+		if opts.Model != "" && d.Model != opts.Model {
+			continue
+		}
+		if opts.Protocol != "" && d.Protocol != opts.Protocol {
 			continue
 		}
 		var last domain.ProbeLog
@@ -65,10 +90,14 @@ func (s *Service) businessProbe(ctx context.Context, key *domain.PlatformKey, ap
 			}
 		}
 	}
-	body := map[string]any{"model": out.Model, "stream": out.Stream, "messages": []map[string]string{{"role": "user", "content": "Reply OK."}}}
+	prompt := "Reply OK."
+	if opts.Prompt != nil {
+		prompt = *opts.Prompt
+	}
+	body := map[string]any{"model": out.Model, "stream": out.Stream, "messages": []map[string]string{{"role": "user", "content": prompt}}}
 	if out.Path == "/v1/responses" {
 		delete(body, "messages")
-		body["input"] = "Reply OK."
+		body["input"] = prompt
 		body["max_output_tokens"] = 256
 	} else {
 		body["max_tokens"] = 256

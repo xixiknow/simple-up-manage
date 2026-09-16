@@ -25,6 +25,11 @@ import type {
   UpstreamModelsOutcome,
   UpstreamPayload,
   ModelCatalog,
+  DashOverview,
+  DashTrends,
+  DashRankings,
+  DashRecommendations,
+  DashSettings,
 } from './types'
 
 function stripEmptyKey(payload: PlatformKeyPayload): PlatformKeyPayload {
@@ -94,8 +99,23 @@ export function deleteKey(id: number) {
   return del(`/keys/${id}`)
 }
 
-export function probeKey(id: number, deep = true) {
-  return post<unknown>(`/keys/${id}/probe`, { deep })
+export type ProbeOptions = { model?: string; prompt?: string; protocol?: 'openai' | 'anthropic' }
+export type ProbeResult = {
+  success?: boolean
+  skipped?: boolean | number
+  reason?: string
+  message?: string
+  error?: string
+  model?: string
+  protocol?: string
+  path?: string
+  latency_ms?: number
+  ok?: number
+  failed?: number
+}
+
+export function probeKey(id: number, deep = true, options: ProbeOptions = {}) {
+  return post<ProbeResult>(`/keys/${id}/probe`, { deep, ...options })
 }
 
 export function refreshKeyBalance(id: number) {
@@ -188,8 +208,8 @@ export function getStatus() {
   return get<unknown>('/status')
 }
 
-export function runProbes(body?: { deep?: boolean; upstream_id?: number; key_id?: number }) {
-  return post<unknown>('/probes/run', body ?? {})
+export function runProbes(body?: ProbeOptions & { deep?: boolean; upstream_id?: number; key_id?: number }) {
+  return post<ProbeResult>('/probes/run', body ?? {})
 }
 
 export function listRequestLogs(params?: RequestLogQuery) {
@@ -249,6 +269,30 @@ export function getModelCatalog() {
 
 export function syncModelCatalog() {
   return post<ModelCatalog>('/model-catalog/sync')
+}
+
+export function getDashboardOverview(from: string, to: string) {
+  return get<DashOverview>('/dashboard/overview', { from, to })
+}
+
+export function getDashboardTrends(from: string, to: string, granularity: 'minute' | 'hour' | 'day') {
+  return get<DashTrends>('/dashboard/trends', { from, to, granularity })
+}
+
+export function getDashboardRankings(from: string, to: string, dimension: 'group' | 'provider', page = 1, page_size = 20) {
+  return get<DashRankings>('/dashboard/rankings', { from, to, dimension, page, page_size })
+}
+
+export function getDashboardRecommendations() {
+  return get<DashRecommendations>('/dashboard/recommendations')
+}
+
+export function getDashboardSettings() {
+  return get<DashSettings>('/dashboard/settings')
+}
+
+export function updateDashboardSettings(payload: DashSettings) {
+  return put<DashSettings>('/dashboard/settings', payload)
 }
 
 export function flattenExplain(data: unknown): SchedulerCandidate[] {

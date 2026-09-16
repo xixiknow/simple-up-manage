@@ -66,6 +66,19 @@ func ResolveAllowKeys(ctx context.Context, db *gorm.DB, consumerID uint, protoco
 	for _, l := range links {
 		groupIDs = append(groupIDs, l.RouteGroupID)
 	}
+	return resolveGroupAllowKeys(ctx, db, groupIDs, protocol, model)
+}
+
+// ResolveSnapshotAllowKeys keeps the request's group binding fixed across body reads.
+// A missing/deleted bound group yields an empty allowed set, never global routing.
+func ResolveSnapshotAllowKeys(ctx context.Context, db *gorm.DB, groupID *uint, protocol, model string) (allow, drift map[uint]struct{}, bound bool, err error) {
+	if groupID == nil {
+		return nil, nil, false, nil
+	}
+	return resolveGroupAllowKeys(ctx, db, []uint{*groupID}, protocol, model)
+}
+
+func resolveGroupAllowKeys(ctx context.Context, db *gorm.DB, groupIDs []uint, protocol, model string) (allow, drift map[uint]struct{}, bound bool, err error) {
 	var groups []domain.RouteGroup
 	if err = db.WithContext(ctx).Where("id IN ?", groupIDs).Find(&groups).Error; err != nil {
 		return nil, nil, true, err

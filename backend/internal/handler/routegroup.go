@@ -2,11 +2,14 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"sort"
 	"strings"
 	"time"
 
+	"simple-up-manage/internal/dashboard"
 	"simple-up-manage/internal/domain"
 	"simple-up-manage/internal/httpx"
 	"simple-up-manage/internal/ops"
@@ -17,21 +20,22 @@ import (
 )
 
 type routeGroupDTO struct {
-	ID            uint      `json:"id"`
-	Name          string    `json:"name"`
-	Protocol      string    `json:"protocol"`
-	Models        []string  `json:"models"`
-	RateMin       *float64  `json:"rate_min"`
-	RateMax       *float64  `json:"rate_max"`
-	Description   string    `json:"description"`
-	Status        string    `json:"status"`
-	MemberCount   int       `json:"member_count"`
-	ConsumerCount int       `json:"consumer_count"`
-	DriftCount    int       `json:"drift_count"`
-	KeyIDs        []uint    `json:"key_ids"`
-	Consumers     []refDTO  `json:"consumers"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID             uint      `json:"id"`
+	Name           string    `json:"name"`
+	Protocol       string    `json:"protocol"`
+	Models         []string  `json:"models"`
+	RateMin        *float64  `json:"rate_min"`
+	RateMax        *float64  `json:"rate_max"`
+	SaleMultiplier *float64  `json:"sale_multiplier"`
+	Description    string    `json:"description"`
+	Status         string    `json:"status"`
+	MemberCount    int       `json:"member_count"`
+	ConsumerCount  int       `json:"consumer_count"`
+	DriftCount     int       `json:"drift_count"`
+	KeyIDs         []uint    `json:"key_ids"`
+	Consumers      []refDTO  `json:"consumers"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 func toRouteGroupDTO(g domain.RouteGroup) routeGroupDTO {
@@ -40,18 +44,19 @@ func toRouteGroupDTO(g domain.RouteGroup) routeGroupDTO {
 		models = []string{}
 	}
 	return routeGroupDTO{
-		ID:          g.ID,
-		Name:        g.Name,
-		Protocol:    g.Protocol,
-		Models:      models,
-		RateMin:     g.RateMin,
-		RateMax:     g.RateMax,
-		Description: g.Description,
-		Status:      g.Status,
-		KeyIDs:      []uint{},
-		Consumers:   []refDTO{},
-		CreatedAt:   g.CreatedAt,
-		UpdatedAt:   g.UpdatedAt,
+		ID:             g.ID,
+		Name:           g.Name,
+		Protocol:       g.Protocol,
+		Models:         models,
+		RateMin:        g.RateMin,
+		RateMax:        g.RateMax,
+		SaleMultiplier: g.SaleMultiplier,
+		Description:    g.Description,
+		Status:         g.Status,
+		KeyIDs:         []uint{},
+		Consumers:      []refDTO{},
+		CreatedAt:      g.CreatedAt,
+		UpdatedAt:      g.UpdatedAt,
 	}
 }
 
@@ -163,15 +168,16 @@ func (h *Admin) ListRouteGroups(c *gin.Context) {
 }
 
 type routeGroupBody struct {
-	Name        *string   `json:"name"`
-	Protocol    *string   `json:"protocol"`
-	Models      *[]string `json:"models"`
-	RateMin     *float64  `json:"rate_min"`
-	RateMax     *float64  `json:"rate_max"`
-	ClearRate   bool      `json:"clear_rate"`
-	Description *string   `json:"description"`
-	Status      *string   `json:"status"`
-	KeyIDs      *[]uint   `json:"key_ids"`
+	Name           *string   `json:"name"`
+	Protocol       *string   `json:"protocol"`
+	Models         *[]string `json:"models"`
+	RateMin        *float64  `json:"rate_min"`
+	RateMax        *float64  `json:"rate_max"`
+	ClearRate      bool      `json:"clear_rate"`
+	SaleMultiplier *float64  `json:"sale_multiplier"`
+	Description    *string   `json:"description"`
+	Status         *string   `json:"status"`
+	KeyIDs         *[]uint   `json:"key_ids"`
 }
 
 func (h *Admin) applyRouteGroupBody(g *domain.RouteGroup, body routeGroupBody) error {
@@ -224,12 +230,39 @@ func (h *Admin) applyRouteGroupBody(g *domain.RouteGroup, body routeGroupBody) e
 	return nil
 }
 
+func applySaleMultiplier(g *domain.RouteGroup, fields map[string]json.RawMessage, body routeGroupBody) error {
+	raw, ok := fields["sale_multiplier"]
+	if !ok {
+		return nil
+	}
+	if strings.TrimSpace(string(raw)) == "null" {
+		g.SaleMultiplier = nil
+		return nil
+	}
+	if body.SaleMultiplier == nil {
+		return errors.New("sale_multiplier must be a number or null")
+	}
+	if err := dashboard.ValidSaleMultiplier(*body.SaleMultiplier); err != nil {
+		return err
+	}
+	v := *body.SaleMultiplier
+	g.SaleMultiplier = &v
+	return nil
+}
+
 func (h *Admin) CreateRouteGroup(c *gin.Context) {
-	var body routeGroupBody
-	if err := c.ShouldBindJSON(&body); err != nil {
+	rawBody, err := io.ReadAll(c.Request.Body)
+	if err != nil {
 		httpx.BadRequest(c, "invalid json")
 		return
 	}
+	var body routeGroupBody
+	if err := json.Unmarshal(rawBody, &body); err != nil {
+		httpx.BadRequest(c, "invalid json")
+		return
+	}
+	var fields map[string]json.RawMessage
+	_ = json.Unmarshal(rawBody, &fields)
 	if body.Name == nil {
 		httpx.BadRequest(c, "name is required")
 		return
@@ -239,7 +272,11 @@ func (h *Admin) CreateRouteGroup(c *gin.Context) {
 		httpx.BadRequest(c, err.Error())
 		return
 	}
-	err := h.DB.Transaction(func(tx *gorm.DB) error {
+	if err := applySaleMultiplier(&g, fields, body); err != nil {
+		httpx.BadRequest(c, err.Error())
+		return
+	}
+	err = h.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&g).Error; err != nil {
 			return err
 		}
@@ -269,16 +306,27 @@ func (h *Admin) UpdateRouteGroup(c *gin.Context) {
 		writeGormErr(c, err)
 		return
 	}
-	var body routeGroupBody
-	if err := c.ShouldBindJSON(&body); err != nil {
+	rawBody, err := io.ReadAll(c.Request.Body)
+	if err != nil {
 		httpx.BadRequest(c, "invalid json")
 		return
 	}
+	var body routeGroupBody
+	if err := json.Unmarshal(rawBody, &body); err != nil {
+		httpx.BadRequest(c, "invalid json")
+		return
+	}
+	var fields map[string]json.RawMessage
+	_ = json.Unmarshal(rawBody, &fields)
 	if err := h.applyRouteGroupBody(&g, body); err != nil {
 		httpx.BadRequest(c, err.Error())
 		return
 	}
-	err := h.DB.Transaction(func(tx *gorm.DB) error {
+	if err := applySaleMultiplier(&g, fields, body); err != nil {
+		httpx.BadRequest(c, err.Error())
+		return
+	}
+	err = h.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Save(&g).Error; err != nil {
 			return err
 		}
@@ -303,11 +351,27 @@ func (h *Admin) DeleteRouteGroup(c *gin.Context) {
 	if !ok {
 		return
 	}
+	var links []domain.ConsumerRouteGroup
+	if err := h.DB.Where("route_group_id = ?", id).Find(&links).Error; err != nil {
+		httpx.Internal(c, err.Error())
+		return
+	}
+	if len(links) > 0 {
+		ids := make([]uint, 0, len(links))
+		for _, l := range links {
+			ids = append(ids, l.ConsumerKeyID)
+		}
+		var consumers []domain.ConsumerKey
+		_ = h.DB.Select("id", "name").Where("id IN ?", ids).Find(&consumers).Error
+		names := make([]string, 0, len(consumers))
+		for _, ck := range consumers {
+			names = append(names, ck.Name)
+		}
+		httpx.Fail(c, 409, "conflict", "分组仍绑定 API 密钥（"+strings.Join(names, "、")+"）。请先解绑或改绑后再删除。")
+		return
+	}
 	err := h.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("route_group_id = ?", id).Delete(&domain.RouteGroupKey{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("route_group_id = ?", id).Delete(&domain.ConsumerRouteGroup{}).Error; err != nil {
 			return err
 		}
 		return tx.Delete(&domain.RouteGroup{}, id).Error
@@ -592,12 +656,19 @@ func (h *Admin) attachConsumerRouteGroups(items []consumerDTO) {
 	}
 	for i := range items {
 		items[i].RouteGroups = toRouteGroupRefs(byConsumer[items[i].ID])
+		if len(items[i].RouteGroups) == 1 {
+			id := items[i].RouteGroups[0].ID
+			items[i].RouteGroupID = &id
+		}
 	}
 }
 
 // setConsumerRouteGroups replaces a consumer key's bound route groups.
 func setConsumerRouteGroups(tx *gorm.DB, consumerID uint, groupIDs []uint) error {
 	groupIDs = uniqueIDs(groupIDs)
+	if len(groupIDs) > 1 {
+		return errors.New("API 密钥最多绑定一个分组")
+	}
 	if len(groupIDs) > 0 {
 		var count int64
 		if err := tx.Model(&domain.RouteGroup{}).Where("id IN ?", groupIDs).Count(&count).Error; err != nil {
@@ -619,6 +690,46 @@ func setConsumerRouteGroups(tx *gorm.DB, consumerID uint, groupIDs []uint) error
 		rows = append(rows, domain.ConsumerRouteGroup{ConsumerKeyID: consumerID, RouteGroupID: gid, CreatedAt: now})
 	}
 	return tx.Create(&rows).Error
+}
+
+func resolveConsumerGroupIDs(fields map[string]json.RawMessage, body consumerBody) (*[]uint, error) {
+	_, hasID := fields["route_group_id"]
+	_, hasIDs := fields["route_group_ids"]
+	if !hasID && !hasIDs {
+		return nil, nil
+	}
+	fromID := []uint{}
+	if hasID {
+		if strings.TrimSpace(string(fields["route_group_id"])) == "null" || body.RouteGroupID == nil {
+			fromID = []uint{}
+		} else {
+			fromID = []uint{*body.RouteGroupID}
+		}
+	}
+	fromIDs := []uint{}
+	if hasIDs {
+		if body.RouteGroupIDs == nil {
+			fromIDs = []uint{}
+		} else {
+			fromIDs = uniqueIDs(*body.RouteGroupIDs)
+		}
+		if len(fromIDs) > 1 {
+			return nil, errors.New("API 密钥最多绑定一个分组")
+		}
+	}
+	if hasID && hasIDs {
+		same := len(fromID) == len(fromIDs)
+		if same && len(fromID) == 1 && fromID[0] != fromIDs[0] {
+			same = false
+		}
+		if !same {
+			return nil, errors.New("route_group_id 与 route_group_ids 表达的绑定不一致")
+		}
+	}
+	if hasID {
+		return &fromID, nil
+	}
+	return &fromIDs, nil
 }
 
 func isUniqueErr(err error) bool {

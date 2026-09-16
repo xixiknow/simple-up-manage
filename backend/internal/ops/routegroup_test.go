@@ -68,7 +68,11 @@ func TestResolveAllowKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = db.Create(&domain.ConsumerRouteGroup{ConsumerKeyID: consumer.ID, RouteGroupID: openaiA.ID}).Error
-	_ = db.Create(&domain.ConsumerRouteGroup{ConsumerKeyID: consumer.ID, RouteGroupID: grok.ID}).Error
+	grokConsumer := domain.ConsumerKey{Name: "g", Key: "sk-g", Status: domain.StatusEnabled}
+	if err := db.Create(&grokConsumer).Error; err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Create(&domain.ConsumerRouteGroup{ConsumerKeyID: grokConsumer.ID, RouteGroupID: grok.ID}).Error
 
 	// Unbound consumer: nil allow, bound=false.
 	allow, drift, bound, err := ResolveAllowKeys(ctx, db, unbound.ID, domain.ProtocolOpenAI, "gpt-4o")
@@ -85,10 +89,21 @@ func TestResolveAllowKeys(t *testing.T) {
 		t.Fatalf("gpt-4o allow=%v drift=%v", allow, drift)
 	}
 
-	// grok-3: both openai-a (no pattern) and grok match.
+	// grok-3 on openai-a (no model pattern): still k1. Dedicated grok consumer only gets k2.
 	allow, _, _, _ = ResolveAllowKeys(ctx, db, consumer.ID, domain.ProtocolOpenAI, "grok-3")
-	if len(allow) != 2 {
-		t.Fatalf("grok-3 allow=%v", allow)
+	if _, ok := allow[k1]; !ok || len(allow) != 1 {
+		t.Fatalf("grok-3 via openai-a allow=%v", allow)
+	}
+	allow, _, bound, _ = ResolveAllowKeys(ctx, db, grokConsumer.ID, domain.ProtocolOpenAI, "grok-3")
+	if !bound || len(allow) != 1 {
+		t.Fatalf("grok consumer grok-3 allow=%v bound=%v", allow, bound)
+	}
+	if _, ok := allow[k2]; !ok {
+		t.Fatalf("grok consumer grok-3 allow=%v", allow)
+	}
+	allow, _, _, _ = ResolveAllowKeys(ctx, db, grokConsumer.ID, domain.ProtocolOpenAI, "gpt-4o")
+	if len(allow) != 0 {
+		t.Fatalf("grok consumer gpt-4o should be empty, got %v", allow)
 	}
 
 	// anthropic protocol: consumer is not bound to any anthropic group -> empty set, bound=true.
@@ -117,11 +132,18 @@ func TestResolveAllowKeys(t *testing.T) {
 	if _, ok := allow[k1]; !ok || len(drift) != 0 {
 		t.Fatalf("after fix: allow=%v drift=%v", allow, drift)
 	}
-	// grok-3: k1 drifts out of openai-a but grok (no range) still holds k2; k1 out of range only.
+	// grok-3 on the openai-a consumer: k1 is out of range so it drifts; no second group to fall back to.
 	_ = db.Model(&domain.PlatformKey{}).Where("id = ?", k1).Update("rate_multiplier", 1).Error
 	allow, drift, _, _ = ResolveAllowKeys(ctx, db, consumer.ID, domain.ProtocolOpenAI, "grok-3")
-	if _, ok := allow[k2]; !ok || len(allow) != 1 || len(drift) != 1 {
+	if len(allow) != 0 || len(drift) != 1 {
 		t.Fatalf("grok-3 with drift: allow=%v drift=%v", allow, drift)
+	}
+	if _, ok := drift[k1]; !ok {
+		t.Fatalf("grok-3 with drift expected k1, got %v", drift)
+	}
+	allow, _, _, _ = ResolveAllowKeys(ctx, db, grokConsumer.ID, domain.ProtocolOpenAI, "grok-3")
+	if _, ok := allow[k2]; !ok || len(allow) != 1 {
+		t.Fatalf("grok consumer still allows k2: %v", allow)
 	}
 	_ = db.Model(&openaiA).Updates(map[string]any{"rate_min": nil, "rate_max": nil}).Error
 
@@ -130,7 +152,7 @@ func TestResolveAllowKeys(t *testing.T) {
 		t.Fatalf("RouteGroupsForKeys=%v err=%v", byKey, err)
 	}
 	byConsumer, err := RouteGroupsForConsumers(ctx, db, []uint{consumer.ID, unbound.ID})
-	if err != nil || len(byConsumer[consumer.ID]) != 2 || len(byConsumer[unbound.ID]) != 0 {
+	if err != nil || len(byConsumer[consumer.ID]) != 1 || len(byConsumer[unbound.ID]) != 0 {
 		t.Fatalf("RouteGroupsForConsumers=%v err=%v", byConsumer, err)
 	}
 }

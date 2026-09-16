@@ -6,10 +6,11 @@ import (
 	"time"
 
 	"simple-up-manage/internal/config"
+	"simple-up-manage/internal/dashboard"
 	"simple-up-manage/internal/ops"
 )
 
-func Start(cfg *config.Config, opsSvc *ops.Service, afterCatalog func(), stop <-chan struct{}) {
+func Start(cfg *config.Config, opsSvc *ops.Service, afterCatalog func(), stop <-chan struct{}, dash *dashboard.Service) {
 	go runTicker("balance", cfg.Jobs.BalanceInterval, stop, func(ctx context.Context) {
 		ok, fail := opsSvc.RefreshAllBalances(ctx)
 		log.Printf("job balance: ok=%d failed=%d", ok, fail)
@@ -76,6 +77,17 @@ func Start(cfg *config.Config, opsSvc *ops.Service, afterCatalog func(), stop <-
 		purgeLogs(ctx)
 	}()
 	go runTicker("log-retention", cfg.Jobs.LogRetentionInterval, stop, purgeLogs)
+
+	if dash != nil {
+		go runTicker("dash-purge", 6*time.Hour, stop, func(ctx context.Context) {
+			if err := dash.Purge(ctx); err != nil {
+				log.Printf("job dash-purge: %v", err)
+			}
+		})
+		go runTicker("dash-stale", time.Minute, stop, func(ctx context.Context) {
+			dash.InterruptStale(ctx, 6*time.Minute)
+		})
+	}
 }
 
 func runTicker(name string, interval time.Duration, stop <-chan struct{}, fn func(context.Context)) {

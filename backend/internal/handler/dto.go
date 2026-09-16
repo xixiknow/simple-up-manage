@@ -99,6 +99,7 @@ type keyDTO struct {
 	HealthStatus        string      `json:"health_status"`
 	LastProbeAt         *time.Time  `json:"last_probe_at,omitempty"`
 	ProbeIntervalSec    int         `json:"probe_interval_sec"`
+	ProbeEnabled        bool        `json:"probe_enabled"`
 	HealthPulse         []pulseCell `json:"health_pulse,omitempty"`
 	CacheRate           *float64    `json:"cache_rate,omitempty"`
 	CacheSamples        int         `json:"cache_samples,omitempty"`
@@ -160,6 +161,7 @@ func toKeyDTO(k domain.PlatformKey) keyDTO {
 		CooldownUntil:       k.CooldownUntil,
 		HealthStatus:        k.HealthStatus,
 		ProbeIntervalSec:    k.ProbeIntervalSec,
+		ProbeEnabled:        k.AllowsProbe(),
 		BillingUnsupported:  k.BillingUnsupported,
 		BillingBackoffUntil: k.BillingBackoffUntil,
 		LastModels:          []string(k.LastModels),
@@ -183,18 +185,19 @@ func toKeyDTO(k domain.PlatformKey) keyDTO {
 }
 
 type consumerDTO struct {
-	ID          uint       `json:"id"`
-	Name        string     `json:"name"`
-	Key         string     `json:"key,omitempty"`
-	KeyPreview  string     `json:"key_preview"`
-	Status      string     `json:"status"`
-	QuotaUSD    float64    `json:"quota_usd"`
-	QuotaUsed   float64    `json:"quota_used"`
-	RPM         int        `json:"rpm"`
-	LastUsedAt  *time.Time `json:"last_used_at"`
-	RouteGroups []refDTO   `json:"route_groups"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	ID           uint       `json:"id"`
+	Name         string     `json:"name"`
+	Key          string     `json:"key,omitempty"`
+	KeyPreview   string     `json:"key_preview"`
+	Status       string     `json:"status"`
+	QuotaUSD     float64    `json:"quota_usd"`
+	QuotaUsed    float64    `json:"quota_used"`
+	RPM          int        `json:"rpm"`
+	LastUsedAt   *time.Time `json:"last_used_at"`
+	RouteGroupID *uint      `json:"route_group_id"`
+	RouteGroups  []refDTO   `json:"route_groups"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
 func toConsumerDTO(k domain.ConsumerKey, includeRaw bool) consumerDTO {
@@ -221,11 +224,14 @@ func toConsumerDTO(k domain.ConsumerKey, includeRaw bool) consumerDTO {
 }
 
 type logDTO struct {
+	ExternalProbeRule   *string   `json:"external_probe_rule"`
 	ID                  uint      `json:"id"`
 	RequestID           string    `json:"request_id"`
 	ConsumerKeyID       *uint     `json:"consumer_key_id"`
 	UpstreamID          *uint     `json:"upstream_id"`
 	PlatformKeyID       *uint     `json:"platform_key_id"`
+	RouteGroupID        *uint     `json:"route_group_id"`
+	RouteGroupName      string    `json:"route_group_name,omitempty"`
 	Protocol            string    `json:"protocol"`
 	Model               string    `json:"model"`
 	Path                string    `json:"path"`
@@ -267,11 +273,14 @@ type logDetailDTO struct {
 
 func toLogDTO(l domain.RequestLog, upstreamName, consumerName string) logDTO {
 	return logDTO{
+		ExternalProbeRule:   l.ExternalProbeRule,
 		ID:                  l.ID,
 		RequestID:           l.RequestID,
 		ConsumerKeyID:       l.ConsumerKeyID,
 		UpstreamID:          l.UpstreamID,
 		PlatformKeyID:       l.PlatformKeyID,
+		RouteGroupID:        l.RouteGroupID,
+		RouteGroupName:      l.RouteGroupName,
 		Protocol:            l.Protocol,
 		Model:               l.Model,
 		Path:                l.Path,

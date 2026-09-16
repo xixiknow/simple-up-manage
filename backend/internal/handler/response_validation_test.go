@@ -168,8 +168,8 @@ func TestAttemptTimingAndNeutralResults(t *testing.T) {
 	now := time.Now()
 	col := &streamCollector{start: now.Add(-32 * time.Second), firstAt: now, ttftMs: 32000}
 	a := domain.RequestAttempt{ID: "once", Protocol: "openai", Model: "m", StartedAt: now.Add(-2 * time.Second)}
-	h.completeAttempt(context.Background(), key, &a, col, forwardOutcome{validSuccess: true})
-	h.completeAttempt(context.Background(), key, &a, col, forwardOutcome{validSuccess: true})
+	h.completeAttempt(context.Background(), key, nil, &a, col, forwardOutcome{validSuccess: true}, nil)
+	h.completeAttempt(context.Background(), key, nil, &a, col, forwardOutcome{validSuccess: true}, nil)
 	var rows []domain.RequestAttempt
 	if err := db.Find(&rows).Error; err != nil {
 		t.Fatal(err)
@@ -180,12 +180,12 @@ func TestAttemptTimingAndNeutralResults(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	b := domain.RequestAttempt{ID: "cancel", StartedAt: now}
-	h.completeAttempt(ctx, key, &b, nil, forwardOutcome{})
+	h.completeAttempt(ctx, key, nil, &b, nil, forwardOutcome{}, nil)
 	if b.Result != "client_cancelled" {
 		t.Fatal(b.Result)
 	}
 	b = domain.RequestAttempt{ID: "busy"}
-	h.completeAttempt(context.Background(), key, &b, nil, forwardOutcome{capacityBusy: true})
+	h.completeAttempt(context.Background(), key, nil, &b, nil, forwardOutcome{capacityBusy: true}, nil)
 	if b.Result != "capacity_rejected" {
 		t.Fatal(b.Result)
 	}

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, h, onMounted, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { NButton, NSpace, NTag, NTooltip, useDialog, useMessage } from 'naive-ui'
 import type { DataTableColumns, FormInst, FormRules, SelectOption } from 'naive-ui'
 import {
@@ -31,6 +32,8 @@ import { copyText, errText, formatMoney, formatRate, formatTime } from '@/utils/
 
 const message = useMessage()
 const dialog = useDialog()
+const route = useRoute()
+const highlightGroupId = computed(() => Number(route.query.group) || 0)
 
 const keysLoading = ref(false)
 const groupsLoading = ref(false)
@@ -48,12 +51,12 @@ const showKeyForm = ref(false)
 const keySaving = ref(false)
 const editingKey = ref<ConsumerKey | null>(null)
 const keyFormRef = ref<FormInst | null>(null)
-const keyForm = reactive<ConsumerKeyPayload & { route_group_ids: number[] }>({
+const keyForm = reactive<ConsumerKeyPayload & { route_group_id: number | null }>({
   name: '',
   status: 'enabled',
   quota_usd: 0,
   rpm: 60,
-  route_group_ids: [],
+  route_group_id: null,
 })
 
 const revealShow = ref(false)
@@ -70,6 +73,7 @@ const groupForm = reactive({
   rate_min: null as number | null,
   rate_max: null as number | null,
   description: '',
+  sale_multiplier: null as number | null,
   status: 'enabled' as EnableStatus,
 })
 
@@ -112,17 +116,11 @@ function renderGroupOption(option: SelectOption) {
 }
 
 const formKeySummary = computed(() => {
-  const ids = keyForm.route_group_ids
-  if (!ids.length) return null
-  const union = new Set<number>()
-  const empty: string[] = []
-  for (const id of ids) {
-    const g = routeGroupById.value[id]
-    if (!g) continue
-    if (g.member_count === 0) empty.push(g.name)
-    for (const k of g.key_ids) union.add(k)
-  }
-  return { keys: union.size, empty }
+  const id = keyForm.route_group_id
+  if (!id) return null
+  const g = routeGroupById.value[id]
+  if (!g) return { keys: 0, empty: [] as string[] }
+  return { keys: g.key_ids.length, empty: g.member_count === 0 ? [g.name] : [] }
 })
 
 const keyRules: FormRules = {
@@ -166,7 +164,7 @@ async function reloadAll() {
 
 function openCreateKey() {
   editingKey.value = null
-  Object.assign(keyForm, { name: '', status: 'enabled' as EnableStatus, quota_usd: 0, rpm: 60, route_group_ids: [] })
+  Object.assign(keyForm, { name: '', status: 'enabled' as EnableStatus, quota_usd: 0, rpm: 60, route_group_id: null })
   showKeyForm.value = true
 }
 
@@ -177,7 +175,7 @@ function openEditKey(row: ConsumerKey) {
     status: row.status,
     quota_usd: row.quota_usd,
     rpm: row.rpm,
-    route_group_ids: (row.route_groups ?? []).map((g) => g.id),
+    route_group_id: row.route_group_id ?? row.route_groups?.[0]?.id ?? null,
   })
   showKeyForm.value = true
 }
@@ -191,7 +189,7 @@ async function saveKey() {
       status: keyForm.status,
       quota_usd: Number(keyForm.quota_usd) || 0,
       rpm: Number(keyForm.rpm) || 0,
-      route_group_ids: keyForm.route_group_ids,
+      route_group_id: keyForm.route_group_id,
     }
     if (editingKey.value) {
       await updateConsumerKey(editingKey.value.id, payload)
@@ -256,7 +254,9 @@ async function runTest(row: ConsumerKey) {
   testingId.value = row.id
   try {
     const out = await testConsumerKey(row.id)
-    if (out.success) {
+    if (out.skipped) {
+      message.info(out.message || '该 Key 已关闭探测')
+    } else if (out.success) {
       message.success(`测试成功 · ${out.model || ''} · ${out.duration_ms}ms`)
     } else {
       message.error(`测试失败${out.status ? ` (${out.status})` : ''}：${out.error || '未知错误'}`)
@@ -296,6 +296,7 @@ function openCreateGroup() {
     rate_min: null,
     rate_max: null,
     description: '',
+    sale_multiplier: null,
     status: 'enabled' as EnableStatus,
   })
   showGroupForm.value = true
@@ -310,6 +311,7 @@ function openEditGroup(g: RouteGroup) {
     rate_min: g.rate_min ?? null,
     rate_max: g.rate_max ?? null,
     description: g.description ?? '',
+    sale_multiplier: g.sale_multiplier ?? null,
     status: g.status,
   })
   showGroupForm.value = true
@@ -328,6 +330,7 @@ async function saveGroup() {
       protocol: groupForm.protocol,
       models: groupForm.models,
       description: groupForm.description.trim(),
+      sale_multiplier: groupForm.sale_multiplier,
       status: groupForm.status,
     }
     if (groupForm.rate_min === null && groupForm.rate_max === null) {
@@ -361,7 +364,7 @@ function confirmDeleteGroup(g: RouteGroup) {
   const consumers = g.consumers ?? []
   const lines = [`确认删除分组「${g.name}」？成员 Key 本身不会被删除。`]
   if (consumers.length) {
-    lines.push('', `以下 ${consumers.length} 把 API 密钥绑定了该分组，删除后它们将失去这些 Key：`)
+    lines.push('', `以下 ${consumers.length} 把 API 密钥绑定了该分组，删除将被拒绝。请先解绑或改绑：`)
     lines.push(consumers.map((c) => `· ${c.name || `#${c.id}`}`).join('\n'))
   }
   dialog.warning({
@@ -522,6 +525,16 @@ const groupColumns: DataTableColumns<RouteGroup> = [
     },
   },
   {
+    title: '售卖倍率',
+    key: 'sale_multiplier',
+    width: 100,
+    render(row) {
+      if (row.sale_multiplier == null) return h('span', { class: 'muted' }, '未配置')
+      if (row.sale_multiplier === 0) return '赠送 ×0'
+      return `×${formatRate(row.sale_multiplier)}`
+    },
+  },
+  {
     title: '成员',
     key: 'member_count',
     width: 90,
@@ -614,7 +627,14 @@ onMounted(() => {
       <template #header-extra>
         <n-button type="primary" size="small" @click="openCreateGroup">新建分组</n-button>
       </template>
-      <n-data-table size="small" :columns="groupColumns" :data="groups" :loading="groupsLoading" :scroll-x="980" />
+      <n-data-table
+        size="small"
+        :columns="groupColumns"
+        :data="groups"
+        :loading="groupsLoading"
+        :scroll-x="1080"
+        :row-class-name="(row: RouteGroup) => (highlightGroupId === row.id ? 'row-highlight' : '')"
+      />
     </n-card>
 
     <n-modal v-model:show="showKeyForm" preset="card" :title="editingKey ? '编辑 API 密钥' : '新建 API 密钥'" style="width: 480px">
@@ -631,17 +651,15 @@ onMounted(() => {
         <n-form-item label="RPM" path="rpm">
           <n-input-number v-model:value="keyForm.rpm" :min="0" :step="1" style="width: 100%" />
         </n-form-item>
-        <n-form-item label="分组" path="route_group_ids">
+        <n-form-item label="分组" path="route_group_id">
           <div style="width: 100%">
             <n-select
-              v-model:value="keyForm.route_group_ids"
+              v-model:value="keyForm.route_group_id"
               :options="routeGroupOptions"
               :render-label="renderGroupOption"
-              multiple
               clearable
               filterable
               placeholder="不选 = 不限，在全部 Key 里调度"
-              max-tag-count="responsive"
             >
               <template #action>
                 <n-button text size="tiny" @click="openCreateGroup">+ 新建分组</n-button>
@@ -716,6 +734,12 @@ onMounted(() => {
             <span class="muted">可选。成员倍率漂出区间会被标红，并在调度时跳过</span>
           </template>
         </n-form-item>
+        <n-form-item label="售卖倍率">
+          <div style="width: 100%">
+            <n-input-number v-model:value="groupForm.sale_multiplier" :min="0" :step="0.01" clearable placeholder="未配置" style="width: 100%" />
+            <div class="muted" style="margin-top: 6px">仅用于仪表盘预估收入。留空表示未配置（不测算利润）；0 表示赠送。</div>
+          </div>
+        </n-form-item>
         <n-form-item label="描述" path="description">
           <n-input v-model:value="groupForm.description" type="textarea" :autosize="{ minRows: 1, maxRows: 3 }" />
         </n-form-item>
@@ -750,6 +774,9 @@ onMounted(() => {
 }
 .warn {
   color: #d92d20;
+}
+:deep(.row-highlight td) {
+  background: #ecfdf5 !important;
 }
 :deep(.rg-option) {
   display: flex;

@@ -12,10 +12,13 @@ import (
 	"simple-up-manage/internal/upstream"
 )
 
-func (h *Gateway) completeAttempt(ctx context.Context, pk *domain.PlatformKey, a *domain.RequestAttempt, col *streamCollector, out forwardOutcome) {
+func (h *Gateway) completeAttempt(ctx context.Context, pk *domain.PlatformKey, up *domain.Upstream, a *domain.RequestAttempt, col *streamCollector, out forwardOutcome, lg *liveLog) {
+	httpSent := !a.StartedAt.IsZero()
 	a.CompletedAt = time.Now()
 	a.Result = "upstream_failure"
 	switch {
+	case out.action == domain.ProbeSkipDisabled:
+		a.Result = domain.ProbeSkipDisabled
 	case out.neutral:
 		a.Result = "request_rejected"
 	case out.capacityBusy:
@@ -40,7 +43,6 @@ func (h *Gateway) completeAttempt(ctx context.Context, pk *domain.PlatformKey, a
 		a.EventSummary = string(summary)
 		usage = col.usage
 		a.InputTokens, a.CacheReadTokens, a.CacheCreationTokens, a.OutputTokens = usage.InputTokens, usage.CacheReadTokens, usage.CacheCreationTokens, usage.OutputTokens
-		// OpenAI input usage includes cached tokens; Anthropic input excludes them.
 		if a.Protocol == domain.ProtocolOpenAI {
 			a.InputTokens = max(0, a.InputTokens-a.CacheReadTokens-a.CacheCreationTokens)
 		}
@@ -61,6 +63,7 @@ func (h *Gateway) completeAttempt(ctx context.Context, pk *domain.PlatformKey, a
 	if a.Result == "success" || a.Result == "upstream_failure" {
 		h.observeAttempt(pk, a.Model, a.Result == "success", usage, a.TTFTMs)
 	}
+	h.emitDashAttempt(pk, up, a, usage, lg, httpSent)
 }
 
 func (lg *liveLog) recordDecision(h *Gateway, d picker.Decision) {

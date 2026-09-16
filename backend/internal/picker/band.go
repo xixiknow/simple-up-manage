@@ -555,8 +555,37 @@ func (p *BandPicker) resourceSnapshot(keyID, providerID uint) (rpm, keyInflight,
 }
 
 func (p *BandPicker) TryAcquire(key *domain.PlatformKey, up *domain.Upstream) (bool, string) {
+	_, ok, scope := p.tryAcquire(key, up)
+	return ok, scope
+}
+
+func (p *BandPicker) TryAcquireAttempt(key *domain.PlatformKey, up *domain.Upstream) (func(bool), string) {
+	at, ok, scope := p.tryAcquire(key, up)
+	if !ok {
+		return nil, scope
+	}
+	var once sync.Once
+	return func(sent bool) {
+		once.Do(func() {
+			if !sent {
+				p.runtime.mu.Lock()
+				window := p.runtime.rpm[key.ID]
+				for i, entry := range window {
+					if entry == at {
+						p.runtime.rpm[key.ID] = append(window[:i], window[i+1:]...)
+						break
+					}
+				}
+				p.runtime.mu.Unlock()
+			}
+			p.Release(key, up)
+		})
+	}, ""
+}
+
+func (p *BandPicker) tryAcquire(key *domain.PlatformKey, up *domain.Upstream) (time.Time, bool, string) {
 	if key == nil || up == nil {
-		return false, "key"
+		return time.Time{}, false, "key"
 	}
 	now := time.Now()
 	p.runtime.mu.Lock()
@@ -571,18 +600,18 @@ func (p *BandPicker) TryAcquire(key *domain.PlatformKey, up *domain.Upstream) (b
 	}
 	if key.RPMLimit > 0 && len(keep) >= key.RPMLimit {
 		p.runtime.rpm[key.ID] = keep
-		return false, "key"
+		return time.Time{}, false, "key"
 	}
 	if key.MaxConcurrency > 0 && p.runtime.keyInflight[key.ID] >= key.MaxConcurrency {
-		return false, "key"
+		return time.Time{}, false, "key"
 	}
 	if up.Concurrency > 0 && p.runtime.providerInflight[up.ID] >= up.Concurrency {
-		return false, "provider"
+		return time.Time{}, false, "provider"
 	}
 	p.runtime.rpm[key.ID] = append(keep, now)
 	p.runtime.keyInflight[key.ID]++
 	p.runtime.providerInflight[up.ID]++
-	return true, ""
+	return now, true, ""
 }
 
 func (p *BandPicker) Release(key *domain.PlatformKey, up *domain.Upstream) {

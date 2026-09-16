@@ -131,15 +131,35 @@ type ProbeOutcome struct {
 	Message    string `json:"message,omitempty"`
 	Model      string `json:"model,omitempty"`
 	Vendor     string `json:"vendor,omitempty"`
+	Skipped    bool   `json:"skipped,omitempty"`
+	Reason     string `json:"reason,omitempty"`
 }
 
-func (s *Service) ProbeKey(ctx context.Context, keyID uint, deep bool) (*ProbeOutcome, error) {
+type ProbeBatchResult struct {
+	OK             int
+	Failed         int
+	Skipped        int
+	SkippedReasons map[string]int
+}
+
+func (s *Service) ProbeKey(ctx context.Context, keyID uint, deep bool, options ...ProbeOptions) (*ProbeOutcome, error) {
+	opts := firstProbeOptions(options)
+	if err := opts.Validate(deep); err != nil {
+		return nil, err
+	}
 	var key domain.PlatformKey
 	if err := s.DB.WithContext(ctx).Preload("Upstream").First(&key, keyID).Error; err != nil {
 		return nil, err
 	}
 	if key.Upstream == nil {
 		return nil, fmt.Errorf("upstream missing")
+	}
+	if !key.AllowsProbe() {
+		return &ProbeOutcome{
+			Skipped: true,
+			Reason:  domain.ProbeSkipDisabled,
+			Message: "该 Key 已关闭探测",
+		}, nil
 	}
 	apiKey, err := s.decrypt(&key)
 	if err != nil {
@@ -161,9 +181,12 @@ func (s *Service) ProbeKey(ctx context.Context, keyID uint, deep bool) (*ProbeOu
 	probeService.Client = s.Client.WithTimeout(timeout)
 	var outcome ProbeOutcome
 	if deep {
-		outcome = probeService.deepProbe(probeCtx, &key, apiKey)
+		outcome = probeService.deepProbe(probeCtx, &key, apiKey, opts)
 	} else {
 		outcome = probeService.lightProbe(probeCtx, &key, apiKey)
+	}
+	if outcome.Skipped {
+		return &outcome, nil
 	}
 	if probeCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
 		outcome.Success = false
@@ -389,8 +412,8 @@ func (s *Service) probeSettings(ctx context.Context) domain.SchedulerSettings {
 	return row
 }
 
-func (s *Service) deepProbe(ctx context.Context, key *domain.PlatformKey, apiKey string) ProbeOutcome {
-	return s.businessProbe(ctx, key, apiKey)
+func (s *Service) deepProbe(ctx context.Context, key *domain.PlatformKey, apiKey string, options ...ProbeOptions) ProbeOutcome {
+	return s.businessProbe(ctx, key, apiKey, firstProbeOptions(options))
 }
 
 func (s *Service) RefreshBalance(ctx context.Context, keyID uint) error {
@@ -787,12 +810,19 @@ func (s *Service) ProbeAllEnabled(ctx context.Context, skipRecent time.Duration)
 }
 
 func (s *Service) ProbeFiltered(ctx context.Context, deep bool, upstreamID *uint, skipRecent time.Duration) (int, int, int) {
-	return s.probeFilteredAt(ctx, deep, upstreamID, skipRecent, time.Now())
+	r := s.probeFilteredAt(ctx, deep, upstreamID, skipRecent, time.Now())
+	return r.OK, r.Failed, r.Skipped
+}
+
+func (s *Service) ProbeFilteredDetail(ctx context.Context, deep bool, upstreamID *uint, skipRecent time.Duration, options ...ProbeOptions) (int, int, int, map[string]int) {
+	r := s.probeFilteredAt(ctx, deep, upstreamID, skipRecent, time.Now(), options...)
+	return r.OK, r.Failed, r.Skipped, r.SkippedReasons
 }
 
 const probeConcurrency = 8
 
-func (s *Service) probeFilteredAt(ctx context.Context, deep bool, upstreamID *uint, skipRecent time.Duration, now time.Time) (int, int, int) {
+func (s *Service) probeFilteredAt(ctx context.Context, deep bool, upstreamID *uint, skipRecent time.Duration, now time.Time, options ...ProbeOptions) ProbeBatchResult {
+	out := ProbeBatchResult{SkippedReasons: map[string]int{}}
 	q := s.DB.WithContext(ctx).Where("status = ?", domain.StatusEnabled)
 	if upstreamID != nil && *upstreamID > 0 {
 		q = q.Where("upstream_id = ?", *upstreamID)
@@ -800,7 +830,7 @@ func (s *Service) probeFilteredAt(ctx context.Context, deep bool, upstreamID *ui
 	var keys []domain.PlatformKey
 	if err := q.Find(&keys).Error; err != nil {
 		log.Printf("probe all: list keys: %v", err)
-		return 0, 0, 0
+		return out
 	}
 	win := skipRecent
 	for i := range keys {
@@ -810,26 +840,26 @@ func (s *Service) probeFilteredAt(ctx context.Context, deep bool, upstreamID *ui
 	}
 	recent := s.recentRequestAt(ctx, keys, win, now)
 	probed := s.lastProbeAt(ctx, keys)
-	ok, fail, skipped := 0, 0, 0
 	pending := make(chan uint, len(keys))
 	for _, k := range keys {
+		if !k.AllowsProbe() {
+			out.Skipped++
+			out.SkippedReasons[domain.ProbeSkipDisabled]++
+			continue
+		}
 		every := k.ProbeEvery(skipRecent)
 		if skipRecent > 0 && every > 0 {
-			// Deduplicate within the scheduled time window. Waiting a full interval
-			// after completion skips the next tick by the duration of the probe.
 			if t, hit := probed[k.ID]; hit && !t.Before(now.Truncate(every)) {
-				skipped++
+				out.Skipped++
 				continue
 			}
-			// Only completed traffic in this bucket replaces a probe. A request
-			// in the previous bucket cannot supply data for the current one.
 			if t, hit := recent[k.ID]; hit && !t.Before(now.Truncate(every)) {
-				skipped++
+				out.Skipped++
 				continue
 			}
 		}
 		if s.throttled(ctx, "probe", k.ID, 30*time.Second) {
-			skipped++
+			out.Skipped++
 			continue
 		}
 		pending <- k.ID
@@ -845,23 +875,30 @@ func (s *Service) probeFilteredAt(ctx context.Context, deep bool, upstreamID *ui
 			for id := range pending {
 				if ctx.Err() != nil {
 					mu.Lock()
-					skipped++
+					out.Skipped++
 					mu.Unlock()
 					continue
 				}
-				out, err := s.ProbeKey(ctx, id, deep)
+				res, err := s.ProbeKey(ctx, id, deep, options...)
 				mu.Lock()
-				if err != nil || out == nil || !out.Success {
-					fail++
+				if err != nil {
+					out.Failed++
+				} else if res != nil && res.Skipped {
+					out.Skipped++
+					if res.Reason != "" {
+						out.SkippedReasons[res.Reason]++
+					}
+				} else if res == nil || !res.Success {
+					out.Failed++
 				} else {
-					ok++
+					out.OK++
 				}
 				mu.Unlock()
 			}
 		}()
 	}
 	wg.Wait()
-	return ok, fail, skipped
+	return out
 }
 
 func (s *Service) lastProbeAt(ctx context.Context, keys []domain.PlatformKey) map[uint]time.Time {

@@ -107,6 +107,12 @@ type RuntimeController interface {
 	RecordProviderSuccess(ctx context.Context, upstreamID uint)
 }
 
+// AttemptRuntimeController reserves capacity and RPM until the caller reports
+// whether HTTP was actually sent. Local skips refund only their own RPM slot.
+type AttemptRuntimeController interface {
+	TryAcquireAttempt(key *domain.PlatformKey, upstream *domain.Upstream) (release func(sent bool), scope string)
+}
+
 type Picker interface {
 	Pick(ctx context.Context, req Request) (*domain.PlatformKey, *domain.Upstream, error)
 	Explain(ctx context.Context, req Request) ([]Candidate, error)

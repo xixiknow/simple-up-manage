@@ -374,9 +374,13 @@ type TokenUsage struct {
 	CacheReadTokens     int64
 	CacheCreationTokens int64
 	CostUSD             *float64
+	UsageKnown          bool
 }
 
 func MergeUsage(dst *TokenUsage, src TokenUsage) {
+	if src.UsageKnown {
+		dst.UsageKnown = true
+	}
 	if src.InputTokens > 0 {
 		dst.InputTokens = src.InputTokens
 	}
@@ -429,6 +433,21 @@ func ParseSSEUsageLine(line string) TokenUsage {
 }
 
 func absorbUsageMap(u *TokenUsage, m map[string]any) {
+	if m == nil {
+		return
+	}
+	if _, ok := m["input_tokens"]; ok {
+		u.UsageKnown = true
+	}
+	if _, ok := m["prompt_tokens"]; ok {
+		u.UsageKnown = true
+	}
+	if _, ok := m["output_tokens"]; ok {
+		u.UsageKnown = true
+	}
+	if _, ok := m["completion_tokens"]; ok {
+		u.UsageKnown = true
+	}
 	if v, ok := asInt(m["input_tokens"]); ok {
 		u.InputTokens = v
 	}

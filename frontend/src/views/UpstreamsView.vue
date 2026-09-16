@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, h, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { NButton, NDropdown, NIcon, NSpace, NSwitch, NTag, NTooltip, useDialog, useMessage } from 'naive-ui'
 import { AddOutline, CreateOutline, EllipsisHorizontalOutline, RefreshOutline } from '@vicons/ionicons5'
 import type { DataTableColumns, DropdownOption, FormInst, FormRules } from 'naive-ui'
@@ -15,11 +16,9 @@ import {
   listKeyRates,
   listRouteGroups,
   listUpstreams,
-  probeKey,
   refreshAllBalances,
   refreshUpstreamBalance,
   refreshKeyBilling,
-  runProbes,
   updateKey,
   updateUpstream,
   type KeyRate,
@@ -46,12 +45,15 @@ import {
 import HealthPulse from '@/components/HealthPulse.vue'
 import HealthTag from '@/components/HealthTag.vue'
 import ModelListModal from '@/components/ModelListModal.vue'
+import ProbeModal from '@/components/ProbeModal.vue'
 import RouteGroupTags from '@/components/RouteGroupTags.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import { composeKeyName, errText, formatMoney, formatPercent, formatRate, formatTime, inferNameTag } from '@/utils/format'
 
 const message = useMessage()
 const dialog = useDialog()
+const route = useRoute()
+const highlightUpstreamId = computed(() => Number(route.query.id) || 0)
 
 const loading = ref(false)
 const error = ref('')
@@ -68,7 +70,13 @@ async function loadRouteGroups() {
 }
 const probing = ref(false)
 const refreshingBal = ref(false)
-const deep = ref(true)
+const showProbe = ref(false)
+const probeTarget = ref<{ name: string; key_id?: number; upstream_id?: number; models?: string[] }>({ name: '全部提供商' })
+function openProbe(target: typeof probeTarget.value) {
+  if (probing.value) return
+  probeTarget.value = target
+  showProbe.value = true
+}
 const busy = ref<string | null>(null)
 const live = ref(true)
 const lastRefresh = ref('')
@@ -359,19 +367,6 @@ async function refreshAll() {
   }
 }
 
-async function probeAll() {
-  probing.value = true
-  try {
-    const data = await runProbes({ deep: deep.value })
-    message.success(actionMessage(data, '探测任务已提交'))
-    await load()
-  } catch (e) {
-    message.error(errText(e, '探测失败'))
-  } finally {
-    probing.value = false
-  }
-}
-
 async function refreshUpstream(up: Upstream) {
   busy.value = `bal-up-${up.id}`
   try {
@@ -380,19 +375,6 @@ async function refreshUpstream(up: Upstream) {
     await load()
   } catch (e) {
     message.error(errText(e, '刷新余额失败'))
-  } finally {
-    busy.value = null
-  }
-}
-
-async function probeOne(row: PlatformKey) {
-  busy.value = `probe-${row.id}`
-  try {
-    const data = await probeKey(row.id, deep.value)
-    message.success(actionMessage(data, '探测完成'))
-    await load()
-  } catch (e) {
-    message.error(errText(e, '探测失败'))
   } finally {
     busy.value = null
   }
@@ -451,6 +433,7 @@ const keyForm = reactive({
   probe_interval_sec: null as number | null,
   rpm_limit: 0 as number | null,
   max_concurrency: 0 as number | null,
+  probe_enabled: true,
   status: 'enabled' as EnableStatus,
 })
 const keyRules: FormRules = {
@@ -475,6 +458,7 @@ function openCreateKey(up: Upstream) {
     probe_interval_sec: null,
     rpm_limit: 0,
     max_concurrency: 0,
+    probe_enabled: true,
     status: 'enabled' as EnableStatus,
   })
   showKeyForm.value = true
@@ -493,6 +477,7 @@ function openEditKey(row: PlatformKey) {
     probe_interval_sec: row.probe_interval_sec && row.probe_interval_sec > 0 ? row.probe_interval_sec : null,
     rpm_limit: row.rpm_limit ?? 0,
     max_concurrency: row.max_concurrency ?? 0,
+    probe_enabled: row.probe_enabled !== false,
     status: row.status,
   })
   showKeyForm.value = true
@@ -522,6 +507,7 @@ async function saveKey() {
     }
     if (keyForm.rate_multiplier != null) payload.rate_multiplier = keyForm.rate_multiplier
     payload.probe_interval_sec = Number(keyForm.probe_interval_sec) || 0
+    payload.probe_enabled = keyForm.probe_enabled
     payload.rpm_limit = Number(keyForm.rpm_limit) || 0
     payload.max_concurrency = Number(keyForm.max_concurrency) || 0
     if (editingKey.value) await updateKey(editingKey.value.id, payload)
@@ -589,7 +575,19 @@ function onModelsUpdated(next: PlatformKey) {
 const SCORE_TERM_LABEL: Record<string, string> = { success: '成功率', latency: '延迟', cache: '缓存' }
 
 const keyColumns: DataTableColumns<PlatformKey> = [
-  { title: 'Key', key: 'name', ellipsis: { tooltip: true } },
+  {
+    title: 'Key',
+    key: 'name',
+    ellipsis: { tooltip: true },
+    render(row) {
+      return h('div', { class: 'key-name-cell' }, [
+        h('span', row.name),
+        row.probe_enabled === false
+          ? h(NTag, { size: 'tiny', bordered: false, type: 'warning', style: 'margin-left: 6px' }, { default: () => '探测已关闭' })
+          : null,
+      ])
+    },
+  },
   {
     title: '预览',
     key: 'key_preview',
@@ -716,7 +714,7 @@ const keyColumns: DataTableColumns<PlatformKey> = [
         busy.value === `models-${row.id}`
       const statusBusy = busy.value === `status-${row.id}`
       const more: DropdownOption[] = [
-        { label: '探测', key: 'probe', disabled: rowBusy },
+        { label: row.probe_enabled === false ? '探测（已关闭）' : '探测', key: 'probe', disabled: rowBusy || probing.value || row.probe_enabled === false },
         { label: '获取模型', key: 'models', disabled: rowBusy },
         { label: '删除 Key', key: 'delete', disabled: rowBusy },
       ]
@@ -747,7 +745,7 @@ const keyColumns: DataTableColumns<PlatformKey> = [
                 placement: 'bottom-end',
                 options: more,
                 onSelect: (key: string) => {
-                  if (key === 'probe') void probeOne(row)
+                  if (key === 'probe') openProbe({ name: row.name, key_id: row.id, models: row.last_models })
                   else if (key === 'rate') void syncRateOne(row)
                   else if (key === 'models') void fetchModelsOne(row)
                   else if (key === 'delete') confirmDeleteKey(row)
@@ -779,7 +777,7 @@ function providerMenu(up: Upstream) {
     { label: '添加 Key', key: 'add' },
     { label: '编辑提供商', key: 'edit' },
     { label: up.status === 'enabled' ? '停用提供商' : '启用提供商', key: 'status' },
-    { label: '探测该提供商', key: 'probe' },
+    { label: '探测该提供商', key: 'probe', disabled: probing.value },
     { label: '删除提供商', key: 'delete' },
   ]
   return h(NDropdown, {
@@ -788,12 +786,12 @@ function providerMenu(up: Upstream) {
       if (value === 'add') openCreateKey(up)
       if (value === 'edit') openEdit(up)
       if (value === 'delete') confirmDelete(up)
-      if (value === 'status' || value === 'probe') {
+      if (value === 'probe') openProbe({ name: up.name, upstream_id: up.id })
+      if (value === 'status') {
         busy.value = `up-${up.id}`
         try {
-          if (value === 'status') await updateUpstream(up.id, { ...up, status: up.status === 'enabled' ? 'disabled' : 'enabled' })
-          else await runProbes({ upstream_id: up.id, deep: deep.value })
-          message.success(value === 'status' ? '状态已更新' : '探测完成')
+          await updateUpstream(up.id, { ...up, status: up.status === 'enabled' ? 'disabled' : 'enabled' })
+          message.success('状态已更新')
           await load({ preserveOrder: true })
         } catch (e) { message.error(errText(e)) }
         finally { busy.value = null }
@@ -929,8 +927,7 @@ onUnmounted(() => {
           <template #trigger><n-button size="small" quaternary aria-label="刷新列表" :loading="loading" @click="load()"><template #icon><n-icon><RefreshOutline /></n-icon></template></n-button></template>
           刷新列表
         </n-tooltip>
-        <n-checkbox v-model:checked="deep">深度探测</n-checkbox>
-        <n-dropdown trigger="click" :options="[{ label: '刷新全部余额', key: 'balance', disabled: refreshingBal }, { label: '探测全部', key: 'probe', disabled: probing }]" @select="(key: string) => key === 'balance' ? refreshAll() : probeAll()">
+        <n-dropdown trigger="click" :options="[{ label: '刷新全部余额', key: 'balance', disabled: refreshingBal }, { label: '探测全部', key: 'probe', disabled: probing }]" @select="(key: string) => key === 'balance' ? refreshAll() : openProbe({ name: '全部提供商' })">
           <n-button size="small" :loading="refreshingBal || probing">全部操作</n-button>
         </n-dropdown>
         <n-button type="primary" size="small" @click="openCreate"><template #icon><n-icon><AddOutline /></n-icon></template>新建提供商</n-button>
@@ -961,7 +958,7 @@ onUnmounted(() => {
       :data="rows"
       :loading="loading"
       :row-key="(row: ProviderRow) => row.id"
-      :row-class-name="(row: ProviderRow) => row.first ? 'provider-first' : ''"
+      :row-class-name="(row: ProviderRow) => [row.first ? 'provider-first' : '', highlightUpstreamId === row.upstream.id ? 'row-highlight' : ''].filter(Boolean).join(' ')"
       :scroll-x="narrow ? 1166 : 1357"
       :max-height="720"
       :single-line="false"
@@ -973,6 +970,8 @@ onUnmounted(() => {
         @update:page="changePage"
         @update:page-size="(size: number) => { pageSize = size; changePage(1) }" />
     </div>
+
+    <ProbeModal v-model:show="showProbe" :target="probeTarget" @running="probing = $event" @completed="load({ preserveOrder: true })" />
 
     <n-modal v-model:show="showForm" preset="card" :title="editing ? '编辑提供商' : '新建提供商'" style="width: min(560px, calc(100vw - 24px))">
       <n-form ref="formRef" :model="form" :rules="rules" label-placement="left" label-width="90">
@@ -1086,8 +1085,15 @@ onUnmounted(() => {
               placeholder="0 跟随全局"
               style="width: 100%"
               clearable
+              :disabled="!keyForm.probe_enabled"
             />
-            <div class="muted rate-hint">单位秒。留空或 0 跟随全局定时任务（默认 1 分钟）。手动「探测全部」仍会探测此 Key。</div>
+            <div class="muted rate-hint">单位秒。留空或 0 跟随全局定时任务（默认 1 分钟）。关闭探测后仍保留该间隔，重新打开后按原窗口调度。</div>
+          </div>
+        </n-form-item>
+        <n-form-item label="允许探测">
+          <div class="rate-field">
+            <n-switch v-model:value="keyForm.probe_enabled" />
+            <div class="muted rate-hint">关闭后跳过平台探测，以及已识别的外部算术和 health-manager 探测。普通业务和工具调用仍可使用此 Key；余额、倍率和模型操作不受影响。</div>
           </div>
         </n-form-item>
         <n-form-item label="RPM 上限" path="rpm_limit">
@@ -1143,6 +1149,7 @@ onUnmounted(() => {
 :deep(.balance-value.is-unknown) { color: #7b8790; font-weight: 400; }
 :deep(.key-name) { display: flex; flex-direction: column; gap: 3px; overflow-wrap: anywhere; }
 :deep(.key-name small) { color: #7b8790; font-size: 11px; }
+:deep(.row-highlight td) { background: #ecfdf5 !important; }
 .live-label { font-size: 13px; color: #344054; }
 .rate-field { width: 100%; }
 .rate-hint { margin-top: 6px; font-size: 12px; line-height: 1.5; }

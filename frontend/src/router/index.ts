@@ -14,7 +14,13 @@ const router = createRouter({
       path: '/',
       component: () => import('@/layouts/AdminLayout.vue'),
       children: [
-        { path: '', redirect: '/upstreams' },
+        { path: '', redirect: '/dashboard' },
+        {
+          path: 'dashboard',
+          name: 'dashboard',
+          component: () => import('@/views/DashboardView.vue'),
+          meta: { title: '仪表盘' },
+        },
         {
           path: 'upstreams',
           name: 'upstreams',

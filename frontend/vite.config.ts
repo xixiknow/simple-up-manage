@@ -34,7 +34,12 @@ export default defineConfig({
     proxy: {
       // Only `/api/` (with slash) so the SPA route `/api-keys` is not
       // forwarded to the backend on hard refresh.
-      '/api/': 'http://localhost:8080',
+      '/api/': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+        timeout: 0,
+        proxyTimeout: 0,
+      },
       '/health': 'http://localhost:8080',
     },
   },

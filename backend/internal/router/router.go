@@ -5,6 +5,7 @@ import (
 
 	"simple-up-manage/internal/config"
 	"simple-up-manage/internal/crypto"
+	"simple-up-manage/internal/dashboard"
 	"simple-up-manage/internal/handler"
 	"simple-up-manage/internal/middleware"
 	"simple-up-manage/internal/ops"
@@ -14,7 +15,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func New(cfg *config.Config, db *gorm.DB, enc *crypto.AESGCM, opsSvc *ops.Service, pick picker.Picker) *gin.Engine {
+func New(cfg *config.Config, db *gorm.DB, enc *crypto.AESGCM, opsSvc *ops.Service, pick picker.Picker, dash *dashboard.Service) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery(), gin.Logger(), middleware.CORS())
@@ -22,7 +23,8 @@ func New(cfg *config.Config, db *gorm.DB, enc *crypto.AESGCM, opsSvc *ops.Servic
 	r.GET("/health", handler.Health)
 
 	g := handler.NewGateway(db, enc, opsSvc, pick)
-	admin := &handler.Admin{DB: db, Enc: enc, Ops: opsSvc, Picker: pick, Gateway: g}
+	g.Dash = dash
+	admin := &handler.Admin{DB: db, Enc: enc, Ops: opsSvc, Picker: pick, Gateway: g, Dash: dash}
 
 	a := r.Group("/api/v1/admin")
 	a.Use(middleware.AdminAuth(cfg.AdminToken))
@@ -82,6 +84,14 @@ func New(cfg *config.Config, db *gorm.DB, enc *crypto.AESGCM, opsSvc *ops.Servic
 
 		a.GET("/model-catalog", admin.GetModelCatalog)
 		a.POST("/model-catalog/sync", admin.SyncModelCatalog)
+
+		a.GET("/dashboard/live", admin.DashboardLive)
+		a.GET("/dashboard/overview", admin.DashboardOverview)
+		a.GET("/dashboard/trends", admin.DashboardTrends)
+		a.GET("/dashboard/rankings", admin.DashboardRankings)
+		a.GET("/dashboard/recommendations", admin.DashboardRecommendations)
+		a.GET("/dashboard/settings", admin.DashboardGetSettings)
+		a.PUT("/dashboard/settings", admin.DashboardPutSettings)
 	}
 
 	r.POST("/v1/messages", g.Messages)

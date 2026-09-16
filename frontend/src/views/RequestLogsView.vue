@@ -3,13 +3,16 @@ import { computed, h, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { NTag, NTimeline, NTimelineItem, useMessage } from 'naive-ui'
 import { ArrowBackOutline, ArrowForwardOutline, CopyOutline, DownloadOutline, RefreshOutline } from '@vicons/ionicons5'
 import type { DataTableColumns, SelectOption } from 'naive-ui'
-import { allPages, downloadLogBody, getLogBody, getRequestLog, listConsumerKeys, listKeyOptions, listRequestLogs, listUpstreams } from '@/api/admin'
+import { allPages, downloadLogBody, getLogBody, getRequestLog, listConsumerKeys, listKeyOptions, listRequestLogs, listRouteGroups, listUpstreams } from '@/api/admin'
 import type { RequestLog, RequestLogDetail, RequestLogQuery, SchedulerDecision, SchedulerCandidate, RequestAttempt } from '@/api/types'
+import { EXTERNAL_PROBE_LABEL } from '@/api/types'
 import { copyText, errText, formatMoney, formatNumber, formatSeconds, formatTime, formatTokenCount, formatTps } from '@/utils/format'
+import { useRoute } from 'vue-router'
 
 const LIVE_MS = 4000
 const IN_FLIGHT_CAP_MS = 6 * 60 * 1000
 const message = useMessage()
+const route = useRoute()
 const traceResultLabel: Record<string, string> = { selected: '已选中', retry: '重试', switch: '切换', failed: '失败' }
 function selectionTrace(row: RequestLogDetail) { try { return row.selection_trace ? JSON.parse(row.selection_trace) as Array<{ key_name: string; upstream_name: string; result: string; reason?: string; retry_count?: number; at: string; decision?: SchedulerDecision }> : [] } catch { return [] } }
 const decisionColumns: DataTableColumns<SchedulerCandidate> = [
@@ -48,11 +51,14 @@ const lastRefresh = ref('')
 const upstreamOptions = ref<SelectOption[]>([])
 const keyOptions = ref<SelectOption[]>([])
 const consumerOptions = ref<SelectOption[]>([])
+const groupOptions = ref<SelectOption[]>([])
 
 const filters = reactive({
+  external_probe_rule: null as RequestLogQuery['external_probe_rule'] | null,
   consumer_key_id: null as number | null,
   upstream_id: null as number | null,
   key_id: null as number | null,
+  route_group_id: null as number | null,
   model: '',
   success: '' as '' | 'true' | 'false',
   range: null as [number, number] | null,
@@ -62,6 +68,11 @@ const successOptions = [
   { label: '全部', value: '' },
   { label: '成功', value: 'true' },
   { label: '失败', value: 'false' },
+]
+
+const probeOptions = [
+  { label: '全部已识别外部探测', value: 'any' },
+  ...Object.entries(EXTERNAL_PROBE_LABEL).map(([value, label]) => ({ value, label })),
 ]
 
 const showDetail = ref(false)
@@ -173,10 +184,11 @@ function stopClock() {
 }
 
 async function loadOptions() {
-  const [up, keys, consumers] = await Promise.all([allPages(listUpstreams), allPages(listKeyOptions), allPages(listConsumerKeys)])
+  const [up, keys, consumers, groups] = await Promise.all([allPages(listUpstreams), allPages(listKeyOptions), allPages(listConsumerKeys), listRouteGroups()])
   consumerOptions.value = consumers.map((k) => ({ label: `${k.name} (${k.key_preview})`, value: k.id }))
   upstreamOptions.value = up.map((u) => ({ label: u.name, value: u.id }))
   keyOptions.value = keys.map((k) => ({ label: `${k.name} (${k.key_preview})`, value: k.id }))
+  groupOptions.value = groups.map((g) => ({ label: g.name, value: g.id }))
 }
 
 const appliedFilters = ref<RequestLogQuery>({})
@@ -234,9 +246,11 @@ function refresh() {
 
 function search() {
   appliedFilters.value = {
+    external_probe_rule: filters.external_probe_rule || undefined,
     upstream_id: filters.upstream_id || undefined,
     key_id: filters.key_id || undefined,
     consumer_key_id: filters.consumer_key_id || undefined,
+    route_group_id: filters.route_group_id || undefined,
     model: filters.model.trim() || undefined,
     success: filters.success === '' ? undefined : filters.success === 'true',
     from: filters.range ? new Date(filters.range[0]).toISOString() : undefined,
@@ -246,12 +260,14 @@ function search() {
 }
 
 function reset() {
+  filters.external_probe_rule = null
   filters.upstream_id = null
   filters.key_id = null
   filters.consumer_key_id = null
   filters.model = ''
   filters.success = ''
   filters.range = null
+  filters.route_group_id = null
   search()
 }
 
@@ -367,7 +383,24 @@ const columns = computed<DataTableColumns<RequestLog>>(() => {
       return row.upstream_name || (row.upstream_id != null ? `#${row.upstream_id}` : '—')
     },
   },
+  {
+    title: '分组',
+    key: 'route_group_name',
+    width: 110,
+    ellipsis: { tooltip: true },
+    render(row) {
+      return row.route_group_name || (row.route_group_id != null ? `#${row.route_group_id}` : '—')
+    },
+  },
   { title: '模型', key: 'model', width: 140, ellipsis: { tooltip: true } },
+  {
+    title: '外部探测', key: 'external_probe_rule', width: 175,
+    render(row) {
+      return row.external_probe_rule
+        ? h(NTag, { size: 'small', bordered: false, type: 'warning' }, { default: () => EXTERNAL_PROBE_LABEL[row.external_probe_rule!] || row.external_probe_rule })
+        : '—'
+    },
+  },
   { title: '协议', key: 'protocol', width: 90 },
   {
     title: '类型',
@@ -475,12 +508,21 @@ watch(showDetail, (show) => {
 })
 
 onMounted(async () => {
+  const q = route.query
+  if (q.route_group_id) filters.route_group_id = Number(q.route_group_id) || null
+  if (q.upstream_id) filters.upstream_id = Number(q.upstream_id) || null
+  if (q.from && q.to) {
+    const from = Date.parse(String(q.from))
+    const to = Date.parse(String(q.to))
+    if (!Number.isNaN(from) && !Number.isNaN(to)) filters.range = [from, to]
+  }
   try {
     await loadOptions()
   } catch {
     /* filters remain empty if options fail */
   }
-  await load()
+  if (q.route_group_id || q.from || q.upstream_id) search()
+  else await load()
   startLive()
 })
 
@@ -525,8 +567,10 @@ onUnmounted(() => {
           style="width: 220px"
         />
         <n-select v-model:value="filters.consumer_key_id" :options="consumerOptions" clearable filterable placeholder="API 密钥" style="width: 220px" />
+        <n-select v-model:value="filters.route_group_id" :options="groupOptions" clearable filterable placeholder="分组" style="width: 180px" />
         <n-input v-model:value="filters.model" clearable placeholder="模型" style="width: 160px" />
         <n-select v-model:value="filters.success" :options="successOptions" placeholder="成败" style="width: 110px" />
+        <n-select v-model:value="filters.external_probe_rule" :options="probeOptions" clearable placeholder="外部探测" style="width: 220px" />
         <n-date-picker
           v-model:value="filters.range"
           type="datetimerange"
@@ -545,7 +589,7 @@ onUnmounted(() => {
         :columns="columns"
         :data="items"
         :loading="loading"
-        :scroll-x="1280"
+        :scroll-x="1455"
         :row-key="rowKey"
         :row-props="rowProps"
         :row-class-name="rowClassName"
@@ -589,6 +633,7 @@ onUnmounted(() => {
                 >{{ detail.upstream_name || (detail.upstream_id != null ? `#${detail.upstream_id}` : '—') }}
               </div>
               <div><span class="meta-k">模型</span>{{ detail.model || '—' }}</div>
+              <div><span class="meta-k">外部探测</span>{{ detail.external_probe_rule ? EXTERNAL_PROBE_LABEL[detail.external_probe_rule] || detail.external_probe_rule : '未标记' }}</div>
               <div>
                 <span class="meta-k">类型</span>{{ streamLabel(detail) }}
               </div>

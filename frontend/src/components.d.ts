@@ -11,6 +11,7 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    DashChart: typeof import('./components/DashChart.vue')['default']
     HealthPulse: typeof import('./components/HealthPulse.vue')['default']
     HealthTag: typeof import('./components/HealthTag.vue')['default']
     ModelListModal: typeof import('./components/ModelListModal.vue')['default']
@@ -50,6 +51,7 @@ declare module 'vue' {
     NSwitch: typeof import('naive-ui')['NSwitch']
     NTag: typeof import('naive-ui')['NTag']
     NTooltip: typeof import('naive-ui')['NTooltip']
+    ProbeModal: typeof import('./components/ProbeModal.vue')['default']
     RateNoticeInbox: typeof import('./components/RateNoticeInbox.vue')['default']
     RouteGroupKeyPicker: typeof import('./components/RouteGroupKeyPicker.vue')['default']
     RouteGroupTags: typeof import('./components/RouteGroupTags.vue')['default']
