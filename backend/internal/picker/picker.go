@@ -3,6 +3,7 @@ package picker
 import (
 	"context"
 	"errors"
+	"time"
 
 	"simple-up-manage/internal/domain"
 )
@@ -10,6 +11,7 @@ import (
 var ErrNoUpstream = errors.New("no enabled upstream matching protocol")
 
 type Request struct {
+	MutateRecovery   bool
 	Diagnostic       bool
 	BudgetReady      bool
 	ExplorationSlot  bool
@@ -35,6 +37,11 @@ type Request struct {
 }
 
 type Candidate struct {
+	RecoveryStatus      string              `json:"recovery_status,omitempty"`
+	RecoveryCheckAt     *time.Time          `json:"recovery_check_at,omitempty"`
+	RecoveryNextCheckAt *time.Time          `json:"recovery_next_check_at,omitempty"`
+	RecoveryCheckError  string              `json:"recovery_check_error,omitempty"`
+	RecoveryLastAt      *time.Time          `json:"recovery_last_at,omitempty"`
 	ProbeStatus         string              `json:"probe_status,omitempty"`
 	ProbeAt             int64               `json:"probe_at,omitempty"`
 	ProbeModel          string              `json:"probe_model,omitempty"`

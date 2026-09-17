@@ -60,7 +60,7 @@ func (s Store) Snapshot(ctx context.Context, dims []Dimension) (map[string]domai
 
 // UPDATE before reading serializes writers on both PostgreSQL and SQLite.
 func lock(tx *gorm.DB, d Dimension, scope string) (domain.RoutingCircuit, error) {
-	r := domain.RoutingCircuit{Scope: scope, PlatformKeyID: d.KeyID}
+	r := domain.RoutingCircuit{Scope: scope, PlatformKeyID: d.KeyID, Protocol: d.Protocol, Model: d.Model, Path: d.Path, Stream: d.Stream}
 	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&r).Error; err != nil {
 		return r, err
 	}
@@ -87,11 +87,22 @@ func (s Store) Admit(ctx context.Context, d Dimension, recovery bool) (string, e
 			if !r.Open {
 				continue
 			}
-			if !recovery || r.Until.After(now) || r.LeaseUntil.After(now) {
+			if !recovery || r.Until.After(now) || r.LeaseUntil.After(now) || (r.CheckUntil != nil && r.CheckUntil.After(now)) ||
+				(!r.CheckOK && r.NextCheckAt != nil && r.NextCheckAt.After(now)) {
 				return ErrUnavailable
+			}
+			if scope == KeyScope(d.KeyID) {
+				var busy int64
+				if err := tx.Model(&domain.RoutingCircuit{}).Where("platform_key_id = ? AND scope <> ? AND (check_until > ? OR lease_until > ?)", d.KeyID, scope, now, now).Count(&busy).Error; err != nil {
+					return err
+				}
+				if busy > 0 {
+					return ErrUnavailable
+				}
 			}
 			r.Lease = token
 			r.LeaseUntil = now.Add(330 * time.Second)
+			r.RecoveryAt = &now
 			if err := tx.Save(&r).Error; err != nil {
 				return err
 			}
@@ -119,6 +130,11 @@ func open(r *domain.RoutingCircuit, now time.Time, reason string, retry time.Dur
 	r.Reason = reason
 	r.Lease = ""
 	r.LeaseUntil = time.Time{}
+	r.CheckOK = false
+	r.CheckLease = ""
+	r.CheckUntil = nil
+	r.NextCheckAt = nil
+	r.CheckBackoff = 0
 }
 
 func (s Store) Observe(ctx context.Context, d Dimension, token string, o Outcome) error {
@@ -155,6 +171,8 @@ func (s Store) Observe(ctx context.Context, d Dimension, token string, o Outcome
 				if owned {
 					row.Lease = ""
 					row.LeaseUntil = time.Time{}
+					row.CheckLease = ""
+					row.CheckUntil = nil
 				}
 			} else if o.Success {
 				if !row.Open || owned {
@@ -166,9 +184,11 @@ func (s Store) Observe(ctx context.Context, d Dimension, token string, o Outcome
 					row.Reason = ""
 					row.Lease = ""
 					row.LeaseUntil = time.Time{}
+					row.CheckLease, row.CheckUntil = "", nil
 				}
 			} else if row.Scope == key.Scope {
 				if o.AuthFailure || owned {
+					row.Protocol, row.Model, row.Path, row.Stream = d.Protocol, d.Model, d.Path, d.Stream
 					open(row, now, o.Reason, o.RetryAfter, cfg)
 				}
 			} else if owned || !o.AuthFailure {
@@ -195,7 +215,7 @@ func (s Store) Observe(ctx context.Context, d Dimension, token string, o Outcome
 	})
 }
 
-// Slot shares one exploration/recovery allowance across processes and modes.
+// Slot shares one exploration allowance across processes and modes.
 // Read-only previews never consume it. Call once per incoming request.
 func (s Store) Slot(ctx context.Context, scope string, interval int, mutate bool) (bool, error) {
 	if interval <= 0 {

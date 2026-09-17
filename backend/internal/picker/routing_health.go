@@ -19,6 +19,7 @@ func dimension(req Request, key uint) routinghealth.Dimension {
 }
 
 func (p *BandPicker) prepareBudget(ctx context.Context, req Request, mutate bool) (Request, error) {
+	req.MutateRecovery = mutate
 	if req.BudgetReady {
 		return req, nil
 	}
@@ -82,12 +83,15 @@ func (p *BandPicker) applyRoutingHealth(ctx context.Context, req Request, cands 
 		var gate domain.RoutingCircuit
 		for _, scope := range []string{dimension(req, c.KeyID).Scope(), routinghealth.KeyScope(c.KeyID)} {
 			if r, ok := states[scope]; ok {
-				if gate.Scope == "" || r.Until.After(gate.Until) || r.LeaseUntil.After(now) {
+				if gate.Scope == "" || recoveryGatePriority(r, now) > recoveryGatePriority(gate, now) || (recoveryGatePriority(r, now) == recoveryGatePriority(gate, now) && r.Until.After(gate.Until)) {
 					gate = r
 				}
 			}
 		}
 		if gate.Scope != "" {
+			c.RecoveryCheckAt, c.RecoveryNextCheckAt = gate.CheckAt, gate.NextCheckAt
+			c.RecoveryCheckError, c.RecoveryLastAt = gate.CheckError, gate.RecoveryAt
+			c.RecoveryStatus = "cooldown"
 			c.CircuitScope = "request"
 			if gate.Scope == routinghealth.KeyScope(c.KeyID) {
 				c.CircuitScope = "key"
@@ -99,15 +103,34 @@ func (p *BandPicker) applyRoutingHealth(ctx context.Context, req Request, cands 
 			if !gate.Until.After(now) {
 				c.CircuitState = "half_open"
 				reason = "recovery_pending"
+				c.RecoveryStatus = "waiting_check"
+				if gate.CheckOK {
+					c.RecoveryStatus = "waiting_request"
+				}
+				if gate.CheckAt != nil && !gate.CheckOK {
+					c.RecoveryStatus = "check_failed"
+				}
+				if !c.Key.AllowsProbe() || gate.Path == "" || (req.Path != "/v1/responses" && req.Path != "/v1/chat/completions" && req.Path != "/v1/messages") {
+					c.RecoveryStatus = "waiting_request"
+				}
+			}
+			if gate.CheckUntil != nil && gate.CheckUntil.After(now) {
+				reason = "recovery_check_inflight"
+				c.RecoveryStatus = "checking"
+			}
+			if !gate.CheckOK && gate.CheckAt != nil && gate.NextCheckAt != nil && gate.NextCheckAt.After(now) {
+				reason = "recovery_check_backoff"
+				c.RecoveryStatus = "check_failed"
 			}
 			if gate.LeaseUntil.After(now) {
 				reason = "recovery_inflight"
 				c.CircuitUntil = gate.LeaseUntil.UnixMilli()
+				c.RecoveryStatus = "validating"
 			}
 			if c.Eligible {
 				c.Eligible = false
 				c.SkipReason = reason
-				if reason == "recovery_pending" && (recovery < 0 || c.CircuitUntil < cands[recovery].CircuitUntil) {
+				if reason == "recovery_pending" && (recovery < 0 || recoveryBefore(*c, cands[recovery])) {
 					recovery = i
 				}
 			}
@@ -115,20 +138,86 @@ func (p *BandPicker) applyRoutingHealth(ctx context.Context, req Request, cands 
 			normal++
 		}
 	}
-	// Recovery uses the same slot as exploration. Active bound sessions keep
-	// their key while healthy alternatives exist.
+	// Only a currently eligible binding protects a session from validation.
 	bound := false
+	var boundKey uint
 	if req.Session != "" && p.Settings().RankingMode == "stable_latency" {
-		if err := p.withStableState(ctx, routeScope(req), false, func(s *stableState) { _, bound = s.Bindings[req.Session] }); err != nil {
+		if err := p.withStableState(ctx, routeScope(req), false, func(s *stableState) { boundKey = s.Bindings[req.Session].Key }); err != nil {
 			return err
 		}
 	} else if req.Session != "" {
-		bound = p.stickyKey(ctx, req, p.Settings()) > 0
+		boundKey = p.stickyKey(ctx, req, p.Settings())
 	}
-	if recovery >= 0 && (normal == 0 || (req.ExplorationSlot && !bound)) {
+	for _, c := range cands {
+		if c.KeyID == boundKey && c.Eligible {
+			bound = true
+		}
+	}
+	// Prefer check-ready candidates, but preserve the last-resort real-request
+	// path for disabled probes, historical dimensions and total outages.
+	if normal > 0 {
+		recovery = -1
+		for i, c := range cands {
+			if c.SkipReason == "recovery_pending" && c.RecoveryStatus == "waiting_request" && (recovery < 0 || recoveryBefore(c, cands[recovery])) {
+				recovery = i
+			}
+		}
+	}
+	allowed := recovery >= 0 && normal == 0
+	if recovery >= 0 && normal > 0 && !bound {
+		allowed, err = (routinghealth.Store{DB: p.db}).RecoverySlot(ctx, routeScope(req), req.MutateRecovery)
+		if err != nil {
+			return err
+		}
+	}
+	for i := range cands {
+		if cands[i].RecoveryStatus == "waiting_request" && normal > 0 {
+			if bound {
+				cands[i].RecoveryStatus = "waiting_session"
+			} else if !allowed {
+				cands[i].RecoveryStatus = "waiting_budget"
+			}
+		}
+	}
+	if allowed {
 		cands[recovery].Eligible = true
 		cands[recovery].Recovery = true
 		cands[recovery].SkipReason = ""
 	}
 	return nil
+}
+
+func recoveryBefore(a, b Candidate) bool {
+	if a.RecoveryLastAt == nil && b.RecoveryLastAt != nil {
+		return true
+	}
+	if a.RecoveryLastAt != nil && b.RecoveryLastAt == nil {
+		return false
+	}
+	if a.RecoveryLastAt != nil && !a.RecoveryLastAt.Equal(*b.RecoveryLastAt) {
+		return a.RecoveryLastAt.Before(*b.RecoveryLastAt)
+	}
+	if a.CircuitUntil != b.CircuitUntil {
+		return a.CircuitUntil < b.CircuitUntil
+	}
+	return a.KeyID < b.KeyID
+}
+
+func recoveryGatePriority(r domain.RoutingCircuit, now time.Time) int {
+	if r.LeaseUntil.After(now) {
+		return 5
+	}
+	if r.CheckUntil != nil && r.CheckUntil.After(now) {
+		return 4
+	}
+	if r.Until.After(now) {
+		return 3
+	}
+	if !r.CheckOK && r.NextCheckAt != nil && r.NextCheckAt.After(now) {
+		return 3
+	}
+	if !r.CheckOK && r.Path != "" {
+		return 2
+	}
+	return 1
 }

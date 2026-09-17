@@ -44,6 +44,8 @@ const SKIP_LABEL: Record<string, string> = {
   business_cooldown: '业务熔断中',
   recovery_pending: '等待恢复验证',
   recovery_inflight: '恢复验证进行中',
+  recovery_check_inflight: '恢复检查进行中',
+  recovery_check_backoff: '恢复检查失败，等待重试',
   excluded: '已排除',
   key_disabled: 'Key 停用',
   upstream_disabled: '提供商停用',
@@ -61,6 +63,9 @@ const CIRCUIT_LABEL: Record<string, string> = {
   request_scope_failure: '接口请求失败',
   transport_failure: '连接或超时失败',
   invalid_response: '响应协议无效',
+  first_token_timeout: '首个有效输出超时',
+  compaction_timeout: '上下文压缩超时',
+  upstream_timeout: '上游超时',
   response_failure: '响应未正常完成',
   cooldown_key_model: '接口限流',
   cooldown_key: '认证失败',
@@ -268,7 +273,11 @@ const columns: DataTableColumns<SchedulerCandidate> = [
 	{ title: '探测模型', key: 'probe_model', width: 150, ellipsis: { tooltip: true } },
 	{ title: '探测接口', key: 'probe_path', width: 175, ellipsis: { tooltip: true } },
 	{ title: '探测模式', key: 'probe_stream', width: 85, render: row => row.probe_path ? (row.probe_stream ? '流式' : '非流式') : '—' },
-	{ title: '业务熔断', key: 'circuit_state', width: 100, render: row => ({closed:'未熔断',open:'熔断',half_open:'恢复验证'}[row.circuit_state ?? 'closed'] ?? row.circuit_state) },
+	{ title: '业务熔断', key: 'circuit_state', width: 100, render: row => ({closed:'未熔断',open:'熔断',half_open:'等待恢复'}[row.circuit_state ?? 'closed'] ?? row.circuit_state) },
+	{ title: '恢复阶段', key: 'recovery_status', width: 140, render: row => ({cooldown:'冷却中',waiting_check:'等待恢复检查',checking:'恢复检查中',check_failed:'恢复检查失败',waiting_request:'等待业务验证',waiting_session:'保持当前会话',waiting_budget:'等待恢复名额',validating:'业务验证中'}[row.recovery_status ?? ''] ?? '—') },
+	{ title: '恢复检查时间', key: 'recovery_check_at', width: 165, render: row => row.recovery_check_at ? new Date(row.recovery_check_at).toLocaleString() : '—' },
+	{ title: '下次恢复检查', key: 'recovery_next_check_at', width: 165, render: row => row.recovery_next_check_at ? new Date(row.recovery_next_check_at).toLocaleString() : '—' },
+	{ title: '恢复检查错误', key: 'recovery_check_error', width: 180, ellipsis: { tooltip: true } },
 	{ title: '影响范围', key: 'circuit_scope', width: 120, render: row => row.circuit_scope === 'key' ? '整个 Key' : row.circuit_scope === 'request' ? '当前模型与接口' : '—' },
 	{ title: '熔断原因', key: 'circuit_reason', width: 155, ellipsis: { tooltip: true }, render: row => CIRCUIT_LABEL[row.circuit_reason ?? ''] ?? row.circuit_reason ?? '—' },
 	{ title: '冷却 / 租约截止', key: 'circuit_until', width: 165, render: row => row.circuit_until ? new Date(row.circuit_until).toLocaleString() : '—' },
@@ -446,7 +455,7 @@ onMounted(async () => {
         </n-card>
         <n-card size="small" title="故障与粘滞" :bordered="false" :loading="loading">
           <div class="grid">
-			<n-form-item label="探索 / 恢复比例"><n-input-number v-model:value="form.exploration_ratio" :min="0" :max="0.05" :step="0.01" style="width: 100%" /></n-form-item>
+			<n-form-item label="探索比例"><n-input-number v-model:value="form.exploration_ratio" :min="0" :max="0.05" :step="0.01" style="width: 100%" /></n-form-item>
             <n-form-item label="故障转移次数">
               <n-input-number v-model:value="form.failover_max" :min="1" :max="5" style="width: 100%" />
             </n-form-item>
@@ -541,7 +550,7 @@ onMounted(async () => {
         该 API 密钥绑定的分组里没有匹配此协议/模型的 Key，请求会返回 503
       </n-alert>
       <n-data-table
-        :scroll-x="3300"
+        :scroll-x="4115"
         size="small"
         :columns="columns"
         :data="visibleCandidates"

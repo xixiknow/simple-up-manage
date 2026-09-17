@@ -420,6 +420,11 @@ export type SchedulerCandidate = {
 	circuit_reason?: string
 	circuit_until?: number
 	recovery?: boolean
+	recovery_status?: string
+	recovery_check_at?: string
+	recovery_next_check_at?: string
+	recovery_check_error?: string
+	recovery_last_at?: string
   latency_samples?: number
   reliable?: boolean
   decision_reason?: string

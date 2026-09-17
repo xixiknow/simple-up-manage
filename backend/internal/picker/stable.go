@@ -268,7 +268,6 @@ func (p *BandPicker) stableDecision(ctx context.Context, req Request, mutate boo
 			d.Candidates = cands
 			d.SelectedKeyID = c.KeyID
 			d.Reason = "recovery_validation"
-			d.Exploration = true
 			return c.Key, c.Upstream, d, nil
 		}
 	}
@@ -394,7 +393,6 @@ func (p *BandPicker) PickDecision(ctx context.Context, req Request) (*domain.Pla
 			d.SelectedKeyID = c.KeyID
 			if c.Recovery {
 				d.Reason = "recovery_validation"
-				d.Exploration = true
 			}
 			return c.Key, c.Upstream, d, nil
 		}

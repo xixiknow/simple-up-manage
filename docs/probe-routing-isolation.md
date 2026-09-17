@@ -41,13 +41,40 @@ expired leases can be reclaimed, and old owners cannot close another owner's gat
 State-store errors fail closed. Gate outcomes are committed synchronously, once
 per logical request/key/dimension, independently of asynchronous request-log writes.
 
-Recovery and stable-latency exploration share a SQL counter scoped like the routing
-pool. With the default 0.05 exploration ratio, every twentieth incoming request may
-validate an expired gate; retries and previews never advance this counter. Active
-bound sessions do not use this slot while normal candidates exist. When no normal
-candidate remains, an expired gate may validate without waiting for a slot, even
-when exploration is disabled. An open gate never bypasses its cooldown or lease.
-Successful recovery does not replace the existing preferred/session binding.
+Recovery is independent of the exploration ratio. Each routing pool can select
+one real recovery validation per 60 seconds, using an atomic SQL time budget.
+Previews never consume it. Only an eligible session binding suppresses validation;
+a failed/excluded binding cannot block recovery. Candidates rotate by least recent
+business recovery admission, then cooldown deadline and key ID. When no normal
+candidate remains, a cooled gate can validate without a budget or synthetic check,
+but never bypasses an active lease or a failed check's retry deadline. Successful
+recovery does not replace the existing preferred/session binding.
+
+A recovery job wakes every 10 seconds and processes up to two checks per batch.
+SQL leases enforce at most two simultaneous checks across instances. Each check
+has a 30-second timeout and a 45-second lease; a slow batch delays the next scan.
+Checks use the exact failed protocol/model/endpoint/stream dimension with a
+synthetic `Reply OK.` prompt and a 256-token limit. They share the existing strict
+response validator, never replay customer content, never write business samples,
+and never close circuits. Success permits real-request validation and is checked
+again after five minutes if no suitable request arrives. Failure retries after
+30/60/120/300 seconds; a positive Retry-After can extend this up to 24 hours.
+Operator disablement and known exhausted provider balances suppress checks.
+Disabling probes still permits budgeted real validation after applicable cooldowns.
+
+New circuits persist their request dimension. Historical hash-only circuits are
+resolved from retained attempt dimensions; missing history is never guessed and
+still permits real validation. Synthetic and real validation leases exclude one
+another, including key-wide gates, and stale owners cannot overwrite new outcomes.
+Normal probes remain diagnostic and do not grant recovery readiness.
+
+Candidate explanations and request traces include recovery stage, last check,
+next check, check error and last business validation time. Stages distinguish
+cooldown, queued/checking, failed check, waiting for a suitable request, preserving
+an active session, waiting for the pool budget, and business validation in progress.
+The schema additions are additive; rolling back keeps the columns and restores
+the former exploration-based recovery policy. Recovery does not rewrite historical
+attempts or reset the existing ranking window.
 
 Deep probes rotate the least recently probed dimensions from up to 32 distinct
 traffic dimensions observed in the last 24 hours. Requests use a synthetic prompt,

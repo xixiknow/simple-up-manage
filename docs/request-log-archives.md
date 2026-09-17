@@ -45,10 +45,20 @@ generated text or tool input. Existing missing TTFT and truncated bodies cannot
 be reconstructed.
 
 Attempt diagnostics add failure phase/action/message, response header latency,
-received bytes, and a bounded event summary. Business first-token timeout stays
-at 30s and is independent of probe timeout. `transport_failure` remains the
-compatible routing action; the diagnostic phase distinguishes DNS, TCP, TLS,
-request sending and response-header waiting.
+received bytes, and a bounded event summary. Business first-token timeout is
+30s and is independent of probe timeout. On `/v1/responses`, a validated
+`response.compaction.compacting` event or `response.output_item.added` with
+`item.type=compaction` before the first output allows waiting up to the existing
+300s overall request deadline. Time spent on earlier attempts counts toward
+that deadline; repeated compaction events never reset it. Client cancellation
+still stops the request immediately. Compaction is neither first-token output
+nor a successful response, and does not release buffered response headers.
+
+SSE timeouts before output use `first_token_timeout`, `compaction_timeout`, or
+`upstream_timeout`; malformed responses retain `invalid_response`. A compaction
+timeout has failure phase `compacting`. Before response headers,
+`transport_failure` remains the compatible routing action; the diagnostic phase
+distinguishes DNS, TCP, TLS, request sending and response-header waiting.
 
 Deploy after the full Go suite, vet, handler/archive race tests, frontend build
 and browser checks. Add the persistent mount before replacing the container.

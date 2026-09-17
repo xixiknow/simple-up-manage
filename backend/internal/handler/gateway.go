@@ -672,6 +672,12 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 		}
 		h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, usage, ttft, dur, "", ioCapture{}, true, false)
 	}}
+	collector.onCompaction = func() {
+		// The attempt context still enforces the original 300-second request
+		// deadline, including time already spent on earlier attempts.
+		firstWatch.stop()
+		phase.set("compacting")
+	}
 	ct := strings.ToLower(resp.Header.Get("Content-Type"))
 	streaming := isSSEContentType(ct)
 	if isTextAPI(path) && resp.StatusCode >= 200 && resp.StatusCode < 300 && !streaming && (wantStream || !isJSONContentType(ct)) {
@@ -721,9 +727,18 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 		if err != nil && !c.Writer.Written() {
 			dur := int(time.Since(started).Milliseconds())
 			msg := proxyTimeoutMessage(err, firstWatch.timedOut())
+			action := "invalid_response"
+			if isTimeoutErr(err) {
+				action = "upstream_timeout"
+				if firstWatch.timedOut() {
+					action = "first_token_timeout"
+				} else if collector.compaction {
+					action, msg = "compaction_timeout", "compaction timeout"
+				}
+			}
 			snap := reqSnap.withResponse(resp.Header, resp.Header.Get("Content-Type"), respPrefix, respTotal)
 			h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, collector.ttftMs, dur, msg, snap, true, true)
-			outcome := forwardOutcome{failOver: true, scope: failureScopeKeyModel, action: "invalid_response", msg: msg}
+			outcome := forwardOutcome{failOver: time.Now().Before(deadline), scope: failureScopeKeyModel, action: action, msg: msg}
 			lg.markFailure(h, outcome.scope, outcome.action)
 			return outcome
 		}
@@ -1439,6 +1454,8 @@ type streamCollector struct {
 	total          int
 	usage          upstream.TokenUsage
 	onProgress     func(ttft, dur int, usage upstream.TokenUsage)
+	onCompaction   func()
+	compaction     bool
 	eventName      string
 	eventData      []string
 	eventBytes     int
@@ -1539,8 +1556,12 @@ func (s *streamCollector) finishEvent() {
 	upstream.MergeUsage(&s.usage, upstream.ParseSSEUsageLine("data: "+data))
 	var event struct {
 		Type string `json:"type"`
+		Item struct {
+			Type string `json:"type"`
+		} `json:"item"`
 	}
-	if json.Unmarshal([]byte(data), &event) == nil && event.Type != "" {
+	validJSON := json.Unmarshal([]byte(data), &event) == nil
+	if validJSON && event.Type != "" {
 		name = event.Type
 	}
 	s.noteEvent(name, data)
@@ -1548,6 +1569,13 @@ func (s *streamCollector) finishEvent() {
 	if s.terminalErr != nil {
 		s.terminal = true
 		return
+	}
+	if validJSON && s.protocolPath == "/v1/responses" && s.ttftMs == 0 && !s.compaction &&
+		(name == "response.compaction.compacting" || (name == "response.output_item.added" && event.Item.Type == "compaction")) {
+		s.compaction = true
+		if s.onCompaction != nil {
+			s.onCompaction()
+		}
 	}
 	if s.protocolPath == "/v1/responses" && upstream.IsResponsesMetadataEvent(name) {
 		return

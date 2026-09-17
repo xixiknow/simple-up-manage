@@ -94,6 +94,10 @@ func (s *Service) businessProbe(ctx context.Context, key *domain.PlatformKey, ap
 	if opts.Prompt != nil {
 		prompt = *opts.Prompt
 	}
+	return s.sendBusinessProbe(ctx, key, apiKey, out, prompt)
+}
+
+func (s *Service) sendBusinessProbe(ctx context.Context, key *domain.PlatformKey, apiKey string, out ProbeOutcome, prompt string) ProbeOutcome {
 	body := map[string]any{"model": out.Model, "stream": out.Stream, "messages": []map[string]string{{"role": "user", "content": prompt}}}
 	if out.Path == "/v1/responses" {
 		delete(body, "messages")
@@ -123,6 +127,7 @@ func (s *Service) businessProbe(ctx context.Context, key *domain.PlatformKey, ap
 	defer res.Body.Close()
 	out.StatusCode = res.StatusCode
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		out.RetryAfter = res.Header.Get("Retry-After")
 		raw, _ := io.ReadAll(io.LimitReader(res.Body, 500))
 		out.Error = string(raw)
 		return out

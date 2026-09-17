@@ -120,6 +120,7 @@ func (s *Service) throttled(ctx context.Context, kind string, keyID uint, ttl ti
 }
 
 type ProbeOutcome struct {
+	RetryAfter string `json:"-"`
 	Protocol   string `json:"protocol,omitempty"`
 	Path       string `json:"path,omitempty"`
 	Stream     bool   `json:"stream"`

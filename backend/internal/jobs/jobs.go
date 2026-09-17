@@ -11,6 +11,11 @@ import (
 )
 
 func Start(cfg *config.Config, opsSvc *ops.Service, afterCatalog func(), stop <-chan struct{}, dash *dashboard.Service) {
+	go runTicker("recovery", 10*time.Second, stop, func(ctx context.Context) {
+		if err := opsSvc.CheckRecoveries(ctx); err != nil {
+			log.Printf("job recovery: %v", err)
+		}
+	})
 	go runTicker("balance", cfg.Jobs.BalanceInterval, stop, func(ctx context.Context) {
 		ok, fail := opsSvc.RefreshAllBalances(ctx)
 		log.Printf("job balance: ok=%d failed=%d", ok, fail)

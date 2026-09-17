@@ -97,6 +97,48 @@ func TestPostgresConcurrentLeasesAndFailures(t *testing.T) {
 	if slots.Load() != 5 {
 		t.Fatalf("PostgreSQL exploration budget %d", slots.Load())
 	}
+	var recoveries atomic.Int32
+	for i := 0; i < 30; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ok, err := s.RecoverySlot(ctx, "pool", true)
+			if err != nil {
+				t.Error(err)
+			}
+			if ok {
+				recoveries.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if recoveries.Load() != 1 {
+		t.Fatalf("PostgreSQL recovery budget %d", recoveries.Load())
+	}
+	var checks atomic.Int32
+	for i := uint(2); i <= 5; i++ {
+		dim := d
+		dim.KeyID = i
+		expiredGate(t, s, dim)
+	}
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			dim := d
+			dim.KeyID = uint(2 + i%4)
+			_, err := s.ClaimCheck(ctx, dim.Scope(), dim)
+			if err == nil {
+				checks.Add(1)
+			} else if err != ErrUnavailable {
+				t.Error(err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if checks.Load() != 2 {
+		t.Fatalf("PostgreSQL check workers %d", checks.Load())
+	}
 	if err := pool.Close(); err != nil {
 		t.Fatal(err)
 	}

@@ -25,8 +25,13 @@ func TestGatewayDoneOnlyArchivesAndDiagnostics(t *testing.T) {
 	created := "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"instructions\":\"" + strings.Repeat("x", 100000) + "\",\"output\":[]}}\n\n"
 	done := "event: response.function_call_arguments.done\ndata: {\"arguments\":\"{}\"}\n\n"
 	response := created + done + testResponseCompleted
-	for _, mode := range []string{"done", "headers_timeout", "output_timeout", "connect_failure", "cancelled"} {
+	for _, mode := range []string{"done", "headers_timeout", "output_timeout", "connect_failure", "cancelled", "compaction_done", "compaction_timeout", "compaction_cancelled"} {
 		t.Run(mode, func(t *testing.T) {
+			compaction := strings.HasPrefix(mode, "compaction_")
+			expectedResponse := response
+			if compaction {
+				expectedResponse = testResponseCompaction + response
+			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				_, _ = io.Copy(io.Discard, r.Body)
 				if mode == "headers_timeout" || mode == "cancelled" {
@@ -34,6 +39,27 @@ func TestGatewayDoneOnlyArchivesAndDiagnostics(t *testing.T) {
 					return
 				}
 				w.Header().Set("Content-Type", "text/event-stream")
+				if compaction {
+					_, _ = io.WriteString(w, testResponseCompaction)
+					w.(http.Flusher).Flush()
+					if mode == "compaction_done" {
+						if sleepCtx(r.Context(), 200*time.Millisecond) != nil {
+							return
+						}
+					} else {
+						ticker := time.NewTicker(25 * time.Millisecond)
+						defer ticker.Stop()
+						for {
+							select {
+							case <-r.Context().Done():
+								return
+							case <-ticker.C:
+								_, _ = io.WriteString(w, testResponseCompaction)
+								w.(http.Flusher).Flush()
+							}
+						}
+					}
+				}
 				if mode == "output_timeout" {
 					_, _ = io.WriteString(w, testResponseMetadata)
 					w.(http.Flusher).Flush()
@@ -66,12 +92,20 @@ func TestGatewayDoneOnlyArchivesAndDiagnostics(t *testing.T) {
 			svc.Archives = archive
 			h := NewGateway(db, enc, svc, fixturePicker{key: &key, up: &up})
 			h.firstTokenWait = 50 * time.Millisecond
+			if compaction {
+				h.firstTokenWait = 100 * time.Millisecond
+			}
 			request := `{"model":"m","stream":true,"instructions":"` + strings.Repeat("q", 100000) + `"}`
 			r := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(request))
 			r.Header.Set("Content-Type", "application/json")
 			if mode == "cancelled" {
 				ctx, cancel := context.WithCancel(r.Context())
 				cancel()
+				r = r.WithContext(ctx)
+			}
+			if mode == "compaction_cancelled" {
+				ctx, cancel := context.WithTimeout(r.Context(), 250*time.Millisecond)
+				defer cancel()
 				r = r.WithContext(ctx)
 			}
 			w := httptest.NewRecorder()
@@ -81,18 +115,28 @@ func TestGatewayDoneOnlyArchivesAndDiagnostics(t *testing.T) {
 			snap.StartedAt = time.Now()
 			lg := h.beginLog(&ck, "openai", "m", r.URL.Path, "fixture", "", snap)
 			h.archiveRequest(lg.id, r, []byte(request))
-			out := h.forwardOnce(c, &ck, &key, &up, "openai", "m", "", "fixture", []byte(request), snap, lg, snap.StartedAt)
+			reqStart := snap.StartedAt
+			if mode == "compaction_timeout" {
+				// Simulate time spent on earlier attempts without waiting five minutes.
+				reqStart = time.Now().Add(-proxyOverallTimeout + 500*time.Millisecond)
+			}
+			callStart := time.Now()
+			out := h.forwardOnce(c, &ck, &key, &up, "openai", "m", "", "fixture", []byte(request), snap, lg, reqStart)
+			elapsed := time.Since(callStart)
 			archive.Wait()
 			var a domain.RequestAttempt
 			if err := db.First(&a, "request_log_id = ?", lg.id).Error; err != nil {
 				t.Fatal(err)
 			}
-			if mode == "done" {
-				if !out.validSuccess || w.Body.String() != response || a.TTFTMs <= 0 || a.TTFTEvent != "response.function_call_arguments.done" || a.TTFTStatus != "measured" {
+			if mode == "done" || mode == "compaction_done" {
+				if !out.validSuccess || w.Body.String() != expectedResponse || a.TTFTMs <= 0 || a.TTFTEvent != "response.function_call_arguments.done" || a.TTFTStatus != "measured" {
 					t.Fatalf("out=%+v attempt=%+v", out, a)
 				}
-				if a.HeadersMs <= 0 || a.ReceivedBytes != int64(len(response)) || !strings.Contains(a.EventSummary, "response.completed") {
+				if a.HeadersMs <= 0 || a.ReceivedBytes != int64(len(expectedResponse)) || !strings.Contains(a.EventSummary, "response.completed") {
 					t.Fatalf("diagnostics=%+v", a)
+				}
+				if compaction && a.TTFTMs < 200 {
+					t.Fatalf("compaction counted as first token: %+v", a)
 				}
 			} else {
 				if out.validSuccess || a.TTFTMs != 0 || a.ErrorMessage == "" {
@@ -104,16 +148,23 @@ func TestGatewayDoneOnlyArchivesAndDiagnostics(t *testing.T) {
 						t.Fatalf("attempt=%+v", a)
 					}
 				case "output_timeout":
-					if a.StatusCode != 200 || a.FailurePhase != "awaiting_first_output" || a.ReceivedBytes == 0 {
+					if a.StatusCode != 200 || a.FailurePhase != "awaiting_first_output" || a.ReceivedBytes == 0 || a.FailureAction != "first_token_timeout" {
 						t.Fatalf("attempt=%+v", a)
+					}
+				case "compaction_timeout":
+					if a.StatusCode != 200 || a.FailurePhase != "compacting" || a.FailureAction != "compaction_timeout" || a.ErrorMessage != "compaction timeout" || elapsed < 400*time.Millisecond || elapsed > 2*time.Second || c.Writer.Written() || out.failOver {
+						t.Fatalf("attempt=%+v elapsed=%v written=%v", a, elapsed, c.Writer.Written())
 					}
 				case "connect_failure":
 					if a.FailurePhase != "connecting" || a.FailureAction != "transport_failure" {
 						t.Fatalf("attempt=%+v", a)
 					}
-				case "cancelled":
+				case "cancelled", "compaction_cancelled":
 					if a.Result != "client_cancelled" || a.FailureAction != "client_cancelled" {
 						t.Fatalf("attempt=%+v", a)
+					}
+					if compaction && (a.FailurePhase != "compacting" || elapsed > time.Second || c.Writer.Written()) {
+						t.Fatalf("compaction ignored cancellation: attempt=%+v elapsed=%v", a, elapsed)
 					}
 				}
 			}
@@ -132,10 +183,10 @@ func TestGatewayDoneOnlyArchivesAndDiagnostics(t *testing.T) {
 				if meta.Direction == "request" && (string(raw) != request || meta.Status != "complete") {
 					t.Fatal("request archive incomplete")
 				}
-				if meta.Direction == "response" && mode == "done" && (string(raw) != response || meta.Status != "complete" || meta.AttemptID != a.ID) {
+				if meta.Direction == "response" && (mode == "done" || mode == "compaction_done") && (string(raw) != expectedResponse || meta.Status != "complete" || meta.AttemptID != a.ID) {
 					t.Fatal("response archive incomplete")
 				}
-				if meta.Direction == "response" && mode == "output_timeout" && meta.Status != "partial" {
+				if meta.Direction == "response" && (mode == "output_timeout" || mode == "compaction_timeout" || mode == "compaction_cancelled") && meta.Status != "partial" {
 					t.Fatal("interrupted response marked complete")
 				}
 			}

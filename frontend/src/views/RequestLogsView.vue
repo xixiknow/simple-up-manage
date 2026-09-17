@@ -16,6 +16,8 @@ const route = useRoute()
 const traceResultLabel: Record<string, string> = { selected: '已选中', retry: '重试', switch: '切换', failed: '失败' }
 function selectionTrace(row: RequestLogDetail) { try { return row.selection_trace ? JSON.parse(row.selection_trace) as Array<{ key_name: string; upstream_name: string; result: string; reason?: string; retry_count?: number; at: string; decision?: SchedulerDecision }> : [] } catch { return [] } }
 const decisionColumns: DataTableColumns<SchedulerCandidate> = [
+  { title: '恢复阶段', key: 'recovery_status', width: 140, render: r => ({cooldown:'冷却中',waiting_check:'等待恢复检查',checking:'恢复检查中',check_failed:'恢复检查失败',waiting_request:'等待业务验证',waiting_session:'保持当前会话',waiting_budget:'等待恢复名额',validating:'业务验证中'}[r.recovery_status ?? ''] ?? '-') },
+  { title: '恢复检查错误', key: 'recovery_check_error', width: 180, ellipsis: { tooltip: true } },
   { title: 'Key', key: 'key_name', width: 190, ellipsis: { tooltip: true } },
   { title: '成功率', key: 'success_rate', width: 85, render: r => r.samples ? `${(r.success_rate * 100).toFixed(1)}%` : '-' },
   { title: '首字 P50', key: 'ttft_p50', width: 90, render: r => r.ttft_p50 ? formatSeconds(r.ttft_p50) : '-' },
@@ -35,7 +37,7 @@ const attemptColumns: DataTableColumns<RequestAttempt> = [
   { title: '错误', key: 'error_message', width: 220, ellipsis: { tooltip: true } },
   { title: '首字事件', key: 'ttft_event', width: 220, render: r => r.ttft_event || ttftLabel[r.ttft_status || ''] || '历史未记录' },
 ]
-const phaseLabel: Record<string, string> = { local: '本地准备', connecting: '连接上游', dns: 'DNS 解析', tls: 'TLS 握手', sending_request: '发送请求', awaiting_headers: '等待响应头', awaiting_first_output: '等待有效输出', streaming: '传输响应' }
+const phaseLabel: Record<string, string> = { local: '本地准备', connecting: '连接上游', dns: 'DNS 解析', tls: 'TLS 握手', sending_request: '发送请求', awaiting_headers: '等待响应头', awaiting_first_output: '等待有效输出', compacting: '上下文压缩', streaming: '传输响应' }
 const ttftLabel: Record<string, string> = { measured: '已测量', pending: '等待首字', no_output: '未检测到有效输出', interrupted: '首字前中断', event_limit: '事件超出检测上限' }
 const bodyStatusLabel: Record<string, string> = { complete: '原文完整', saving: '保存中', partial: '原文不完整', omitted: '二进制已省略', error: '归档失败' }
 const bodyReasonLabel: Record<string, string> = { size_limit: '超过单份保存上限', queue_full: '归档缓冲已满', storage_error: '存储写入失败', storage_or_quota_error: '存储写入失败或容量不足', metadata_write_failed: '归档信息保存失败', stream_interrupted: '响应中断或提前结束', process_interrupted: '进程中断', binary_omitted: '二进制已省略', multipart_files_omitted: '上传文件仅保留元信息' }
@@ -674,7 +676,7 @@ onUnmounted(() => {
                   <span>{{ event.upstream_name || '未知提供商' }}</span><span v-if="event.reason" class="muted"> · {{ event.reason }}</span><span v-if="event.retry_count && event.retry_count > 1" class="muted"> · 重试 {{ event.retry_count }} 次</span>
                   <details v-if="event.decision" class="decision-details">
                     <summary>候选依据 · 原 Key {{ event.decision.previous_key_id || '-' }} · 会话来源 {{ event.decision.session_source || 'none' }}</summary>
-                    <n-data-table size="small" :columns="decisionColumns" :data="event.decision.candidates" :scroll-x="905" />
+                    <n-data-table size="small" :columns="decisionColumns" :data="event.decision.candidates" :scroll-x="1225" />
                   </details>
                 </n-timeline-item>
               </n-timeline>
