@@ -194,6 +194,7 @@ func (s *Service) ProbeKey(ctx context.Context, keyID uint, deep bool, options .
 		outcome.Error = fmt.Sprintf("probe timed out after %d seconds", settings.ProbeTimeoutSec)
 	}
 	outcome.LatencyMs = int(time.Since(start).Milliseconds())
+	outcome.Error = truncate(outcome.Error, 2000)
 
 	health := domain.HealthDown
 	if outcome.Success {
@@ -216,6 +217,7 @@ func (s *Service) ProbeKey(ctx context.Context, keyID uint, deep bool, options .
 		StatusCode:    outcome.StatusCode,
 		LatencyMs:     outcome.LatencyMs,
 		ErrorMessage:  outcome.Error,
+		RetryAfter:    outcome.RetryAfter,
 		Extra:         extra,
 		CreatedAt:     probeAt,
 	}).Error; err != nil {
@@ -385,7 +387,7 @@ func (s *Service) lightProbe(ctx context.Context, key *domain.PlatformKey, apiKe
 		if res.Status >= 200 && res.Status < 300 {
 			return ProbeOutcome{Success: true, StatusCode: res.Status}
 		}
-		return ProbeOutcome{StatusCode: res.Status, Error: truncate(string(res.Body), 500)}
+		return ProbeOutcome{StatusCode: res.Status, Error: truncate(string(res.Body), 500), RetryAfter: res.Headers.Get("Retry-After")}
 	}
 	if res.Status >= 200 && res.Status < 300 {
 		ids := upstream.ParseModelIDs(res.Body)
@@ -394,16 +396,16 @@ func (s *Service) lightProbe(ctx context.Context, key *domain.PlatformKey, apiKe
 	if res.Status == 404 {
 		u, err := s.Client.GetJSONWithHeaders(ctx, key.Upstream.BaseURL, usagePath, apiKey, keyProtocolHeaders(key, apiKey))
 		if err != nil {
-			return ProbeOutcome{StatusCode: res.Status, Error: truncate(string(res.Body), 500)}
+			return ProbeOutcome{StatusCode: res.Status, Error: truncate(string(res.Body), 500), RetryAfter: res.Headers.Get("Retry-After")}
 		}
 		ok := u.Status >= 200 && u.Status < 300
 		errMsg := ""
 		if !ok {
 			errMsg = truncate(string(u.Body), 500)
 		}
-		return ProbeOutcome{Success: ok, StatusCode: u.Status, Error: errMsg}
+		return ProbeOutcome{Success: ok, StatusCode: u.Status, Error: errMsg, RetryAfter: u.Headers.Get("Retry-After")}
 	}
-	return ProbeOutcome{StatusCode: res.Status, Error: truncate(string(res.Body), 500)}
+	return ProbeOutcome{StatusCode: res.Status, Error: truncate(string(res.Body), 500), RetryAfter: res.Headers.Get("Retry-After")}
 }
 
 func (s *Service) probeSettings(ctx context.Context) domain.SchedulerSettings {
@@ -455,6 +457,7 @@ func (s *Service) RefreshUpstreamBalance(ctx context.Context, upstreamID, prefer
 	for i := range keys {
 		k := &keys[i]
 		k.Upstream = &up
+		checkedAfter := time.Now()
 		remaining, unlimited, err := s.fetchKeyBalance(ctx, k, &up)
 		if err != nil {
 			lastErr = err
@@ -462,6 +465,11 @@ func (s *Service) RefreshUpstreamBalance(ctx context.Context, upstreamID, prefer
 		}
 		if err := s.applyUpstreamBalance(ctx, up.ID, remaining, unlimited); err != nil {
 			return err
+		}
+		if unlimited || (remaining != nil && *remaining > 0) {
+			if err := s.releaseBalanceCooldowns(ctx, up.ID, checkedAfter); err != nil {
+				return err
+			}
 		}
 		return s.refreshKeysHealth(ctx, upstreamID)
 	}
@@ -532,6 +540,7 @@ func (s *Service) fetchKeyBalance(ctx context.Context, key *domain.PlatformKey, 
 		return nil, false, err
 	}
 	plog.StatusCode = res.Status
+	plog.RetryAfter = res.Headers.Get("Retry-After")
 	if res.Status < 200 || res.Status >= 300 {
 		plog.ErrorMessage = truncate(string(res.Body), 500)
 		_ = s.DB.WithContext(ctx).Create(&plog).Error
@@ -688,6 +697,7 @@ func (s *Service) refreshNewAPIBilling(ctx context.Context, key *domain.Platform
 		return err
 	}
 	plog.StatusCode = res.Status
+	plog.RetryAfter = res.Headers.Get("Retry-After")
 	if res.Status == 404 || res.Status == 401 || res.Status == 403 {
 		backoff := now.Add(24 * time.Hour)
 		plog.ErrorMessage = fmt.Sprintf("pricing endpoint unavailable (%d)", res.Status)
@@ -760,6 +770,7 @@ func (s *Service) RefreshBilling(ctx context.Context, keyID uint) error {
 		return err
 	}
 	plog.StatusCode = res.Status
+	plog.RetryAfter = res.Headers.Get("Retry-After")
 	if res.Status == 404 {
 		backoff := now.Add(24 * time.Hour)
 		plog.ErrorMessage = "billing endpoint unsupported"
@@ -847,6 +858,21 @@ func (s *Service) probeFilteredAt(ctx context.Context, deep bool, upstreamID *ui
 			out.Skipped++
 			out.SkippedReasons[domain.ProbeSkipDisabled]++
 			continue
+		}
+		if skipRecent > 0 {
+			kind := domain.ProbeLight
+			if deep {
+				kind = domain.ProbeDeep
+			}
+			ready, err := s.diagnosticReady(ctx, k.ID, kind, now)
+			if err != nil {
+				log.Printf("probe backoff key=%d: %v", k.ID, err)
+			}
+			if err != nil || !ready {
+				out.Skipped++
+				out.SkippedReasons["retry_backoff"]++
+				continue
+			}
 		}
 		every := k.ProbeEvery(skipRecent)
 		if skipRecent > 0 && every > 0 {
@@ -1175,8 +1201,5 @@ func (s *Service) RefreshAllBilling(ctx context.Context) (int, int) {
 
 func truncate(s string, n int) string {
 	s = strings.TrimSpace(s)
-	if len(s) <= n {
-		return s
-	}
-	return s[:n]
+	return strings.ReplaceAll(strings.ToValidUTF8(s[:min(len(s), n)], ""), "\x00", "")
 }

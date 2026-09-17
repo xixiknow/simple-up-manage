@@ -2,6 +2,7 @@ package ops
 
 import (
 	"context"
+	"errors"
 	"gorm.io/gorm"
 	"time"
 
@@ -45,15 +46,46 @@ const staleInFlightAge = 6 * time.Minute
 // overall timeout (300s) plus a short buffer.
 func (s *Service) FinalizeStaleInFlightLogs(ctx context.Context) (int64, error) {
 	cut := time.Now().Add(-staleInFlightAge)
-	res := s.DB.WithContext(ctx).Model(&domain.RequestLog{}).
-		Where("in_flight = ? AND created_at < ?", true, cut).
-		Updates(map[string]any{
+	var rows []domain.RequestLog
+	if err := s.DB.WithContext(ctx).Select("id", "created_at", "log_revision", "ttft_ms").Where("in_flight = ? AND created_at < ?", true, cut).Order("id").Limit(100).Find(&rows).Error; err != nil {
+		return 0, err
+	}
+	var count int64
+	for _, row := range rows {
+		updates := map[string]any{
 			"in_flight":     false,
 			"completed_at":  time.Now().UTC(),
 			"success":       false,
 			"error_message": "stale in-flight request",
 			"ttft_status":   gorm.Expr("CASE WHEN ttft_ms > 0 THEN 'measured' ELSE 'interrupted' END"),
 			"duration_ms":   int(staleInFlightAge / time.Millisecond),
-		})
-	return res.RowsAffected, res.Error
+		}
+		if s.DB.Migrator().HasTable(&domain.RequestAttempt{}) {
+			var attempt domain.RequestAttempt
+			err := s.DB.WithContext(ctx).Where("request_log_id = ?", row.ID).Order("completed_at DESC, id DESC").First(&attempt).Error
+			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+				return count, err
+			}
+			if err == nil && attempt.Result == "success" {
+				updates["success"], updates["error_message"] = true, ""
+				updates["failure_scope"], updates["failure_action"] = "", ""
+				updates["completed_at"], updates["status_code"] = attempt.CompletedAt, attempt.StatusCode
+				updates["duration_ms"] = max(0, int(attempt.CompletedAt.Sub(row.CreatedAt).Milliseconds()))
+				updates["platform_key_id"] = attempt.PlatformKeyID
+				updates["input_tokens"], updates["output_tokens"] = attempt.InputTokens, attempt.OutputTokens
+				updates["cache_read_tokens"], updates["cache_creation_tokens"] = attempt.CacheReadTokens, attempt.CacheCreationTokens
+				updates["ttft_status"], updates["ttft_event"] = attempt.TTFTStatus, attempt.TTFTEvent
+				updates["ttft_ms"] = 0
+				if attempt.TTFTMs > 0 {
+					updates["ttft_ms"] = max(1, int(attempt.StartedAt.Sub(row.CreatedAt).Milliseconds())+attempt.TTFTMs)
+				}
+			}
+		}
+		res := s.DB.WithContext(ctx).Model(&domain.RequestLog{}).Where("id = ? AND in_flight = ? AND log_revision = ?", row.ID, true, row.LogRevision).Updates(updates)
+		if res.Error != nil {
+			return count, res.Error
+		}
+		count += res.RowsAffected
+	}
+	return count, nil
 }

@@ -29,11 +29,11 @@ func (d Dimension) Scope() string {
 func KeyScope(id uint) string { return fmt.Sprintf("key:%d", id) }
 
 type Outcome struct {
-	RequestID                              string
-	StartedAt                              time.Time
-	Success, Neutral, AuthFailure, Limited bool
-	RetryAfter                             time.Duration
-	Reason                                 string
+	RequestID                                         string
+	StartedAt                                         time.Time
+	Success, Neutral, AuthFailure, Limited, Immediate bool
+	RetryAfter                                        time.Duration
+	Reason                                            string
 }
 
 type Store struct {
@@ -203,7 +203,7 @@ func (s Store) Observe(ctx context.Context, d Dimension, token string, o Outcome
 					row.FailureTimes = row.FailureTimes[len(row.FailureTimes)-cfg.CircuitFailureThreshold:]
 				}
 				row.Failures = len(row.FailureTimes)
-				if owned || o.Limited || row.Failures >= cfg.CircuitFailureThreshold {
+				if owned || o.Limited || o.Immediate || row.Failures >= cfg.CircuitFailureThreshold {
 					open(row, now, o.Reason, o.RetryAfter, cfg)
 				}
 			}

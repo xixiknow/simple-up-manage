@@ -57,3 +57,19 @@ elapsed delay after the previous probe finishes. Recent requests still suppress
 scheduled probes for their configured interval. Disabled keys are excluded.
 The 60-minute health history retains gray cells for minutes without a completed
 health probe or request.
+
+Repeated scheduled health probe failures back off from one to fifteen minutes;
+explicit credential, quota and capability failures use longer retry delays and
+honor `Retry-After`. Manual health checks remain available. Balance and billing
+jobs keep their existing schedules. A balance query confirming positive or
+unlimited credit clears existing `key_quota_exhausted` routing circuits for that
+provider's keys. Other failure reasons and failures recorded after the query
+started remain in effect; zero, unknown balances and failed queries never clear
+these circuits.
+
+Responses SSE `keepalive` events are accepted as metadata, without counting as
+output or completion. Request log prefixes and error text are sanitized for
+PostgreSQL UTF-8 storage, and final writes finish before the request handler
+returns. Stale in-flight logs recover a successful result only when their latest
+recorded attempt succeeded. Rejected routes include a candidate snapshot and a
+`no_available_route` code with a 30-second `Retry-After` header.

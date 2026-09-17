@@ -137,12 +137,13 @@ func omitRawBody(mt string) bool {
 }
 
 func clipBody(b []byte, max int) (string, bool) {
-	if len(b) <= max {
-		return string(b), false
+	truncated := len(b) > max
+	if truncated {
+		b = b[:max]
 	}
-	b = b[:max]
-	for len(b) > 0 && !utf8.Valid(b) {
-		b = b[:len(b)-1]
-	}
-	return string(b), true
+	// Collectors may already have capped the prefix in the middle of a rune.
+	// PostgreSQL text also rejects NUL, even inside otherwise valid UTF-8.
+	valid := utf8.Valid(b) && !strings.ContainsRune(string(b), 0)
+	text := strings.ReplaceAll(strings.ToValidUTF8(string(b), ""), "\x00", "")
+	return text, truncated || !valid
 }

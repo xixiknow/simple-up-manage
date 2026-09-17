@@ -62,8 +62,9 @@ func JoinEndpoint(baseURL, path string) string {
 }
 
 type Result struct {
-	Status int
-	Body   []byte
+	Headers http.Header
+	Status  int
+	Body    []byte
 }
 
 func (c *Client) GetJSON(ctx context.Context, baseURL, path, apiKey string) (*Result, error) {
@@ -127,7 +128,7 @@ func (c *Client) do(req *http.Request) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Result{Status: resp.StatusCode, Body: b}, nil
+	return &Result{Status: resp.StatusCode, Body: b, Headers: resp.Header.Clone()}, nil
 }
 
 func (c *Client) DoRaw(req *http.Request) (*http.Response, error) {

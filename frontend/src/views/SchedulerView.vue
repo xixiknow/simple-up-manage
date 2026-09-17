@@ -69,6 +69,7 @@ const CIRCUIT_LABEL: Record<string, string> = {
   response_failure: '响应未正常完成',
   cooldown_key_model: '接口限流',
   cooldown_key: '认证失败',
+  credential_disabled: '凭据停用或分组删除',
   key_quota_exhausted: 'Key 额度不足',
   capability_unsupported: '模型或接口不支持',
 }

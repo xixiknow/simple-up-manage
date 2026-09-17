@@ -24,12 +24,19 @@ const testResponseTiming = "data: {\"type\":\"responsesapi.websocket_timing\",\"
 const testResponseDelta = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"
 const testResponseCompleted = "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"object\":\"response\",\"status\":\"completed\",\"output\":[]}}\n\n"
 
+const testKeepalive = "event: keepalive\ndata: {\"type\":\"keepalive\",\"sequence_number\":100}\n\n"
+
 func TestResponsesMetadataStream(t *testing.T) {
 	for _, tc := range []struct {
 		name, body   string
 		ok, hasFirst bool
 	}{
 		{"before output", testRateLimitsFrame + testResponseDelta + testResponseCompleted, true, true},
+		{"keepalive after output", testResponseDelta + testKeepalive + testResponseDelta + testResponseCompleted, true, true},
+		{"keepalive before output", testKeepalive + testResponseDelta + testResponseCompleted, true, true},
+		{"keepalive without terminal", testResponseDelta + testKeepalive, false, true},
+		{"keepalive only", testKeepalive, false, false},
+		{"keepalive error", "event: keepalive\ndata: {\"type\":\"keepalive\",\"error\":{\"message\":\"bad\"}}\n\n", false, false},
 		{"done without delta", testResponseMetadata + "event: response.function_call_arguments.done\ndata: {\"arguments\":\"{}\"}\n\n" + testResponseCompleted, true, true},
 		{"completion output only", "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"object\":\"response\",\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"arguments\":\"{}\"}]}}\n\n", true, true},
 		{"invalid completion with output", "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"arguments\":\"{}\"}]}}\n\n", false, false},
@@ -96,7 +103,7 @@ func TestResponsesMetadataDoNotReleaseOrStopFirstTokenWatch(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = io.WriteString(writer, testRateLimitsFrame+testResponseMetadata+testRateLimitsFrame+testResponseTiming)
+		_, _ = io.WriteString(writer, testKeepalive+testRateLimitsFrame+testResponseMetadata+testRateLimitsFrame+testResponseTiming)
 		<-ctx.Done()
 		_ = writer.CloseWithError(ctx.Err())
 	}()

@@ -72,3 +72,39 @@ func TestFinalizeStaleInFlightLogs(t *testing.T) {
 		t.Fatalf("done %+v", rows[2])
 	}
 }
+
+func TestStaleLogReconcilesOnlyLatestSuccessfulAttempt(t *testing.T) {
+	db := testDB(t)
+	s := &Service{DB: db}
+	started := time.Now().Add(-10 * time.Minute)
+	for _, latestSuccess := range []bool{true, false} {
+		row := domain.RequestLog{InFlight: true, CreatedAt: started, FailureAction: "invalid_response", LogRevision: 3}
+		if err := db.Create(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+		a := domain.RequestAttempt{ID: time.Now().String(), RequestLogID: row.ID, PlatformKeyID: 1, StartedAt: started.Add(time.Second), CompletedAt: started.Add(5 * time.Second), StatusCode: 200, Result: "success", OutputTokens: 42, TTFTMs: 1000, TTFTStatus: "measured", TTFTEvent: "response.output_text.delta"}
+		if err := db.Create(&a).Error; err != nil {
+			t.Fatal(err)
+		}
+		if !latestSuccess {
+			a.ID += "-later"
+			a.CompletedAt = a.CompletedAt.Add(time.Second)
+			a.Result = "upstream_failure"
+			if err := db.Create(&a).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := s.FinalizeStaleInFlightLogs(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.First(&row, row.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if row.InFlight || row.Success != latestSuccess {
+			t.Fatalf("incorrect reconciliation: %+v", row)
+		}
+		if latestSuccess && (row.DurationMs != 5000 || row.TTFTMs != 2000 || row.OutputTokens != 42 || row.FailureAction != "" || row.ErrorMessage != "") {
+			t.Fatalf("incorrect restored metrics: %+v", row)
+		}
+	}
+}

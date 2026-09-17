@@ -9,7 +9,7 @@ import (
 
 func IsResponsesMetadataEvent(name string) bool {
 	switch name {
-	case "codex.rate_limits", "codex.response.metadata", "responsesapi.websocket_timing":
+	case "codex.rate_limits", "codex.response.metadata", "responsesapi.websocket_timing", "keepalive":
 		return true
 	}
 	return false
@@ -86,7 +86,7 @@ func (s *StreamValidator) Event(name, data string) {
 		return
 	}
 	if e, ok := v["error"]; ok && string(e) != "null" {
-		s.Err = errors.New("upstream SSE error")
+		s.Err = errors.New(ParseError([]byte(data)).Summary("upstream SSE error"))
 		return
 	}
 	var typ string

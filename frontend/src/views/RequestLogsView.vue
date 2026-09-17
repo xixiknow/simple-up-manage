@@ -13,7 +13,7 @@ const LIVE_MS = 4000
 const IN_FLIGHT_CAP_MS = 6 * 60 * 1000
 const message = useMessage()
 const route = useRoute()
-const traceResultLabel: Record<string, string> = { selected: '已选中', retry: '重试', switch: '切换', failed: '失败' }
+const traceResultLabel: Record<string, string> = { selected: '已选中', retry: '重试', switch: '切换', failed: '失败', rejected: '无可用路由' }
 function selectionTrace(row: RequestLogDetail) { try { return row.selection_trace ? JSON.parse(row.selection_trace) as Array<{ key_name: string; upstream_name: string; result: string; reason?: string; retry_count?: number; at: string; decision?: SchedulerDecision }> : [] } catch { return [] } }
 const decisionColumns: DataTableColumns<SchedulerCandidate> = [
   { title: '恢复阶段', key: 'recovery_status', width: 140, render: r => ({cooldown:'冷却中',waiting_check:'等待恢复检查',checking:'恢复检查中',check_failed:'恢复检查失败',waiting_request:'等待业务验证',waiting_session:'保持当前会话',waiting_budget:'等待恢复名额',validating:'业务验证中'}[r.recovery_status ?? ''] ?? '-') },

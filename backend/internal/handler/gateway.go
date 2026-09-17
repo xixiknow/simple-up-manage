@@ -243,7 +243,8 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 		if len(drift) > 0 {
 			lastMsg = "route group members' rate multipliers are all outside the group's rate range"
 		}
-		gatewayError(c, http.StatusServiceUnavailable, "api_error", lastMsg)
+		h.recordNoRoute(c, lg, picker.Request{ConsumerID: ck.ID, Protocol: protocol, Model: model, Path: path, Stream: reqSnap.ReqStream, AllowKeys: allow, DriftKeys: drift}, picker.Decision{})
+		gatewayError(c, http.StatusServiceUnavailable, "api_error", lastMsg, "no_available_route")
 		return
 	}
 	if !bound {
@@ -292,12 +293,13 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 		}
 		if err != nil {
 			if errors.Is(err, picker.ErrNoUpstream) {
+				h.recordNoRoute(c, lg, pickReq, decision)
 				if attempt == 0 || lastMsg == domain.ProbeSkipDisabled {
 					lastMsg = "no enabled upstream for protocol"
 					if bound {
 						lastMsg = "no healthy key in bound route groups"
 					}
-					gatewayError(c, http.StatusServiceUnavailable, "api_error", lastMsg)
+					gatewayError(c, http.StatusServiceUnavailable, "api_error", lastMsg, "no_available_route")
 					return
 				}
 				gatewayError(c, http.StatusBadGateway, "api_error", lastMsg)
@@ -341,7 +343,7 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 				neutral := outcome.capacityBusy || outcome.neutral || (!outcome.validSuccess && c.Request.Context().Err() != nil) || (!outcome.validSuccess && outcome.action == "")
 				err := health.Observe(ctx, dim, token, routinghealth.Outcome{
 					RequestID: businessRequestID, StartedAt: startedAt, Success: outcome.validSuccess, Neutral: neutral,
-					AuthFailure: outcome.scope == failureScopeKey, Limited: outcome.status == 429, RetryAfter: outcome.retryAfter, Reason: outcome.action,
+					AuthFailure: outcome.scope == failureScopeKey, Limited: outcome.status == 429, Immediate: outcome.action == "capability_unsupported", RetryAfter: outcome.retryAfter, Reason: outcome.action,
 				})
 				if err != nil {
 					slog.Error("persist routing outcome", "key_id", pk.ID, "error", err)
@@ -637,10 +639,10 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 		peek, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorInspectBytes+1))
 		defer resp.Body.Close()
 		failure := classifyHTTPFailure(resp.StatusCode, peek)
-		failure.retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
+		failure.retryAfter = max(failure.retryAfter, parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()))
 		snap := reqSnap.withResponse(resp.Header, resp.Header.Get("Content-Type"), peek, len(peek))
-		h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, int(time.Since(started).Milliseconds()), http.StatusText(resp.StatusCode), snap, true, true)
-		failure.msg = http.StatusText(resp.StatusCode)
+		failure.msg = upstream.ParseError(peek).Summary(http.StatusText(resp.StatusCode))
+		h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, int(time.Since(started).Milliseconds()), failure.msg, snap, true, true)
 		lg.markFailure(h, failure.scope, failure.action)
 		if !failure.failOver {
 			lg.traceEvent(h, pk, up, "failed", failure.action)
@@ -841,6 +843,9 @@ var quotaErrorCodes = []string{
 }
 
 func isQuotaExhaustedBody(body []byte) bool {
+	if upstream.ParseError(body).Kind() == "quota" {
+		return true
+	}
 	var top struct {
 		Error struct {
 			Code    any    `json:"code"`
@@ -862,18 +867,19 @@ func isQuotaExhaustedBody(body []byte) bool {
 
 func classifyHTTPFailure(code int, body []byte) forwardOutcome {
 	switch {
+	case (code == 401 || code == 403) && upstream.ParseError(body).Kind() == "credential_disabled":
+		return forwardOutcome{failOver: true, status: code, scope: failureScopeKey, action: "credential_disabled", retryAfter: time.Hour}
 	case code == http.StatusPaymentRequired || code == http.StatusForbidden && isQuotaExhaustedBody(body):
-		return forwardOutcome{failOver: true, status: code, scope: failureScopeKey, action: "key_quota_exhausted"}
+		return forwardOutcome{failOver: true, status: code, scope: failureScopeKey, action: "key_quota_exhausted", retryAfter: 15 * time.Minute}
 	case code == http.StatusUnauthorized || code == http.StatusForbidden && authenticationFailure(body):
 		return forwardOutcome{failOver: true, status: code, scope: failureScopeKey, action: "cooldown_key"}
 	case code == http.StatusTooManyRequests:
 		return forwardOutcome{failOver: true, status: code, scope: failureScopeKeyModel, action: "cooldown_key_model"}
+	case (code == 400 || code == 404 || code == 503) && unsupportedCapability(body):
+		return forwardOutcome{failOver: true, status: code, scope: failureScopeKeyModel, action: "capability_unsupported", retryAfter: 15 * time.Minute}
 	case code == http.StatusForbidden || code == http.StatusNotFound || code == 529 || code >= 500:
 		return forwardOutcome{failOver: true, retrySame: code >= 500, status: code, scope: failureScopeKeyModel, action: "request_scope_failure"}
 	default:
-		if code == 400 && unsupportedCapability(body) {
-			return forwardOutcome{failOver: true, status: code, scope: failureScopeKeyModel, action: "capability_unsupported"}
-		}
 		return forwardOutcome{status: code, neutral: code >= 400 && code < 500, action: "request_rejected"}
 	}
 }
@@ -1172,14 +1178,12 @@ func (h *Gateway) finishLog(lg *liveLog, ck *domain.ConsumerKey, pk *domain.Plat
 		}
 		interrupted := !success && (strings.Contains(strings.ToLower(errMsg), "cancel") || strings.Contains(strings.ToLower(errMsg), "interrupt"))
 		h.emitDashEnd(lg, pk, up, protocol, model, success, usage, ttft, interrupted)
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := h.DB.WithContext(ctx).Create(&row).Error; err != nil {
-				slog.Error("finish request log", "request_id", reqID, "error", err)
-			}
-			h.touchConsumer(ctx, ck)
-		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := h.DB.WithContext(ctx).Create(&row).Error; err != nil {
+			slog.Error("finish request log", "request_id", reqID, "error", err)
+		}
+		h.touchConsumer(ctx, ck)
 		return
 	}
 	interrupted := !success && (strings.Contains(strings.ToLower(errMsg), "cancel") || strings.Contains(strings.ToLower(errMsg), "interrupt"))
@@ -1272,29 +1276,45 @@ func (h *Gateway) writeLog(lg *liveLog, updates map[string]any, final bool) {
 	revision := lg.revision
 	snapshot["log_revision"] = revision
 	lg.mu.Unlock()
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+	persist := func() {
 		var err error
 		for attempt := 0; attempt < 3; attempt++ {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			err = h.persistLog(ctx, lg.id, revision, snapshot)
-			if err == nil || !final || ctx.Err() != nil {
-				break
-			}
-			if sleepCtx(ctx, 50*time.Millisecond) != nil {
+			cancel()
+			if err == nil || !final {
 				break
 			}
 		}
 		if err != nil {
 			slog.Error("update request log", "log_id", lg.id, "final", final, "error", err)
 		}
-	}()
+	}
+	// Finish before the handler returns so graceful shutdown drains final writes.
+	if final {
+		persist()
+	} else {
+		go persist()
+	}
 }
 
 func (h *Gateway) persistLog(ctx context.Context, id uint, revision uint64, updates map[string]any) error {
-	return h.DB.WithContext(ctx).Model(&domain.RequestLog{}).
+	res := h.DB.WithContext(ctx).Model(&domain.RequestLog{}).
 		Where("id = ? AND in_flight = ? AND log_revision < ?", id, true, revision).
-		Updates(updates).Error
+		Updates(updates)
+	if res.Error != nil {
+		return res.Error
+	}
+	if terminal, ok := updates["in_flight"].(bool); ok && !terminal && res.RowsAffected == 0 {
+		var row domain.RequestLog
+		if err := h.DB.WithContext(ctx).Select("id", "in_flight").First(&row, id).Error; err != nil {
+			return err
+		}
+		if row.InFlight {
+			return errors.New("request log final update did not take effect")
+		}
+	}
+	return nil
 }
 
 func (h *Gateway) touchConsumer(ctx context.Context, ck *domain.ConsumerKey) {
@@ -1592,7 +1612,7 @@ func (s *streamCollector) finishEvent() {
 		s.terminal = true
 	case "error", "response.failed", "response.incomplete":
 		s.terminal = true
-		s.terminalErr = errors.New("upstream stream ended: " + name)
+		s.terminalErr = errors.New(upstream.ParseError([]byte(data)).Summary("upstream stream ended: " + name))
 	}
 }
 
@@ -1761,7 +1781,11 @@ func proxyTimeoutMessage(err error, firstToken bool) string {
 	return "upstream request failed"
 }
 
-func gatewayError(c *gin.Context, status int, typ, message string) {
+func gatewayError(c *gin.Context, status int, typ, message string, codes ...string) {
+	code := typ
+	if len(codes) > 0 {
+		code = codes[0]
+	}
 	path := c.Request.URL.Path
 	if strings.HasPrefix(path, "/v1/messages") {
 		c.JSON(status, gin.H{
@@ -1769,6 +1793,7 @@ func gatewayError(c *gin.Context, status int, typ, message string) {
 			"error": gin.H{
 				"type":    typ,
 				"message": message,
+				"code":    code,
 			},
 		})
 		return
@@ -1777,16 +1802,13 @@ func gatewayError(c *gin.Context, status int, typ, message string) {
 		"error": gin.H{
 			"message": message,
 			"type":    typ,
-			"code":    typ,
+			"code":    code,
 		},
 	})
 }
 
 func truncateErr(s string) string {
-	if len(s) > 1000 {
-		return s[:1000]
-	}
-	return s
+	return strings.ReplaceAll(strings.ToValidUTF8(s[:min(len(s), 1000)], ""), "\x00", "")
 }
 
 type rpmLimiter struct {

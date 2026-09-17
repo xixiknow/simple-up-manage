@@ -67,7 +67,7 @@ func (h *Gateway) completeAttempt(ctx context.Context, pk *domain.PlatformKey, u
 }
 
 func (lg *liveLog) recordDecision(h *Gateway, d picker.Decision) {
-	if lg == nil || lg.id == 0 || d.SelectedKeyID == 0 {
+	if lg == nil || lg.id == 0 || (d.SelectedKeyID == 0 && d.Reason != "no_available_route") {
 		return
 	}
 	// Credentials/previews and balances are not part of a routing decision.

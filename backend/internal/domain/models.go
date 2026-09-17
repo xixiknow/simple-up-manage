@@ -341,6 +341,7 @@ type KeyModelCooldown struct {
 }
 
 type ProbeLog struct {
+	RetryAfter    string    `gorm:"size:128" json:"-"`
 	Protocol      string    `gorm:"size:16" json:"protocol"`
 	Model         string    `gorm:"size:128" json:"model"`
 	Path          string    `gorm:"size:256" json:"path"`

@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 )
@@ -49,6 +50,16 @@ func TestCaptureBodyTruncates(t *testing.T) {
 	}
 	if len(got) > maxLogBodyBytes {
 		t.Fatalf("stored %d bytes, max %d", len(got), maxLogBodyBytes)
+	}
+}
+
+func TestCapturePreclippedUTF8AndNUL(t *testing.T) {
+	full := []byte(strings.Repeat("a", maxLogBodyBytes-1) + "\u4e2d" + "tail")
+	for _, prefix := range [][]byte{full, full[:maxLogBodyBytes], full[:maxLogBodyBytes-1], []byte("ok\x00text"), []byte("ok\xfftext")} {
+		got, truncated := captureBody("text/event-stream", prefix, len(full))
+		if !utf8.ValidString(got) || strings.ContainsRune(got, 0) || len(got) > maxLogBodyBytes || !truncated {
+			t.Fatalf("invalid stored text: len=%d truncated=%v", len(got), truncated)
+		}
 	}
 }
 
