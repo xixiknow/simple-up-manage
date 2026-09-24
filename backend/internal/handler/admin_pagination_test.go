@@ -26,7 +26,18 @@ func logTestDB(t *testing.T) *gorm.DB {
 		t.Fatal(err)
 	}
 	sqlDB, _ := db.DB()
-	t.Cleanup(func() { _ = sqlDB.Close() })
+	t.Cleanup(func() {
+		_ = sqlDB.Close()
+		// Close prevents new queries, but connections used by asynchronous log
+		// writes can outlive it. Drain them before TempDir removes SQLite files.
+		deadline := time.Now().Add(5 * time.Second)
+		for sqlDB.Stats().OpenConnections > 0 {
+			if time.Now().After(deadline) {
+				t.Fatal("test database connections did not close")
+			}
+			time.Sleep(time.Millisecond)
+		}
+	})
 	return db
 }
 
