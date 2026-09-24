@@ -60,7 +60,7 @@ func main() {
 	dash := dashboard.New(db)
 	dash.Start(context.Background())
 	stop := make(chan struct{})
-	jobs.Start(cfg, opsSvc, pick.Reload, stop, dash)
+	recoveryDone := jobs.Start(cfg, opsSvc, pick.Reload, stop, dash)
 
 	engine := router.New(cfg, db, enc, opsSvc, pick, dash)
 	requests := &drainingHandler{next: engine}
@@ -86,6 +86,7 @@ func main() {
 		_ = server.Close()
 	}
 	requests.Wait()
+	<-recoveryDone
 	dash.Stop()
 	done := make(chan struct{})
 	go func() { archives.Wait(); close(done) }()

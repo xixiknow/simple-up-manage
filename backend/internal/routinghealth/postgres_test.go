@@ -47,7 +47,7 @@ func TestPostgresConcurrentLeasesAndFailures(t *testing.T) {
 	if err := isolated.AutoMigrate(&domain.RoutingCircuit{}, &domain.RoutingObservation{}, &domain.RoutingBudget{}); err != nil {
 		t.Fatal(err)
 	}
-	s := Store{DB: isolated}
+	s := Store{DB: isolated, CheckConcurrency: 8}
 	d := Dimension{KeyID: 1, Protocol: "openai", Model: "m", Path: "/v1/responses", Stream: true}
 	ctx := context.Background()
 	var wg sync.WaitGroup
@@ -70,7 +70,7 @@ func TestPostgresConcurrentLeasesAndFailures(t *testing.T) {
 			_, err := (Store{DB: isolated.Session(&gorm.Session{NewDB: true})}).Admit(ctx, d, true)
 			if err == nil {
 				admitted.Add(1)
-			} else if err != ErrUnavailable {
+			} else if err != ErrUnavailable && err != ErrCheckCapacity {
 				t.Error(err)
 			}
 		}()
@@ -116,7 +116,7 @@ func TestPostgresConcurrentLeasesAndFailures(t *testing.T) {
 		t.Fatalf("PostgreSQL recovery budget %d", recoveries.Load())
 	}
 	var checks atomic.Int32
-	for i := uint(2); i <= 5; i++ {
+	for i := uint(2); i <= 13; i++ {
 		dim := d
 		dim.KeyID = i
 		expiredGate(t, s, dim)
@@ -126,17 +126,17 @@ func TestPostgresConcurrentLeasesAndFailures(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			dim := d
-			dim.KeyID = uint(2 + i%4)
+			dim.KeyID = uint(2 + i%12)
 			_, err := s.ClaimCheck(ctx, dim.Scope(), dim)
 			if err == nil {
 				checks.Add(1)
-			} else if err != ErrUnavailable {
+			} else if err != ErrUnavailable && err != ErrCheckCapacity {
 				t.Error(err)
 			}
 		}(i)
 	}
 	wg.Wait()
-	if checks.Load() != 2 {
+	if checks.Load() != 8 {
 		t.Fatalf("PostgreSQL check workers %d", checks.Load())
 	}
 	if err := pool.Close(); err != nil {

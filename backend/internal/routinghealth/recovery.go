@@ -2,6 +2,7 @@ package routinghealth
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,6 +13,20 @@ import (
 
 const RecoveryInterval = time.Minute
 const CheckLeaseDuration = 45 * time.Second
+const DefaultCheckConcurrency = 8
+
+var ErrCheckCapacity = errors.New("recovery check capacity exhausted")
+
+func SupportsCheck(path string) bool {
+	return path == "/v1/responses" || path == "/v1/chat/completions" || path == "/v1/messages"
+}
+
+func (s Store) checkLimit() int {
+	if s.CheckConcurrency >= 1 && s.CheckConcurrency <= 64 {
+		return s.CheckConcurrency
+	}
+	return DefaultCheckConcurrency
+}
 
 // RecoverySlot is independent of exploration and is consumed only when a
 // request can validate a candidate. Previews never create or update budgets.
@@ -45,9 +60,9 @@ func (s Store) RecoverySlot(ctx context.Context, scope string, mutate bool) (boo
 	return allowed, err
 }
 
-// ClaimCheck serializes a global two-worker allowance in SQL, as well as the
+// ClaimCheck serializes the configured global allowance in SQL, as well as the
 // circuit lease. Business validation and synthetic checks cannot overlap.
-func (s Store) ClaimCheck(ctx context.Context, scope string, d Dimension) (string, error) {
+func (s Store) ClaimCheck(ctx context.Context, scope string, d Dimension, expectedGeneration ...uint64) (string, error) {
 	token := uuid.NewString()
 	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		budget := domain.RoutingBudget{Scope: "recovery-check-workers"}
@@ -62,8 +77,8 @@ func (s Store) ClaimCheck(ctx context.Context, scope string, d Dimension) (strin
 		if err := tx.Model(&domain.RoutingCircuit{}).Where("check_until > ?", now).Count(&active).Error; err != nil {
 			return err
 		}
-		if active >= 2 {
-			return ErrUnavailable
+		if active >= int64(s.checkLimit()) {
+			return ErrCheckCapacity
 		}
 		// Use the same key-first lock order as business admission. A key-wide
 		// check must also exclude every model's business validation lease.
@@ -92,8 +107,11 @@ func (s Store) ClaimCheck(ctx context.Context, scope string, d Dimension) (strin
 		if err := tx.First(&r, "scope = ?", scope).Error; err != nil {
 			return err
 		}
+		if len(expectedGeneration) > 0 && r.Generation != expectedGeneration[0] {
+			return ErrUnavailable
+		}
 		if !r.Open || r.Until.After(now) || r.LeaseUntil.After(now) ||
-			(r.CheckUntil != nil && r.CheckUntil.After(now)) || (r.NextCheckAt != nil && r.NextCheckAt.After(now)) {
+			(r.CheckUntil != nil && r.CheckUntil.After(now)) || (!r.CheckOK && r.NextCheckAt != nil && r.NextCheckAt.After(now)) {
 			return ErrUnavailable
 		}
 		until := now.Add(CheckLeaseDuration)
@@ -105,8 +123,8 @@ func (s Store) ClaimCheck(ctx context.Context, scope string, d Dimension) (strin
 	return token, err
 }
 
-// FinishCheck records diagnostic readiness only; it never clears business
-// failures, changes rankings, or closes a circuit. Stale owners are ignored.
+// FinishCheck closes the verified gate on success, without writing business
+// samples or changing rankings. Only the current unexpired lease may settle it.
 func (s Store) FinishCheck(ctx context.Context, scope, token string, success, neutral bool, message string, retryAfter time.Duration) error {
 	return s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var r domain.RoutingCircuit
@@ -124,11 +142,12 @@ func (s Store) FinishCheck(ctx context.Context, scope, token string, success, ne
 			return nil
 		}
 		r.CheckLease, r.CheckUntil = "", nil
+		success = success && !neutral
 		r.CheckAt, r.CheckOK, r.CheckError = &now, success, message
 		delay := time.Minute
 		if success {
-			r.CheckBackoff = 0
-			delay = 5 * time.Minute
+			closeCircuit(&r, now)
+			return tx.Save(&r).Error
 		} else if !neutral {
 			if r.CheckBackoff == 0 {
 				r.CheckBackoff = 30

@@ -32,7 +32,8 @@ func (s *Service) releaseBalanceCooldowns(ctx context.Context, upstreamID uint, 
 			for _, gate := range gates {
 				now := time.Now()
 				if err := tx.Model(&domain.RoutingCircuit{}).Where("scope = ? AND open = ? AND reason = ? AND opened_at <= ?", gate.Scope, true, "key_quota_exhausted", checkedAfter).Updates(map[string]any{
-					"open": false, "opened_at": now, "until": time.Time{}, "reason": "", "failures": 0, "failure_times": nil, "backoff_sec": 0,
+					"generation": gorm.Expr("generation + 1"),
+					"open":       false, "opened_at": now, "until": time.Time{}, "reason": "", "failures": 0, "failure_times": nil, "backoff_sec": 0,
 					"lease": "", "lease_until": time.Time{}, "check_lease": "", "check_until": nil, "check_ok": false, "check_error": "", "check_at": nil, "next_check_at": nil, "check_backoff": 0,
 				}).Error; err != nil {
 					return err

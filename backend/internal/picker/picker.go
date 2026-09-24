@@ -37,6 +37,8 @@ type Request struct {
 }
 
 type Candidate struct {
+	// Includes other dimensions whose lease blocks key-wide recovery admission.
+	RecoveryScopes      []string            `json:"-"`
 	RecoveryStatus      string              `json:"recovery_status,omitempty"`
 	RecoveryCheckAt     *time.Time          `json:"recovery_check_at,omitempty"`
 	RecoveryNextCheckAt *time.Time          `json:"recovery_next_check_at,omitempty"`
@@ -89,15 +91,18 @@ type Candidate struct {
 // RuntimeController is optionally used by the gateway to atomically reserve
 // per-process provider/key capacity and record scoped failures.
 type Decision struct {
-	Reason        string      `json:"reason"`
-	PreviousKeyID uint        `json:"previous_key_id"`
-	SelectedKeyID uint        `json:"selected_key_id"`
-	Scope         string      `json:"scope"`
-	SessionSource string      `json:"session_source"`
-	SessionHash   string      `json:"session_hash,omitempty"`
-	Exploration   bool        `json:"exploration"`
-	Degraded      bool        `json:"degraded"`
-	Candidates    []Candidate `json:"candidates"`
+	// Reuse this budget on a local re-selection; waiting is not new traffic.
+	BudgetReady     bool        `json:"-"`
+	ExplorationSlot bool        `json:"-"`
+	Reason          string      `json:"reason"`
+	PreviousKeyID   uint        `json:"previous_key_id"`
+	SelectedKeyID   uint        `json:"selected_key_id"`
+	Scope           string      `json:"scope"`
+	SessionSource   string      `json:"session_source"`
+	SessionHash     string      `json:"session_hash,omitempty"`
+	Exploration     bool        `json:"exploration"`
+	Degraded        bool        `json:"degraded"`
+	Candidates      []Candidate `json:"candidates"`
 }
 
 type DecisionPicker interface {

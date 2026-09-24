@@ -13,7 +13,8 @@ const LIVE_MS = 4000
 const IN_FLIGHT_CAP_MS = 6 * 60 * 1000
 const message = useMessage()
 const route = useRoute()
-const traceResultLabel: Record<string, string> = { selected: '已选中', retry: '重试', switch: '切换', failed: '失败', rejected: '无可用路由' }
+const traceResultLabel: Record<string, string> = { selected: '已选中', retry: '重试', switch: '切换', failed: '失败', rejected: '无可用路由', waiting: '等待恢复', wait_finished: '恢复等待结束', recovered: '已恢复路由' }
+const recoveryReasonLabel: Record<string, string> = { recovery_in_progress: '等待恢复结果', recovery_wait_timeout: '恢复等待超时', recovery_state_changed: '恢复状态已更新', first_valid_output: '首个有效输出已解除熔断', client_cancelled: '客户端已取消' }
 function selectionTrace(row: RequestLogDetail) { try { return row.selection_trace ? JSON.parse(row.selection_trace) as Array<{ key_name: string; upstream_name: string; result: string; reason?: string; retry_count?: number; at: string; decision?: SchedulerDecision }> : [] } catch { return [] } }
 const decisionColumns: DataTableColumns<SchedulerCandidate> = [
   { title: '恢复阶段', key: 'recovery_status', width: 140, render: r => ({cooldown:'冷却中',waiting_check:'等待恢复检查',checking:'恢复检查中',check_failed:'恢复检查失败',waiting_request:'等待业务验证',waiting_session:'保持当前会话',waiting_budget:'等待恢复名额',validating:'业务验证中'}[r.recovery_status ?? ''] ?? '-') },
@@ -672,8 +673,8 @@ onUnmounted(() => {
             <section v-if="selectionTrace(detail).length" class="selection-trace">
               <h3>Key 选择过程</h3>
               <n-timeline>
-                <n-timeline-item v-for="(event, index) in selectionTrace(detail)" :key="`${event.at}-${index}`" :type="event.result === 'selected' ? 'success' : event.result === 'retry' ? 'warning' : 'error'" :title="`${traceResultLabel[event.result] || event.result} · ${event.key_name || '未知 Key'}`" :time="formatTime(event.at)">
-                  <span>{{ event.upstream_name || '未知提供商' }}</span><span v-if="event.reason" class="muted"> · {{ event.reason }}</span><span v-if="event.retry_count && event.retry_count > 1" class="muted"> · 重试 {{ event.retry_count }} 次</span>
+                <n-timeline-item v-for="(event, index) in selectionTrace(detail)" :key="`${event.at}-${index}`" :type="['selected', 'recovered'].includes(event.result) ? 'success' : event.result === 'retry' ? 'warning' : ['waiting', 'wait_finished'].includes(event.result) ? 'info' : 'error'" :title="`${traceResultLabel[event.result] || event.result}${event.key_name ? ` · ${event.key_name}` : ''}`" :time="formatTime(event.at)">
+                  <span v-if="event.upstream_name">{{ event.upstream_name }}</span><span v-if="event.reason" class="muted"> · {{ recoveryReasonLabel[event.reason] || event.reason }}</span><span v-if="event.retry_count && event.retry_count > 1" class="muted"> · 重试 {{ event.retry_count }} 次</span>
                   <details v-if="event.decision" class="decision-details">
                     <summary>候选依据 · 原 Key {{ event.decision.previous_key_id || '-' }} · 会话来源 {{ event.decision.session_source || 'none' }}</summary>
                     <n-data-table size="small" :columns="decisionColumns" :data="event.decision.candidates" :scroll-x="1225" />

@@ -18,7 +18,7 @@ func expiredGate(t *testing.T, s Store, d Dimension) {
 	}
 }
 
-func TestSyntheticCheckDoesNotCloseGate(t *testing.T) {
+func TestSyntheticCheckClosesOnlyVerifiedGate(t *testing.T) {
 	s, d := fixture(t)
 	ctx := context.Background()
 	expiredGate(t, s, d)
@@ -33,10 +33,10 @@ func TestSyntheticCheckDoesNotCloseGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := row(t, s, d.Scope())
-	if !r.Open || !r.CheckOK || r.CheckLease != "" {
+	if r.Open || !r.CheckOK || r.CheckLease != "" || r.Generation != 1 {
 		t.Fatalf("check changed business health: %+v", r)
 	}
-	lease, err := s.Admit(ctx, d, true)
+	lease, err := s.Admit(ctx, d, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,6 +120,7 @@ func TestAdmitRespectsFailedCheckBackoff(t *testing.T) {
 
 func TestCheckGlobalLimitAndRetryAfter(t *testing.T) {
 	s, d := fixture(t)
+	s.CheckConcurrency = 2
 	ctx := context.Background()
 	tokens := []string{}
 	for i := uint(1); i <= 3; i++ {
@@ -129,7 +130,7 @@ func TestCheckGlobalLimitAndRetryAfter(t *testing.T) {
 		if i <= 2 && err != nil {
 			t.Fatal(err)
 		}
-		if i == 3 && err != ErrUnavailable {
+		if i == 3 && err != ErrCheckCapacity {
 			t.Fatalf("global cap: %v", err)
 		}
 		tokens = append(tokens, token)

@@ -2,7 +2,7 @@
 
 Diagnostic probes no longer write key health, errors, cooldowns, model lists, or
 business attempt statistics. Explicit model discovery and balance synchronization
-retain their existing roles. Probe success never closes a business circuit.
+retain their existing roles. Ordinary probe success never closes a business circuit; dedicated recovery checks can.
 The channel list's historical score/pulse remains diagnostic and can contain
 probes; scheduler scores use traffic only.
 
@@ -34,47 +34,72 @@ policy; the admin form edits the new fields.
 
 ## Recovery and diagnostics
 
-An expired gate requires one real validation request. All processes reserve its
-SQL lease atomically before contacting upstream. The 330-second lease exceeds the
-gateway's 300-second request deadline. Neutral completions release the lease;
-expired leases can be reclaimed, and old owners cannot close another owner's gate.
-State-store errors fail closed. Gate outcomes are committed synchronously, once
-per logical request/key/dimension, independently of asynchronous request-log writes.
+Expired circuits with an enabled probe and a supported, known dimension recover
+through dedicated synthetic checks. A successful, fully validated 2xx response
+closes only the claimed circuit, clears its failures/backoff and leases, and
+preserves the last check result. Ordinary diagnostic probes still cannot close
+business circuits. Synthetic checks never write business samples, costs or rankings.
 
-Recovery is independent of the exploration ratio. Each routing pool can select
-one real recovery validation per 60 seconds, using an atomic SQL time budget.
-Previews never consume it. Only an eligible session binding suppresses validation;
-a failed/excluded binding cannot block recovery. Candidates rotate by least recent
-business recovery admission, then cooldown deadline and key ID. When no normal
-candidate remains, a cooled gate can validate without a budget or synthetic check,
-but never bypasses an active lease or a failed check's retry deadline. Successful
-recovery does not replace the existing preferred/session binding.
+The recovery scheduler runs inside the backend process. It scans immediately on
+startup and every second, and replenishes slots immediately on completion. The
+worker pool defaults to **eight globally concurrent checks**, coordinated by SQL
+leases across instances. `jobs.recovery_concurrency` / `RECOVERY_CONCURRENCY`
+configures 1–64 workers (environment wins; restart required). All replicas must
+use the same limit. There is no additional per-provider limit. The local pending
+queue is bounded to eight times the concurrency; due gates are read in pages and
+ordered by their next permitted check time. Queued work acquires a lease only when
+it can start, so slow probes do not hold up other workers.
 
-A recovery job wakes every 10 seconds and processes up to two checks per batch.
-SQL leases enforce at most two simultaneous checks across instances. Each check
-has a 30-second timeout and a 45-second lease; a slow batch delays the next scan.
-Checks use the exact failed protocol/model/endpoint/stream dimension with a
-synthetic `Reply OK.` prompt and a 256-token limit. They share the existing strict
-response validator, never replay customer content, never write business samples,
-and never close circuits. Success permits real-request validation and is checked
-again after five minutes if no suitable request arrives. Failure retries after
-30/60/120/300 seconds; a positive Retry-After can extend this up to 24 hours.
-Operator disablement and known exhausted provider balances suppress checks.
-Disabling probes still permits budgeted real validation after applicable cooldowns.
+Each check has a 30-second HTTP/context timeout and a 45-second lease. Checks use
+the failed key/protocol/model/endpoint/stream dimension with a synthetic `Reply OK.`
+prompt and a 256-token limit, sharing the strict response validator. Success
+requires the complete valid JSON or successful SSE terminal, never just headers,
+a heartbeat or an in-progress event. Failure retries after 30/60/120/300 seconds;
+a positive Retry-After can extend this up to 24 hours. Disablement, disabled probes
+and known exhausted provider balances suppress checks. Shutdown cancels and drains
+workers, settling cancellations neutrally. Existing `check_ok` records are rechecked
+after their cooldown without waiting for the old five-minute readiness expiry;
+they are not automatically trusted to close a circuit.
 
-New circuits persist their request dimension. Historical hash-only circuits are
-resolved from retained attempt dimensions; missing history is never guessed and
-still permits real validation. Synthetic and real validation leases exclude one
-another, including key-wide gates, and stale owners cannot overwrite new outcomes.
-Normal probes remain diagnostic and do not grant recovery readiness.
+Disabled probes, unsupported endpoints and unresolved historical dimensions retain
+real-request validation as a fallback. Its SQL lease remains 330 seconds. For text
+streams, the first validated content, reasoning or tool-input output closes the
+owned gate and admits subsequent traffic immediately. Headers, metadata and
+compaction never release it; non-streaming/other responses require full success.
+The original request stays in flight until it finishes, and failures after output
+still count once under ordinary circuit rules; cancellation stays neutral. Early
+release never writes a success sample, consumes final-observation deduplication or
+updates billing/session affinity.
 
-Candidate explanations and request traces include recovery stage, last check,
-next check, check error and last business validation time. Stages distinguish
-cooldown, queued/checking, failed check, waiting for a suitable request, preserving
-an active session, waiting for the pool budget, and business validation in progress.
-The schema additions are additive; rolling back keeps the columns and restores
-the former exploration-based recovery policy. Recovery does not rewrite historical
-attempts or reset the existing ranking window.
+Circuits have an internal monotonically increasing generation. Business admission
+captures both key and request generations. Opening/closing a gate and confirmed
+balance recovery advance it; ordinary successful traffic does not. Early release
+updates the owning admission's generation so its later failure remains observable.
+Old observations and stale/expired check or business leases cannot close or reopen
+a newer gate. SQL state errors fail closed. Key-before-request locking remains
+consistent, and synthetic checks and fallback validation leases exclude each other.
+
+Fallback recovery keeps the independent one-per-pool-per-minute budget and protects
+eligible session bindings; when no normal candidate remains it can validate without
+a budget, but never bypasses active leases or retry deadlines. Known supported
+probe-enabled gates are restored by the worker, not by a second business check.
+
+When there is no eligible route but an otherwise valid candidate is undergoing a
+check or fallback validation, the gateway waits at most **five seconds per request**,
+within the existing 300-second total deadline. It reads only the relevant circuit
+states every 250ms, coalescing same-scope reads within a process, and reselects when
+state changes. Alternate eligible keys are used immediately. Disabled keys, balance
+rejection, route mismatch and cooldown/backoff alone do not cause waiting. Waiting
+consumes no extra HTTP attempts, RPM reservations or exploration slots; cancellation
+ends it immediately. A timeout retains the existing error code/status conventions,
+with explicit recovery-in-progress text when no upstream attempt has failed.
+Selection traces record wait start/end and first-output release, with Chinese UI
+labels. Existing upstream failures remain the reported error on exhausted failover.
+
+Historical hash-only circuits are resolved from retained attempt dimensions; missing
+history is never guessed. The generation column is additive. No historical requests
+are rewritten. Candidate stages still show pending/checking/failed checks and the
+fallback validation stages; successful recovery removes the active circuit gate.
 
 Deep probes rotate the least recently probed dimensions from up to 32 distinct
 traffic dimensions observed in the last 24 hours. Requests use a synthetic prompt,

@@ -2,6 +2,7 @@ package picker
 
 import (
 	"context"
+	"fmt"
 	"simple-up-manage/internal/domain"
 	"testing"
 	"time"
@@ -128,8 +129,19 @@ func TestRecoveryChecksBeforeRealTraffic(t *testing.T) {
 		t.Fatal(err)
 	}
 	key, _, d, err := p.PickDecision(ctx, req)
-	if err != nil || key.ID != keys[1].ID || d.Reason != "recovery_validation" {
-		t.Fatalf("ready recovery not selected: %+v %v", d, err)
+	if err != nil || key.ID != keys[0].ID || d.Reason == "recovery_validation" {
+		t.Fatalf("historical check readiness sent business traffic: %+v %v", d, err)
+	}
+	req.AllowKeys = map[uint]struct{}{keys[1].ID: {}}
+	if _, _, _, err := p.PickDecision(ctx, req); err != ErrNoUpstream {
+		t.Fatalf("outage bypassed dedicated recovery: %v", err)
+	}
+	if err := p.db.Model(&gate).Update("open", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	key, _, d, err = p.PickDecision(ctx, req)
+	if err != nil || key.ID != keys[1].ID || d.Reason == "recovery_validation" {
+		t.Fatalf("closed circuit still validating: %+v %v", d, err)
 	}
 }
 
@@ -161,5 +173,29 @@ func TestLegacyBackfillExcludesNeutralRequests(t *testing.T) {
 	}
 	if cands[0].Samples != 1 || cands[0].SuccessRate != 1 {
 		t.Fatalf("neutral backfill corrupted metrics: %+v", cands[0])
+	}
+}
+
+func TestKeyWideRecoveryExplainsOtherDimensionLease(t *testing.T) {
+	p, keys, req := stableFixture(t)
+	req.AllowKeys = map[uint]struct{}{keys[0].ID: {}}
+	now := time.Now()
+	keyGate := domain.RoutingCircuit{Scope: fmt.Sprintf("key:%d", keys[0].ID), PlatformKeyID: keys[0].ID, Open: true, Until: now.Add(-time.Minute)}
+	other := domain.RoutingCircuit{Scope: "another-dimension", PlatformKeyID: keys[0].ID, Open: true, Until: now.Add(-time.Minute), Lease: "busy", LeaseUntil: now.Add(time.Minute)}
+	for _, gate := range []domain.RoutingCircuit{keyGate, other} {
+		if err := p.db.Create(&gate).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, _, d, err := p.PickDecision(context.Background(), req)
+	if err != ErrNoUpstream {
+		t.Fatalf("key-wide lease conflict admitted: %v", err)
+	}
+	for _, c := range d.Candidates {
+		if c.KeyID == keys[0].ID {
+			if c.SkipReason != "recovery_inflight" || len(c.RecoveryScopes) != 1 || c.RecoveryScopes[0] != other.Scope {
+				t.Fatalf("missing conflicting scope: %+v", c)
+			}
+		}
 	}
 }

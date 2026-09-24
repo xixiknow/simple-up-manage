@@ -73,3 +73,14 @@ PostgreSQL UTF-8 storage, and final writes finish before the request handler
 returns. Stale in-flight logs recover a successful result only when their latest
 recorded attempt succeeded. Rejected routes include a candidate snapshot and a
 `no_available_route` code with a 30-second `Retry-After` header.
+
+Recovery checks run in a continuously replenished pool inside the backend. Set
+`jobs.recovery_concurrency` or `RECOVERY_CONCURRENCY` (1–64, default 8); the limit
+is shared through SQL leases, and all replicas must use the same configuration.
+Checks use a 30-second timeout, and complete valid success closes only the verified
+circuit. Ordinary health probes remain diagnostic. Probe-disabled/unsupported
+routes retain real-request recovery; text streams release their recovery gate on
+first valid output while final failure accounting remains active. Requests with no
+alternative route wait up to five seconds for an in-progress recovery, within their
+normal total deadline. See `docs/probe-routing-isolation.md` for compatibility and
+verification details.

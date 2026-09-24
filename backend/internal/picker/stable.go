@@ -259,7 +259,7 @@ func fastestCandidate(cands []Candidate, pool []int, minSamples int) int {
 
 func (p *BandPicker) stableDecision(ctx context.Context, req Request, mutate bool) (*domain.PlatformKey, *domain.Upstream, Decision, error) {
 	cands, err := p.evaluate(ctx, req)
-	d := Decision{Scope: routeScope(req), SessionSource: req.SessionSource, SessionHash: req.Session}
+	d := Decision{BudgetReady: req.BudgetReady, ExplorationSlot: req.ExplorationSlot, Scope: routeScope(req), SessionSource: req.SessionSource, SessionHash: req.Session}
 	if err != nil {
 		return nil, nil, d, err
 	}
@@ -384,7 +384,7 @@ func (p *BandPicker) PickDecision(ctx context.Context, req Request) (*domain.Pla
 		return p.stableDecision(ctx, req, true)
 	}
 	cands, err := p.evaluate(ctx, req)
-	d := Decision{Reason: "legacy_ranking", Scope: routeScope(req), SessionHash: req.Session, SessionSource: req.SessionSource, Candidates: cands}
+	d := Decision{BudgetReady: req.BudgetReady, ExplorationSlot: req.ExplorationSlot, Reason: "legacy_ranking", Scope: routeScope(req), SessionHash: req.Session, SessionSource: req.SessionSource, Candidates: cands}
 	if err != nil {
 		return nil, nil, d, err
 	}

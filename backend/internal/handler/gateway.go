@@ -59,6 +59,8 @@ type Gateway struct {
 	Client         *upstream.Client
 	Dash           *dashboard.Service
 	firstTokenWait time.Duration
+	recoveryWait   time.Duration
+	recoveryPoll   recoveryPoller
 	rpm            *rpmLimiter
 	conc           *concLimiter
 }
@@ -267,6 +269,7 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 
 	var exclude, excludeProviders, excludeKeyModels []uint
 	businessRequestID := uuid.NewString()
+	waitState := recoveryWaitState{}
 	for attempt := 0; attempt < attempts; attempt++ {
 		pickReq := picker.Request{
 			ConsumerID: ck.ID, Path: path, Stream: reqSnap.ReqStream, SessionSource: sessionSource,
@@ -279,18 +282,10 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 			AllowKeys:        allow,
 			DriftKeys:        drift,
 		}
-		var pk *domain.PlatformKey
-		var up *domain.Upstream
-		var decision picker.Decision
-		if dp, ok := h.Picker.(picker.DecisionPicker); ok {
-			if previousResponse != "" {
-				session = dp.ResolvePrevious(c.Request.Context(), pickReq, previousResponse)
-				pickReq.Session = session
-			}
-			pk, up, decision, err = dp.PickDecision(c.Request.Context(), pickReq)
-		} else {
-			pk, up, err = h.Picker.Pick(c.Request.Context(), pickReq)
-		}
+		pk, up, decision, pickErr := h.pickWithRecoveryWait(c, lg, &pickReq, previousResponse, reqStart, &waitState)
+		err = pickErr
+		session = pickReq.Session
+
 		if err != nil {
 			if errors.Is(err, picker.ErrNoUpstream) {
 				h.recordNoRoute(c, lg, pickReq, decision)
@@ -299,6 +294,9 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 					if bound {
 						lastMsg = "no healthy key in bound route groups"
 					}
+					if waitState.timedOut {
+						lastMsg = "route recovery is still in progress; retry shortly"
+					}
 					gatewayError(c, http.StatusServiceUnavailable, "api_error", lastMsg, "no_available_route")
 					return
 				}
@@ -306,6 +304,11 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 				return
 			}
 			lastMsg = err.Error()
+			if c.Request.Context().Err() != nil {
+				lg.markFailure(h, "client", "client_cancelled")
+				c.Status(499)
+				return
+			}
 			gatewayError(c, http.StatusInternalServerError, "api_error", err.Error())
 			return
 		}
@@ -317,21 +320,52 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 		lg.recordDecision(h, decision)
 		var outcome forwardOutcome
 		finishRouting := func() {}
+		onOutput := func() {}
 		if controller, ok := h.Picker.(picker.CircuitController); ok {
 			health := controller.RoutingHealth()
 			dim := routinghealth.Dimension{KeyID: pk.ID, Protocol: protocol, Model: model, Path: path, Stream: reqSnap.ReqStream}
-			token, admitErr := health.Admit(c.Request.Context(), dim, decision.Reason == "recovery_validation")
+			admission, admitErr := health.AdmitRequest(c.Request.Context(), dim, decision.Reason == "recovery_validation")
 			if admitErr != nil {
 				if !errors.Is(admitErr, routinghealth.ErrUnavailable) {
 					lastMsg = "routing state unavailable"
 					gatewayError(c, http.StatusServiceUnavailable, "api_error", lastMsg)
 					return
 				}
-				exclude = append(exclude, pk.ID)
+				if time.Since(reqStart) >= proxyOverallTimeout || (!waitState.deadline.IsZero() && !time.Now().Before(waitState.deadline)) {
+					h.recordNoRoute(c, lg, pickReq, decision)
+					if attempt > 0 {
+						gatewayError(c, http.StatusBadGateway, "api_error", lastMsg)
+						return
+					}
+					lastMsg = "route recovery is still in progress; retry shortly"
+					gatewayError(c, http.StatusServiceUnavailable, "api_error", lastMsg, "no_available_route")
+					return
+				}
+				// Re-select after a racing lease claim without permanently excluding this key.
+				if err := sleepCtx(c.Request.Context(), 10*time.Millisecond); err != nil {
+					lastMsg = err.Error()
+					return
+				}
+				waitState.budgetReady, waitState.explorationSlot = decision.BudgetReady, decision.ExplorationSlot
 				attempt--
 				continue
 			}
 			startedAt := time.Now()
+			outputSeen := false
+			onOutput = func() {
+				if outputSeen || decision.Reason != "recovery_validation" {
+					return
+				}
+				outputSeen = true
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				changed, err := health.ReleaseOnOutput(ctx, dim, admission)
+				if err != nil {
+					slog.Error("release routing recovery on output", "key_id", pk.ID, "error", err)
+				} else if changed {
+					lg.traceEvent(h, pk, up, "recovered", "first_valid_output")
+				}
+			}
 			recorded := false
 			finishRouting = func() {
 				if recorded {
@@ -341,7 +375,8 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 				defer cancel()
 				neutral := outcome.capacityBusy || outcome.neutral || (!outcome.validSuccess && c.Request.Context().Err() != nil) || (!outcome.validSuccess && outcome.action == "")
-				err := health.Observe(ctx, dim, token, routinghealth.Outcome{
+				err := health.Observe(ctx, dim, admission.Token, routinghealth.Outcome{
+					Admission: admission,
 					RequestID: businessRequestID, StartedAt: startedAt, Success: outcome.validSuccess, Neutral: neutral,
 					AuthFailure: outcome.scope == failureScopeKey, Limited: outcome.status == 429, Immediate: outcome.action == "capability_unsupported", RetryAfter: outcome.retryAfter, Reason: outcome.action,
 				})
@@ -352,7 +387,7 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 			defer finishRouting()
 		}
 		for r := 0; r <= retries; r++ {
-			outcome = h.forwardOnce(c, ck, pk, up, protocol, model, session, reqID, body, reqSnap, lg, reqStart)
+			outcome = h.forwardOnce(c, ck, pk, up, protocol, model, session, reqID, body, reqSnap, lg, reqStart, onOutput)
 			if decision.Reason == "recovery_validation" {
 				outcome.retrySame = false
 			}
@@ -484,7 +519,7 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
-func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain.PlatformKey, up *domain.Upstream, protocol, model, session, reqID string, body []byte, reqSnap ioCapture, lg *liveLog, reqStart time.Time) (outcome forwardOutcome) {
+func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain.PlatformKey, up *domain.Upstream, protocol, model, session, reqID string, body []byte, reqSnap ioCapture, lg *liveLog, reqStart time.Time, outputCallbacks ...func()) (outcome forwardOutcome) {
 	attempt := domain.RequestAttempt{ID: uuid.NewString(), PlatformKeyID: pk.ID, Protocol: protocol, Model: model, Path: c.Request.URL.Path, Stream: reqSnap.ReqStream, StatsVersion: domain.AttemptStatsVersion}
 	if lg != nil {
 		attempt.RequestLogID = lg.id
@@ -674,6 +709,9 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 		}
 		h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, usage, ttft, dur, "", ioCapture{}, true, false)
 	}}
+	if len(outputCallbacks) > 0 && resp.StatusCode >= 200 && resp.StatusCode < 300 && isTextAPI(path) {
+		collector.onFirstOutput = func() { firstWatch.stop(); outputCallbacks[0]() }
+	}
 	collector.onCompaction = func() {
 		// The attempt context still enforces the original 300-second request
 		// deadline, including time already spent on earlier attempts.
@@ -1475,6 +1513,7 @@ type streamCollector struct {
 	usage          upstream.TokenUsage
 	onProgress     func(ttft, dur int, usage upstream.TokenUsage)
 	onCompaction   func()
+	onFirstOutput  func()
 	compaction     bool
 	eventName      string
 	eventData      []string
@@ -1492,6 +1531,9 @@ func (s *streamCollector) markTTFT() {
 	s.ttftMs = int(s.firstAt.Sub(s.start).Milliseconds())
 	if s.ttftMs <= 0 {
 		s.ttftMs = 1
+	}
+	if s.strict && s.firstEvent != "" && s.onFirstOutput != nil {
+		s.onFirstOutput()
 	}
 	s.emitProgress()
 }

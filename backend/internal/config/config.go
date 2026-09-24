@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +24,7 @@ type Config struct {
 }
 
 type Jobs struct {
+	RecoveryConcurrency  int           `yaml:"recovery_concurrency"`
 	BalanceInterval      time.Duration `yaml:"balance_interval"`
 	BillingInterval      time.Duration `yaml:"billing_interval"`
 	ProbeInterval        time.Duration `yaml:"probe_interval"`
@@ -38,6 +40,7 @@ func defaults() Config {
 		LogBodyMaxBytes:   64 << 20,
 		LogBodiesMaxBytes: 10 << 30,
 		Jobs: Jobs{
+			RecoveryConcurrency:  8,
 			BalanceInterval:      time.Minute,
 			BillingInterval:      time.Minute,
 			ProbeInterval:        time.Minute,
@@ -90,6 +93,16 @@ func Load() (*Config, error) {
 	}
 	if v := os.Getenv("LOG_BODIES_DIR"); v != "" {
 		cfg.LogBodiesDir = v
+	}
+	if v := os.Getenv("RECOVERY_CONCURRENCY"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("RECOVERY_CONCURRENCY must be an integer between 1 and 64")
+		}
+		cfg.Jobs.RecoveryConcurrency = n
+	}
+	if cfg.Jobs.RecoveryConcurrency < 1 || cfg.Jobs.RecoveryConcurrency > 64 {
+		return nil, fmt.Errorf("jobs.recovery_concurrency must be between 1 and 64")
 	}
 	if cfg.LogBodyMaxBytes <= 0 || cfg.LogBodiesMaxBytes <= 0 || cfg.LogBodiesDir == "" {
 		return nil, fmt.Errorf("log body directory and positive limits are required")

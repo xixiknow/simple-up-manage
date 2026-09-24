@@ -29,6 +29,7 @@ func (d Dimension) Scope() string {
 func KeyScope(id uint) string { return fmt.Sprintf("key:%d", id) }
 
 type Outcome struct {
+	Admission                                         *Admission
 	RequestID                                         string
 	StartedAt                                         time.Time
 	Success, Neutral, AuthFailure, Limited, Immediate bool
@@ -37,8 +38,16 @@ type Outcome struct {
 }
 
 type Store struct {
-	DB       *gorm.DB
-	Settings domain.SchedulerSettings
+	DB               *gorm.DB
+	Settings         domain.SchedulerSettings
+	CheckConcurrency int
+}
+
+// Admission captures each gate's generation before sending a business request.
+// It belongs to one request goroutine; progress and final settlement are serial.
+type Admission struct {
+	Token       string
+	Generations map[string]uint64
 }
 
 func (s Store) Snapshot(ctx context.Context, dims []Dimension) (map[string]domain.RoutingCircuit, error) {
@@ -76,7 +85,12 @@ var ErrUnavailable = errors.New("routing circuit unavailable")
 // Admit reserves all applicable gates in a single transaction. The lease exceeds
 // the gateway's five-minute overall deadline, including retries.
 func (s Store) Admit(ctx context.Context, d Dimension, recovery bool) (string, error) {
-	token := uuid.NewString()
+	a, err := s.AdmitRequest(ctx, d, recovery)
+	return a.Token, err
+}
+
+func (s Store) AdmitRequest(ctx context.Context, d Dimension, recovery bool) (*Admission, error) {
+	a := &Admission{Token: uuid.NewString(), Generations: make(map[string]uint64)}
 	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		now := time.Now()
 		for _, scope := range []string{KeyScope(d.KeyID), d.Scope()} {
@@ -84,6 +98,7 @@ func (s Store) Admit(ctx context.Context, d Dimension, recovery bool) (string, e
 			if err != nil {
 				return err
 			}
+			a.Generations[scope] = r.Generation
 			if !r.Open {
 				continue
 			}
@@ -100,7 +115,7 @@ func (s Store) Admit(ctx context.Context, d Dimension, recovery bool) (string, e
 					return ErrUnavailable
 				}
 			}
-			r.Lease = token
+			r.Lease = a.Token
 			r.LeaseUntil = now.Add(330 * time.Second)
 			r.RecoveryAt = &now
 			if err := tx.Save(&r).Error; err != nil {
@@ -109,7 +124,56 @@ func (s Store) Admit(ctx context.Context, d Dimension, recovery bool) (string, e
 		}
 		return nil
 	})
-	return token, err
+	return a, err
+}
+
+// closeCircuit invalidates older observations without inventing a business sample.
+func closeCircuit(r *domain.RoutingCircuit, now time.Time) {
+	r.Generation++
+	r.Open = false
+	r.OpenedAt = now
+	r.Until = time.Time{}
+	r.Failures, r.BackoffSec = 0, 0
+	r.FailureTimes = nil
+	r.Reason, r.Lease, r.CheckLease = "", "", ""
+	r.LeaseUntil = time.Time{}
+	r.CheckUntil, r.NextCheckAt = nil, nil
+	r.CheckBackoff = 0
+}
+
+// ReleaseOnOutput closes only the recovery gates still owned by this admission.
+// Do not call Observe here: a stream can still fail after its first output.
+func (s Store) ReleaseOnOutput(ctx context.Context, d Dimension, a *Admission) (bool, error) {
+	if a == nil || a.Token == "" {
+		return false, nil
+	}
+	changed := make(map[string]uint64)
+	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		now := time.Now()
+		for _, scope := range []string{KeyScope(d.KeyID), d.Scope()} {
+			r, err := lock(tx, d, scope)
+			if err != nil {
+				return err
+			}
+			generation, ok := a.Generations[scope]
+			if !ok || r.Generation != generation || !r.Open || r.Lease != a.Token || !r.LeaseUntil.After(now) {
+				continue
+			}
+			closeCircuit(&r, now)
+			if err := tx.Save(&r).Error; err != nil {
+				return err
+			}
+			changed[scope] = r.Generation
+		}
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	for scope, generation := range changed {
+		a.Generations[scope] = generation
+	}
+	return len(changed) > 0, nil
 }
 
 func open(r *domain.RoutingCircuit, now time.Time, reason string, retry time.Duration, cfg domain.SchedulerSettings) {
@@ -124,6 +188,7 @@ func open(r *domain.RoutingCircuit, now time.Time, reason string, retry time.Dur
 		seconds = max(1, int(retry.Seconds()+0.999))
 	}
 	r.Open = true
+	r.Generation++
 	r.BackoffSec = min(seconds, cfg.CircuitMaxCooldownSec)
 	r.OpenedAt = now
 	r.Until = now.Add(time.Duration(seconds) * time.Second)
@@ -160,8 +225,13 @@ func (s Store) Observe(ctx context.Context, d Dimension, token string, o Outcome
 		}
 		now := time.Now()
 		for _, row := range []*domain.RoutingCircuit{&key, &r} {
-			owned := row.Lease != "" && row.Lease == token
-			if !owned && o.StartedAt.Before(row.OpenedAt) {
+			owned := row.Lease != "" && row.Lease == token && row.LeaseUntil.After(now)
+			if o.Admission != nil {
+				generation, ok := o.Admission.Generations[row.Scope]
+				if !ok || generation != row.Generation || (row.Open && !owned) {
+					continue
+				}
+			} else if !owned && o.StartedAt.Before(row.OpenedAt) {
 				continue
 			}
 			if row.Open && !owned && row.Lease != "" {
@@ -176,8 +246,9 @@ func (s Store) Observe(ctx context.Context, d Dimension, token string, o Outcome
 				}
 			} else if o.Success {
 				if !row.Open || owned {
-					row.Open = false
-					row.OpenedAt = now
+					if row.Open {
+						closeCircuit(row, now)
+					}
 					row.Failures = 0
 					row.FailureTimes = nil
 					row.BackoffSec = 0

@@ -10,12 +10,21 @@ import (
 	"simple-up-manage/internal/ops"
 )
 
-func Start(cfg *config.Config, opsSvc *ops.Service, afterCatalog func(), stop <-chan struct{}, dash *dashboard.Service) {
-	go runTicker("recovery", 10*time.Second, stop, func(ctx context.Context) {
-		if err := opsSvc.CheckRecoveries(ctx); err != nil {
-			log.Printf("job recovery: %v", err)
+func Start(cfg *config.Config, opsSvc *ops.Service, afterCatalog func(), stop <-chan struct{}, dash *dashboard.Service) <-chan struct{} {
+	recoveryCtx, cancelRecovery := context.WithCancel(context.Background())
+	recoveryDone := make(chan struct{})
+	go func() {
+		select {
+		case <-stop:
+			cancelRecovery()
+		case <-recoveryDone:
 		}
-	})
+	}()
+	go func() {
+		defer close(recoveryDone)
+		defer cancelRecovery()
+		opsSvc.RunRecoveries(recoveryCtx, cfg.Jobs.RecoveryConcurrency)
+	}()
 	go runTicker("balance", cfg.Jobs.BalanceInterval, stop, func(ctx context.Context) {
 		ok, fail := opsSvc.RefreshAllBalances(ctx)
 		log.Printf("job balance: ok=%d failed=%d", ok, fail)
@@ -93,6 +102,7 @@ func Start(cfg *config.Config, opsSvc *ops.Service, afterCatalog func(), stop <-
 			dash.InterruptStale(ctx, 6*time.Minute)
 		})
 	}
+	return recoveryDone
 }
 
 func runTicker(name string, interval time.Duration, stop <-chan struct{}, fn func(context.Context)) {

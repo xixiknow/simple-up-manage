@@ -5,6 +5,7 @@ encrypt_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 database_url: "postgres://sum:sum@127.0.0.1:5432/simple_up_manage?sslmode=disable"
 redis_url: "redis://127.0.0.1:6379/0"
 jobs:
+  recovery_concurrency: 8
   balance_interval: 1m
   billing_interval: 1m
   probe_interval: 1m

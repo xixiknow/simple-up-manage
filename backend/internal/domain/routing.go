@@ -5,6 +5,7 @@ import "time"
 // RoutingCircuit is independent of diagnostic probe health. Scope is either a
 // key-wide authentication/legacy gate or a single business request dimension.
 type RoutingCircuit struct {
+	Generation    uint64     `gorm:"not null;default:0" json:"-"`
 	Scope         string     `gorm:"primaryKey;size:80" json:"scope"`
 	PlatformKeyID uint       `gorm:"index" json:"platform_key_id"`
 	Open          bool       `json:"open"`

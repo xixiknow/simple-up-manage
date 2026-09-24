@@ -47,6 +47,25 @@ func (p *BandPicker) applyRoutingHealth(ctx context.Context, req Request, cands 
 	if err != nil {
 		return err
 	}
+	// Key-wide recovery must also wait for leases on other dimensions, just as
+	// Admit does. Otherwise repeated selection would keep choosing a blocked key.
+	var gatedKeys []uint
+	for _, id := range ids {
+		if _, ok := states[routinghealth.KeyScope(id)]; ok {
+			gatedKeys = append(gatedKeys, id)
+		}
+	}
+	busyByKey := map[uint][]domain.RoutingCircuit{}
+	if len(gatedKeys) > 0 {
+		var busy []domain.RoutingCircuit
+		now := time.Now()
+		if err := p.db.WithContext(ctx).Where("platform_key_id IN ? AND (lease_until > ? OR check_until > ?)", gatedKeys, now, now).Order("scope").Find(&busy).Error; err != nil {
+			return err
+		}
+		for _, r := range busy {
+			busyByKey[r.PlatformKeyID] = append(busyByKey[r.PlatformKeyID], r)
+		}
+	}
 	var probes []domain.ProbeLog
 	if req.Diagnostic && len(ids) > 0 {
 		q := p.db.WithContext(ctx).Model(&domain.ProbeLog{}).Select("*, ROW_NUMBER() OVER (PARTITION BY platform_key_id ORDER BY created_at DESC, id DESC) AS sample_rank").Where("platform_key_id IN ? AND kind IN ?", ids, []string{domain.ProbeLight, domain.ProbeDeep})
@@ -88,6 +107,12 @@ func (p *BandPicker) applyRoutingHealth(ctx context.Context, req Request, cands 
 				}
 			}
 		}
+		for _, r := range busyByKey[c.KeyID] {
+			c.RecoveryScopes = append(c.RecoveryScopes, r.Scope)
+			if recoveryGatePriority(r, now) > recoveryGatePriority(gate, now) {
+				gate = r
+			}
+		}
 		if gate.Scope != "" {
 			c.RecoveryCheckAt, c.RecoveryNextCheckAt = gate.CheckAt, gate.NextCheckAt
 			c.RecoveryCheckError, c.RecoveryLastAt = gate.CheckError, gate.RecoveryAt
@@ -104,13 +129,10 @@ func (p *BandPicker) applyRoutingHealth(ctx context.Context, req Request, cands 
 				c.CircuitState = "half_open"
 				reason = "recovery_pending"
 				c.RecoveryStatus = "waiting_check"
-				if gate.CheckOK {
-					c.RecoveryStatus = "waiting_request"
-				}
 				if gate.CheckAt != nil && !gate.CheckOK {
 					c.RecoveryStatus = "check_failed"
 				}
-				if !c.Key.AllowsProbe() || gate.Path == "" || (req.Path != "/v1/responses" && req.Path != "/v1/chat/completions" && req.Path != "/v1/messages") {
+				if !c.Key.AllowsProbe() || gate.Path == "" || !routinghealth.SupportsCheck(gate.Path) {
 					c.RecoveryStatus = "waiting_request"
 				}
 			}
@@ -130,7 +152,7 @@ func (p *BandPicker) applyRoutingHealth(ctx context.Context, req Request, cands 
 			if c.Eligible {
 				c.Eligible = false
 				c.SkipReason = reason
-				if reason == "recovery_pending" && (recovery < 0 || recoveryBefore(*c, cands[recovery])) {
+				if reason == "recovery_pending" && c.RecoveryStatus == "waiting_request" && (recovery < 0 || recoveryBefore(*c, cands[recovery])) {
 					recovery = i
 				}
 			}
