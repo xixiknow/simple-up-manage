@@ -25,12 +25,20 @@ const testResponseDelta = "data: {\"type\":\"response.output_text.delta\",\"delt
 const testResponseCompleted = "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"object\":\"response\",\"status\":\"completed\",\"output\":[]}}\n\n"
 
 const testKeepalive = "event: keepalive\ndata: {\"type\":\"keepalive\",\"sequence_number\":100}\n\n"
+const testResponsePing = "event: ping\ndata: {\"type\":\"ping\"}\n\n"
+const testBasispointsMetadata = "data: {\"type\":\"basispoints.response.metadata\",\"headers\":{\"version\":\"test\"}}\n\n"
 
 func TestResponsesMetadataStream(t *testing.T) {
 	for _, tc := range []struct {
 		name, body   string
 		ok, hasFirst bool
 	}{
+		{"ping before output", testResponsePing + testResponseDelta + testResponseCompleted, true, true},
+		{"ping after output", testResponseDelta + testResponsePing + testResponseCompleted, true, true},
+		{"ping only", testResponsePing, false, false},
+		{"ping is not first token", testResponsePing + testResponseCompleted, true, false},
+		{"text in ping is not output", "event: ping\ndata: {\"type\":\"ping\",\"delta\":{\"content\":\"heartbeat\"}}\n\n" + testResponseCompleted, true, false},
+		{"ping with error", "event: ping\ndata: {\"type\":\"ping\",\"error\":{\"message\":\"bad\"}}\n\n", false, false},
 		{"before output", testRateLimitsFrame + testResponseDelta + testResponseCompleted, true, true},
 		{"keepalive after output", testResponseDelta + testKeepalive + testResponseDelta + testResponseCompleted, true, true},
 		{"keepalive before output", testKeepalive + testResponseDelta + testResponseCompleted, true, true},
@@ -103,7 +111,7 @@ func TestResponsesMetadataDoNotReleaseOrStopFirstTokenWatch(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = io.WriteString(writer, testKeepalive+testRateLimitsFrame+testResponseMetadata+testRateLimitsFrame+testResponseTiming)
+		_, _ = io.WriteString(writer, "event: response.completed\n\n"+testBasispointsMetadata+testResponsePing+testKeepalive+testRateLimitsFrame+testResponseMetadata+testRateLimitsFrame+testResponseTiming+testResponsePing)
 		<-ctx.Done()
 		_ = writer.CloseWithError(ctx.Err())
 	}()
@@ -210,7 +218,7 @@ func TestGatewayResponseValidationRouting(t *testing.T) {
 				badCalls.Add(1)
 				if metadata {
 					w.Header().Set("Content-Type", "text/event-stream")
-					_, _ = io.WriteString(w, testRateLimitsFrame+testResponseMetadata+testResponseDelta+testRateLimitsFrame+testResponseMetadata+testResponseTiming+testResponseCompleted)
+					_, _ = io.WriteString(w, testBasispointsMetadata+testResponsePing+testRateLimitsFrame+testResponseMetadata+testResponseDelta+testResponsePing+testRateLimitsFrame+testResponseMetadata+testResponseTiming+testResponseCompleted)
 					return
 				}
 				w.Header().Set("Content-Type", "text/plain")

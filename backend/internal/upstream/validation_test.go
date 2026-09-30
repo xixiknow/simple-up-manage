@@ -10,12 +10,26 @@ const testResponsesMetadata = "data: {\"type\":\"codex.response.metadata\",\"hea
 const testResponsesTiming = "data: {\"type\":\"responsesapi.websocket_timing\",\"timing_metrics\":{\"response_id\":\"r\",\"first_sampled_message_ttft_ms\":1,\"total_turn_time_s\":2}}\n\n"
 const testResponsesDelta = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"
 const testResponsesCompleted = "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"object\":\"response\",\"status\":\"completed\",\"output\":[]}}\n\n"
+const testResponsesPing = "event: ping\ndata: {\"type\":\"ping\"}\n\n"
 
 func TestResponsesMetadataValidation(t *testing.T) {
 	for _, tc := range []struct {
 		name, path, event, data string
 		ok                      bool
 	}{
+		{"basispoints metadata", "/v1/responses", "", `{"type":"basispoints.response.metadata","headers":{}}`, true},
+		{"basispoints event name", "/v1/responses", "basispoints.response.metadata", `{"headers":{}}`, true},
+		{"basispoints with error", "/v1/responses", "", `{"type":"basispoints.response.metadata","error":{"message":"bad"}}`, false},
+		{"basispoints malformed", "/v1/responses", "basispoints.response.metadata", `{`, false},
+		{"basispoints chat remains strict", "/v1/chat/completions", "", `{"type":"basispoints.response.metadata"}`, false},
+		{"ping", "/v1/responses", "ping", `{"type":"ping"}`, true},
+		{"ping data type", "/v1/responses", "", `{"type":"ping"}`, true},
+		{"ping event name", "/v1/responses", "ping", `{}`, true},
+		{"ping not completion", "/v1/responses", "ping", `{"type":"ping","response":{"id":"other"}}`, true},
+		{"ping with error", "/v1/responses", "ping", `{"type":"ping","error":{"message":"failed"}}`, false},
+		{"malformed ping", "/v1/responses", "ping", `{`, false},
+		{"ping unknown type wins", "/v1/responses", "ping", `{"type":"unknown"}`, false},
+		{"ping chat remains strict", "/v1/chat/completions", "ping", `{"type":"ping"}`, false},
 		{"data type", "/v1/responses", "", `{"type":"codex.rate_limits","rate_limits":{"allowed":true}}`, true},
 		{"event name", "/v1/responses", "codex.rate_limits", `{"rate_limits":{"allowed":true}}`, true},
 		{"type wins", "/v1/responses", "response.completed", `{"type":"codex.rate_limits"}`, true},

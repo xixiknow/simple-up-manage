@@ -39,6 +39,19 @@ func SSEEventHasText(eventName string, raw []byte) bool {
 	if strings.HasPrefix(typ, "response.") {
 		return responsesHasOutput(typ, top)
 	}
+	if typ == "content_block_start" {
+		block, _ := asMap(top["content_block"])
+		switch block["type"] {
+		case "text":
+			return nonEmptyStr(block["text"]) != ""
+		case "thinking":
+			return nonEmptyStr(block["thinking"]) != ""
+		case "tool_use", "server_tool_use":
+			input, _ := asMap(block["input"])
+			return len(input) > 0
+		}
+		return false
+	}
 	if d, ok := asMap(top["delta"]); ok && deltaHasText(d) {
 		return true
 	}

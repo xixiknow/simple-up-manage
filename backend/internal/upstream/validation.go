@@ -4,15 +4,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"mime"
 	"strings"
 )
 
 func IsResponsesMetadataEvent(name string) bool {
 	switch name {
-	case "codex.rate_limits", "codex.response.metadata", "responsesapi.websocket_timing", "keepalive":
+	case "codex.rate_limits", "codex.response.metadata", "basispoints.response.metadata", "responsesapi.websocket_timing", "keepalive", "ping":
 		return true
 	}
 	return false
+}
+
+func IsSSEContentType(contentType string) bool {
+	mt, _, err := mime.ParseMediaType(strings.ToLower(contentType))
+	return err == nil && (mt == "text/event-stream" || mt == "text/stream")
 }
 
 type StreamValidator struct {
@@ -79,6 +85,8 @@ func (s *StreamValidator) Event(name, data string) {
 		return
 	}
 	if strings.TrimSpace(data) == "" {
+		// Empty frames are ignored; callers must not treat their names as
+		// output or terminal events without a payload.
 		return
 	}
 	if json.Unmarshal([]byte(data), &v) != nil || v == nil {

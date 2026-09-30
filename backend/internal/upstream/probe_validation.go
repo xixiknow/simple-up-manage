@@ -26,11 +26,11 @@ func ValidateProbeResponse(path, contentType string, stream bool, body io.Reader
 		_, err = ValidateJSONResponse(path, raw)
 		return err
 	}
-	if ct != "text/event-stream" {
+	if !IsSSEContentType(contentType) {
 		return errors.New("invalid upstream stream content type")
 	}
-	scan := bufio.NewScanner(body)
-	scan.Buffer(make([]byte, 4096), 1<<20)
+	scan := bufio.NewScanner(NewSSEReader(body))
+	scan.Buffer(make([]byte, 4096), MaxSSEEventBytes+1)
 	v := StreamValidator{Path: path, Strict: true}
 	name := ""
 	var data []string
@@ -39,8 +39,8 @@ func ValidateProbeResponse(path, contentType string, stream bool, body io.Reader
 		line := scan.Text()
 		if line != "" {
 			size += len(line)
-			if size > 1<<20 {
-				return errors.New("upstream event exceeded limit")
+			if size > MaxSSEEventBytes {
+				return ErrSSEEventTooLarge
 			}
 			if strings.HasPrefix(line, "event:") {
 				name = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
@@ -51,6 +51,10 @@ func ValidateProbeResponse(path, contentType string, stream bool, body io.Reader
 			continue
 		}
 		raw := strings.Join(data, "\n")
+		if strings.TrimSpace(raw) == "" {
+			name, data, size = "", nil, 0
+			continue
+		}
 		var event struct {
 			Type string `json:"type"`
 		}

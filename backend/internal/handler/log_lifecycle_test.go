@@ -255,15 +255,15 @@ func TestSSETerminalWithoutEOF(t *testing.T) {
 
 func TestSSEBoundedEventAndFailure(t *testing.T) {
 	col := &streamCollector{start: time.Now()}
-	for i := 0; i < 2048; i++ {
+	for i := 0; i < upstream.MaxSSEEventBytes/1024+1; i++ {
 		col.feed([]byte("data: " + strings.Repeat("x", 1024) + "\n"))
 	}
 	if len(col.eventData) > 0 || !col.eventOversized {
 		t.Fatal("event buffer is unbounded")
 	}
 	col.feed([]byte("\nevent: error\ndata: {\"type\":\"error\"}\n\n"))
-	if !col.terminal || col.terminalErr == nil {
-		t.Fatal("error event was not terminal")
+	if !col.terminal || !errors.Is(col.terminalErr, upstream.ErrSSEEventTooLarge) {
+		t.Fatal("oversized event was not explicitly rejected")
 	}
 }
 

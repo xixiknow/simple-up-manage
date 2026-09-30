@@ -99,7 +99,7 @@ List endpoints wrap `{ "items": [], "total": 0, "page": 1, "page_size": 20 }`. P
 | GET | `/v1/models` |
 | GET | `/v1/usage` |
 
-SSE is forwarded as-is. Non-streaming bodies are streamed through unmodified (no size cap); the first 16MB is inspected for `usage`. Request logs are written after completion (best-effort usage + TTFT parse).
+Text API SSE events are validated before completion is accepted, with a 16 MiB event limit. Heartbeats and supported metadata do not count as first output. Valid SSE bytes are preserved; a missing blank line between explicitly named, complete JSON events is repaired before forwarding. Recovery probes use the same framing and accept both `text/event-stream` and `text/stream`. Text API JSON responses have a 16 MiB limit; other non-streaming bodies are forwarded without a size cap, with the first 16 MiB inspected for `usage`. Request logs include usage and TTFT diagnostics.
 
 Image endpoints route as protocol `openai`. Multipart bodies are capped at 64MB (413 above that); `model` is read from the form field.
 

@@ -36,6 +36,11 @@ func TestProbeResponsesMetadata(t *testing.T) {
 		name, body string
 		ok         bool
 	}{
+		{"ping before output", testResponsesPing + testResponsesDelta + testResponsesCompleted, true},
+		{"ping after output", testResponsesDelta + testResponsesPing + testResponsesCompleted, true},
+		{"ping only", testResponsesPing, false},
+		{"ping then failure", testResponsesPing + "data: {\"type\":\"response.failed\"}\n\n", false},
+		{"ping with error", "event: ping\ndata: {\"type\":\"ping\",\"error\":{\"message\":\"bad\"}}\n\n", false},
 		{"before output", testResponsesRateLimits + testResponsesDelta + testResponsesCompleted, true},
 		{"consecutive metadata", testResponsesRateLimits + testResponsesMetadata + testResponsesDelta + testResponsesMetadata + testResponsesCompleted, true},
 		{"full metadata sequence", testResponsesRateLimits + testResponsesMetadata + testResponsesDelta + testResponsesTiming + testResponsesCompleted, true},

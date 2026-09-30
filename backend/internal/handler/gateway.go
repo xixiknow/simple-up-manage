@@ -1424,8 +1424,7 @@ func peekStream(body []byte) bool {
 }
 
 func isSSEContentType(ct string) bool {
-	mt, _, err := mime.ParseMediaType(strings.ToLower(ct))
-	return err == nil && (mt == "text/event-stream" || mt == "text/stream")
+	return upstream.IsSSEContentType(ct)
 }
 
 // peekModelFrom extracts the model id from either a JSON body or a
@@ -1508,6 +1507,7 @@ type streamCollector struct {
 	firstAt        time.Time
 	ttftMs         int
 	buf            []byte
+	lineScanOffset int
 	prefix         []byte
 	total          int
 	usage          upstream.TokenUsage
@@ -1555,15 +1555,18 @@ func (s *streamCollector) feed(p []byte) int {
 	consumed := len(p)
 	s.buf = append(s.buf, p...)
 	for {
-		i := bytes.IndexByte(s.buf, '\n')
+		i := bytes.IndexByte(s.buf[s.lineScanOffset:], '\n')
 		if i < 0 {
-			if len(s.buf) > 1<<20 {
+			if len(s.buf) > upstream.MaxSSEEventBytes {
 				s.buf = s.buf[len(s.buf)-64:]
 				s.eventOversized = true
 				s.eventData = nil
 			}
+			s.lineScanOffset = len(s.buf)
 			break
 		}
+		i += s.lineScanOffset
+		s.lineScanOffset = 0
 		line := strings.TrimSuffix(string(s.buf[:i]), "\r")
 		s.buf = s.buf[i+1:]
 		if line == "" {
@@ -1577,7 +1580,7 @@ func (s *streamCollector) feed(p []byte) int {
 			s.eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
 		} else if strings.HasPrefix(line, "data:") {
 			s.eventBytes += len(line)
-			if s.eventBytes > 1<<20 {
+			if s.eventBytes > upstream.MaxSSEEventBytes {
 				s.eventOversized = true
 				s.eventData = nil
 			}
@@ -1603,12 +1606,19 @@ func (s *streamCollector) finishEvent() {
 	defer func() { s.eventBytes = 0; s.eventOversized = false; s.eventData = nil; s.eventName = "" }()
 	if s.eventOversized {
 		s.events.Oversized++
+		s.terminal = true
+		s.terminalErr = upstream.ErrSSEEventTooLarge
 		return
 	}
 	data := strings.Join(s.eventData, "\n")
 	name := s.eventName
 	s.eventData = nil
 	s.eventName = ""
+	if strings.TrimSpace(data) == "" {
+		// An empty SSE frame does not dispatch a business event, even if
+		// its event: field names a terminal. Keep waiting for actual data.
+		return
+	}
 	if strings.TrimSpace(data) == "[DONE]" {
 		s.noteEvent("done", data)
 		s.validateEvent(name, strings.TrimSpace(data))
@@ -1660,6 +1670,9 @@ func (s *streamCollector) finishEvent() {
 
 func copySSE(w gin.ResponseWriter, r io.Reader, col *streamCollector, hold bool, onRelease func()) error {
 	flusher, _ := w.(http.Flusher)
+	if col.strict {
+		r = upstream.NewSSEReader(r)
+	}
 	br := bufio.NewReaderSize(r, 32*1024)
 	buf := make([]byte, 32*1024)
 	var pending []byte
@@ -1688,7 +1701,7 @@ func copySSE(w gin.ResponseWriter, r io.Reader, col *streamCollector, hold bool,
 			chunk := buf[:n]
 			chunk = chunk[:col.feed(chunk)]
 			if !released {
-				if len(pending)+len(chunk) > 1<<20 {
+				if len(pending)+len(chunk) > upstream.MaxSSEEventBytes {
 					return errors.New("stream prefix exceeded limit before first token")
 				}
 				pending = append(pending, chunk...)
@@ -1718,6 +1731,9 @@ func copySSE(w gin.ResponseWriter, r io.Reader, col *streamCollector, hold bool,
 			}
 		}
 		if err != nil {
+			if errors.Is(err, upstream.ErrSSEEventTooLarge) {
+				col.events.Oversized++
+			}
 			if errors.Is(err, io.EOF) {
 				if col.strict && !col.terminal {
 					return errors.New("upstream stream ended without terminal event")

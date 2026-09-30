@@ -54,6 +54,22 @@ that deadline; repeated compaction events never reset it. Client cancellation
 still stops the request immediately. Compaction is neither first-token output
 nor a successful response, and does not release buffered response headers.
 
+Text SSE events are inspected up to 16 MiB, including completion payloads larger
+than 1 MiB. Exceeding the limit produces an explicit event-limit error instead of
+silently ignoring the event. Empty SSE frames are ignored even if their event
+name is a terminal; they neither fail nor complete a request. EOF without a
+validated terminal still fails. Responses heartbeats (`ping`, `keepalive`) and supported metadata,
+including `basispoints.response.metadata`, do not release buffered headers or
+reset the first-token deadline. Anthropic initial content blocks with generated
+text, thinking or non-empty tool input count as output.
+
+Business forwarding and recovery probes share bounded SSE framing. A missing
+blank separator is inserted only when another explicit `event:` line follows
+an explicitly named event with a complete JSON object. Multiline JSON and
+incomplete payloads are not split speculatively. The response archive retains
+the original upstream bytes; the client stream and database preview include
+any repaired separators.
+
 SSE timeouts before output use `first_token_timeout`, `compaction_timeout`, or
 `upstream_timeout`; malformed responses retain `invalid_response`. A compaction
 timeout has failure phase `compacting`. Before response headers,
