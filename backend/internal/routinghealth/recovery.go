@@ -15,6 +15,12 @@ const RecoveryInterval = time.Minute
 const CheckLeaseDuration = 45 * time.Second
 const DefaultCheckConcurrency = 8
 
+// Check backoff for failed synthetic probes. The probe timeout misfires on
+// slow reasoning models, so the first miss retries immediately and repeated
+// misses top out well below the business cooldown ceiling.
+const checkBackoffBaseSec = 30
+const checkBackoffMaxSec = 90
+
 var ErrCheckCapacity = errors.New("recovery check capacity exhausted")
 
 func SupportsCheck(path string) bool {
@@ -26,6 +32,18 @@ func (s Store) checkLimit() int {
 		return s.CheckConcurrency
 	}
 	return DefaultCheckConcurrency
+}
+
+// recoverySpacing converts RecoveryBudgetPerMin into the minimum spacing
+// between real-traffic recovery validations of one route scope.
+func (s Store) recoverySpacing() time.Duration {
+	cfg := s.Settings
+	cfg.Normalize()
+	budget := cfg.RecoveryBudgetPerMin
+	if budget < 1 {
+		budget = 1
+	}
+	return time.Duration(60/budget) * time.Second
 }
 
 // RecoverySlot is independent of exploration and is consumed only when a
@@ -52,7 +70,7 @@ func (s Store) RecoverySlot(ctx context.Context, scope string, mutate bool) (boo
 		now := time.Now()
 		allowed = r.RecoveryAfter == nil || !r.RecoveryAfter.After(now)
 		if allowed && mutate {
-			next := now.Add(RecoveryInterval)
+			next := now.Add(s.recoverySpacing())
 			return tx.Model(&r).Updates(map[string]any{"recovery_after": next, "updated_at": now}).Error
 		}
 		return nil
@@ -150,14 +168,18 @@ func (s Store) FinishCheck(ctx context.Context, scope, token string, success, ne
 			return tx.Save(&r).Error
 		} else if !neutral {
 			if r.CheckBackoff == 0 {
-				r.CheckBackoff = 30
+				// First failure: retry on the next worker scan. One probe miss
+				// is not evidence the key is still down when the check timeout
+				// is marginal for slow reasoning models.
+				r.CheckBackoff = 1
+				delay = time.Duration(r.CheckBackoff) * time.Second
+			} else if r.CheckBackoff < checkBackoffBaseSec {
+				r.CheckBackoff = checkBackoffBaseSec
+				delay = time.Duration(r.CheckBackoff) * time.Second
 			} else {
-				r.CheckBackoff = min(r.CheckBackoff*2, 300)
-				if r.CheckBackoff > 120 {
-					r.CheckBackoff = 300
-				}
+				r.CheckBackoff = min(r.CheckBackoff*2, checkBackoffMaxSec)
+				delay = time.Duration(r.CheckBackoff) * time.Second
 			}
-			delay = time.Duration(r.CheckBackoff) * time.Second
 		}
 		delay = max(delay, retryAfter)
 		next := now.Add(delay)

@@ -350,6 +350,11 @@ export type SchedulerSettings = {
 	circuit_failure_threshold: number
 	circuit_cooldown_sec: number
 	circuit_max_cooldown_sec: number
+	circuit_rate_factor: number
+	ftt_failure_weight: number
+	recovery_budget_per_min: number
+	recovery_check_timeout_sec: number
+	failover_first_token_wait_sec: number
   switch_improvement_ratio: number
   switch_improvement_ms: number
   switch_confirm_sec: number

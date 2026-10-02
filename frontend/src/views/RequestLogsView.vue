@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, h, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { NTag, NTimeline, NTimelineItem, useMessage } from 'naive-ui'
-import { ArrowBackOutline, ArrowForwardOutline, CopyOutline, DownloadOutline, RefreshOutline } from '@vicons/ionicons5'
-import type { DataTableColumns, SelectOption } from 'naive-ui'
+import { UiTag, UiTimeline, UiTimelineItem, useMessage } from '@/components/ui'
+import { ArrowBackOutline, ArrowForwardOutline, CopyOutline, DownloadOutline, FilterOutline, RefreshOutline } from '@/components/ui/icons'
+import type { DataTableColumns, SelectOption } from '@/components/ui'
 import { allPages, downloadLogBody, getLogBody, getRequestLog, listConsumerKeys, listKeyOptions, listRequestLogs, listRouteGroups, listUpstreams } from '@/api/admin'
 import type { RequestLog, RequestLogDetail, RequestLogQuery, SchedulerDecision, SchedulerCandidate, RequestAttempt } from '@/api/types'
 import { EXTERNAL_PROBE_LABEL } from '@/api/types'
@@ -274,6 +274,21 @@ function reset() {
   search()
 }
 
+// 手机端筛选收进抽屉：角标显示已生效条件数
+const filterOpen = ref(false)
+const activeFilterCount = computed(() => {
+  const f = filters
+  return [f.upstream_id, f.key_id, f.consumer_key_id, f.route_group_id, f.model, f.external_probe_rule]
+    .filter(v => v != null && v !== '').length
+    + (f.success !== '' ? 1 : 0)
+    + (f.range?.length ? 1 : 0)
+})
+
+function searchFromDrawer() {
+  filterOpen.value = false
+  search()
+}
+
 function startLive() {
   if (disposed) return
   stopLive()
@@ -363,6 +378,7 @@ const columns = computed<DataTableColumns<RequestLog>>(() => {
     title: '来源 IP',
     key: 'client_ip',
     width: 140,
+    mobileHide: true,
     ellipsis: { tooltip: true },
     render(row) {
       return h('span', { class: 'preview' }, row.client_ip || '—')
@@ -390,28 +406,30 @@ const columns = computed<DataTableColumns<RequestLog>>(() => {
     title: '分组',
     key: 'route_group_name',
     width: 110,
+    mobileHide: true,
     ellipsis: { tooltip: true },
     render(row) {
       return row.route_group_name || (row.route_group_id != null ? `#${row.route_group_id}` : '—')
     },
   },
-  { title: '模型', key: 'model', width: 140, ellipsis: { tooltip: true } },
+  { title: '模型', key: 'model', width: 140, ellipsis: { tooltip: true }, mobileTitle: true },
   {
-    title: '外部探测', key: 'external_probe_rule', width: 175,
+    title: '外部探测', key: 'external_probe_rule', width: 175, mobileHide: true,
     render(row) {
       return row.external_probe_rule
-        ? h(NTag, { size: 'small', bordered: false, type: 'warning' }, { default: () => EXTERNAL_PROBE_LABEL[row.external_probe_rule!] || row.external_probe_rule })
+        ? h(UiTag, { size: 'small', bordered: false, type: 'warning' }, { default: () => EXTERNAL_PROBE_LABEL[row.external_probe_rule!] || row.external_probe_rule })
         : '—'
     },
   },
-  { title: '协议', key: 'protocol', width: 90 },
+  { title: '协议', key: 'protocol', width: 90, mobileHide: true },
   {
     title: '类型',
     key: 'stream',
     width: 72,
+    mobileHide: true,
     render(row) {
       return h(
-        NTag,
+        UiTag,
         { size: 'small', bordered: false, type: row.stream_known && row.stream ? 'info' : 'default' },
         { default: () => streamLabel(row) },
       )
@@ -464,12 +482,13 @@ const columns = computed<DataTableColumns<RequestLog>>(() => {
     title: '成功',
     key: 'success',
     width: 80,
+    mobileTag: true,
     render(row) {
       if (row.in_flight) {
-        return h(NTag, { type: 'warning', size: 'small', bordered: false }, { default: () => '进行中' })
+        return h(UiTag, { type: 'warning', size: 'small', bordered: false }, { default: () => '进行中' })
       }
       return h(
-        NTag,
+        UiTag,
         { type: row.success ? 'success' : 'error', size: 'small', bordered: false },
         { default: () => (row.success ? '成功' : '失败') },
       )
@@ -542,26 +561,35 @@ onUnmounted(() => {
   <div class="page">
     <div class="page-head">
       <div>
+        <span class="eyebrow">记录 / LOGS</span>
         <h2>请求记录</h2>
         <p>点击行查看请求头 / 请求体 / 响应；记录保留 24 小时后自动清理</p>
       </div>
       <div class="live-ctl">
-        <n-switch v-model:value="live" size="small" />
+        <ui-switch v-model:value="live" size="small" />
         <span>实时刷新</span>
         <span v-if="lastRefresh" class="muted">更新于 {{ lastRefresh }}</span>
       </div>
     </div>
 
-    <n-card size="small" :bordered="false">
-      <div class="toolbar" style="margin-bottom: 12px">
-        <n-select
+    <ui-card size="small" :bordered="false">
+      <div class="filter-toggle">
+        <ui-button size="small" @click="filterOpen = true">
+          <template #icon><ui-icon><FilterOutline /></ui-icon></template>
+          筛选{{ activeFilterCount ? ` · ${activeFilterCount}` : '' }}
+        </ui-button>
+        <ui-button type="primary" size="small" @click="search">查询</ui-button>
+        <ui-button size="small" @click="refresh">刷新</ui-button>
+      </div>
+      <div class="toolbar filter-bar" style="margin-bottom: 12px">
+        <ui-select
           v-model:value="filters.upstream_id"
           :options="upstreamOptions"
           clearable
           placeholder="提供商"
           style="width: 180px"
         />
-        <n-select
+        <ui-select
           v-model:value="filters.key_id"
           :options="keyOptions"
           clearable
@@ -569,26 +597,27 @@ onUnmounted(() => {
           placeholder="Key"
           style="width: 220px"
         />
-        <n-select v-model:value="filters.consumer_key_id" :options="consumerOptions" clearable filterable placeholder="API 密钥" style="width: 220px" />
-        <n-select v-model:value="filters.route_group_id" :options="groupOptions" clearable filterable placeholder="分组" style="width: 180px" />
-        <n-input v-model:value="filters.model" clearable placeholder="模型" style="width: 160px" />
-        <n-select v-model:value="filters.success" :options="successOptions" placeholder="成败" style="width: 110px" />
-        <n-select v-model:value="filters.external_probe_rule" :options="probeOptions" clearable placeholder="外部探测" style="width: 220px" />
-        <n-date-picker
+        <ui-select v-model:value="filters.consumer_key_id" :options="consumerOptions" clearable filterable placeholder="API 密钥" style="width: 220px" />
+        <ui-select v-model:value="filters.route_group_id" :options="groupOptions" clearable filterable placeholder="分组" style="width: 180px" />
+        <ui-input v-model:value="filters.model" clearable placeholder="模型" style="width: 160px" />
+        <ui-select v-model:value="filters.success" :options="successOptions" placeholder="成败" style="width: 110px" />
+        <ui-select v-model:value="filters.external_probe_rule" :options="probeOptions" clearable placeholder="外部探测" style="width: 220px" />
+        <ui-date-picker
           v-model:value="filters.range"
           type="datetimerange"
           clearable
           start-placeholder="从"
           end-placeholder="到"
         />
-        <n-button type="primary" size="small" @click="search">查询</n-button>
-        <n-button size="small" @click="reset">重置</n-button>
-        <n-button size="small" @click="refresh">刷新</n-button>
+        <ui-button type="primary" size="small" @click="search">查询</ui-button>
+        <ui-button size="small" @click="reset">重置</ui-button>
+        <ui-button size="small" @click="refresh">刷新</ui-button>
       </div>
-      <n-alert v-if="error" type="error" :title="error" style="margin-bottom: 10px" />
-      <n-data-table
+      <ui-alert v-if="error" type="error" :title="error" style="margin-bottom: 10px" />
+      <ui-data-table
         remote
         size="small"
+        card
         :columns="columns"
         :data="items"
         :loading="loading"
@@ -612,12 +641,33 @@ onUnmounted(() => {
           },
         }"
       />
-    </n-card>
+    </ui-card>
 
-    <n-drawer v-model:show="showDetail" width="min(640px, 100vw)" placement="right">
-      <n-drawer-content title="请求明细" closable :native-scrollbar="false">
-        <n-spin :show="detailLoading">
-          <n-alert v-if="detailError" type="error" :title="detailError" style="margin-bottom: 10px" />
+    <ui-drawer v-model:show="filterOpen" width="min(360px, 92vw)" placement="right">
+      <ui-drawer-content title="筛选请求记录" closable>
+        <div class="filter-stack">
+          <label class="filter-field"><span>提供商</span><ui-select v-model:value="filters.upstream_id" :options="upstreamOptions" clearable placeholder="全部" /></label>
+          <label class="filter-field"><span>Key</span><ui-select v-model:value="filters.key_id" :options="keyOptions" clearable filterable placeholder="全部" /></label>
+          <label class="filter-field"><span>API 密钥</span><ui-select v-model:value="filters.consumer_key_id" :options="consumerOptions" clearable filterable placeholder="全部" /></label>
+          <label class="filter-field"><span>分组</span><ui-select v-model:value="filters.route_group_id" :options="groupOptions" clearable filterable placeholder="全部" /></label>
+          <label class="filter-field"><span>模型</span><ui-input v-model:value="filters.model" clearable placeholder="模型名称" /></label>
+          <label class="filter-field"><span>成败</span><ui-select v-model:value="filters.success" :options="successOptions" placeholder="全部" /></label>
+          <label class="filter-field"><span>外部探测</span><ui-select v-model:value="filters.external_probe_rule" :options="probeOptions" clearable placeholder="全部" /></label>
+          <div class="filter-field"><span>时间范围</span><ui-date-picker v-model:value="filters.range" type="datetimerange" clearable start-placeholder="从" end-placeholder="到" /></div>
+        </div>
+        <template #footer>
+          <div class="filter-foot">
+            <ui-button size="small" @click="reset">重置</ui-button>
+            <ui-button type="primary" size="small" @click="searchFromDrawer">查询</ui-button>
+          </div>
+        </template>
+      </ui-drawer-content>
+    </ui-drawer>
+
+    <ui-drawer v-model:show="showDetail" width="min(640px, 100vw)" placement="right">
+      <ui-drawer-content title="请求明细" closable :native-scrollbar="false">
+        <ui-spin :show="detailLoading">
+          <ui-alert v-if="detailError" type="error" :title="detailError" style="margin-bottom: 10px" />
           <template v-if="detail">
             <div class="meta-grid">
               <div><span class="meta-k">时间</span>{{ formatTime(detail.created_at) }}</div>
@@ -672,26 +722,26 @@ onUnmounted(() => {
             </div>
             <section v-if="selectionTrace(detail).length" class="selection-trace">
               <h3>Key 选择过程</h3>
-              <n-timeline>
-                <n-timeline-item v-for="(event, index) in selectionTrace(detail)" :key="`${event.at}-${index}`" :type="['selected', 'recovered'].includes(event.result) ? 'success' : event.result === 'retry' ? 'warning' : ['waiting', 'wait_finished'].includes(event.result) ? 'info' : 'error'" :title="`${traceResultLabel[event.result] || event.result}${event.key_name ? ` · ${event.key_name}` : ''}`" :time="formatTime(event.at)">
+              <ui-timeline>
+                <ui-timeline-item v-for="(event, index) in selectionTrace(detail)" :key="`${event.at}-${index}`" :type="['selected', 'recovered'].includes(event.result) ? 'success' : event.result === 'retry' ? 'warning' : ['waiting', 'wait_finished'].includes(event.result) ? 'info' : 'error'" :title="`${traceResultLabel[event.result] || event.result}${event.key_name ? ` · ${event.key_name}` : ''}`" :time="formatTime(event.at)">
                   <span v-if="event.upstream_name">{{ event.upstream_name }}</span><span v-if="event.reason" class="muted"> · {{ recoveryReasonLabel[event.reason] || event.reason }}</span><span v-if="event.retry_count && event.retry_count > 1" class="muted"> · 重试 {{ event.retry_count }} 次</span>
                   <details v-if="event.decision" class="decision-details">
                     <summary>候选依据 · 原 Key {{ event.decision.previous_key_id || '-' }} · 会话来源 {{ event.decision.session_source || 'none' }}</summary>
-                    <n-data-table size="small" :columns="decisionColumns" :data="event.decision.candidates" :scroll-x="1225" />
+                    <ui-data-table size="small" :columns="decisionColumns" :data="event.decision.candidates" :scroll-x="1225" />
                   </details>
-                </n-timeline-item>
-              </n-timeline>
+                </ui-timeline-item>
+              </ui-timeline>
             </section>
             <section v-if="detail.attempts?.length" class="selection-trace">
               <h3>上游尝试</h3>
-              <n-data-table size="small" :columns="attemptColumns" :data="detail.attempts" :scroll-x="1130" />
+              <ui-data-table size="small" :columns="attemptColumns" :data="detail.attempts" :scroll-x="1130" />
               <details v-for="attempt in detail.attempts.filter(a => a.event_summary)" :key="attempt.id" class="decision-details">
                 <summary>Key {{ attempt.platform_key_id }} · 事件摘要 · 接收 {{ formatNumber(attempt.received_bytes || 0) }} B</summary>
                 <pre class="log-pre">{{ pretty(attempt.event_summary || '') }}</pre>
               </details>
             </section>
-            <n-alert v-if="detail.error_message" type="error" :title="detail.error_message" style="margin: 10px 0" />
-            <n-alert v-if="detail.error_message === 'stale in-flight request'" type="warning" title="请求异常中断，耗时为最后记录值" style="margin: 10px 0" />
+            <ui-alert v-if="detail.error_message" type="error" :title="detail.error_message" style="margin: 10px 0" />
+            <ui-alert v-if="detail.error_message === 'stale in-flight request'" type="warning" title="请求异常中断，耗时为最后记录值" style="margin: 10px 0" />
 
             <div class="io-tabs">
               <button
@@ -706,29 +756,29 @@ onUnmounted(() => {
                 <span class="io-tab-hint">{{ ioHasContent(tab.field) ? '有内容' : '空' }}</span>
               </button>
             </div>
-            <n-card size="small" :bordered="true" class="io-pane">
-              <n-select v-if="bodyCandidates.length > 1" v-model:value="selectedBodyId" :options="bodyOptions" :placeholder="bodyOptions.at(-1)?.label" size="small" />
+            <ui-card size="small" :bordered="true" class="io-pane">
+              <ui-select v-if="bodyCandidates.length > 1" v-model:value="selectedBodyId" :options="bodyOptions" :placeholder="bodyOptions.at(-1)?.label" size="small" />
               <p v-if="bodyNotice" class="muted body-notice">{{ bodyNotice }}</p>
-              <n-alert v-if="bodyError" type="error" :title="bodyError" />
+              <ui-alert v-if="bodyError" type="error" :title="bodyError" />
               <div class="block-head">
                 <h3>{{ activeIo.label }}</h3>
                 <div class="body-tools">
-                  <n-button v-if="activeBody" size="tiny" quaternary title="重新读取" aria-label="重新读取" :loading="bodyLoading" @click="refreshDetail().then(() => loadBody(bodyOffsets.at(-1) || 0))"><n-icon :component="RefreshOutline" /></n-button>
-                  <n-button size="tiny" quaternary title="复制当前内容" aria-label="复制当前内容" @click="copySection(activeIo.label, activeIoRaw)"><n-icon :component="CopyOutline" /></n-button>
-                  <n-button v-if="activeBody" size="tiny" quaternary title="下载已保存正文" aria-label="下载已保存正文" :loading="bodyDownloadLoading" :disabled="activeBody.status === 'saving' || activeBody.status === 'error'" @click="downloadBody"><n-icon :component="DownloadOutline" /></n-button>
+                  <ui-button v-if="activeBody" size="tiny" quaternary title="重新读取" aria-label="重新读取" :loading="bodyLoading" @click="refreshDetail().then(() => loadBody(bodyOffsets.at(-1) || 0))"><ui-icon :component="RefreshOutline" /></ui-button>
+                  <ui-button size="tiny" quaternary title="复制当前内容" aria-label="复制当前内容" @click="copySection(activeIo.label, activeIoRaw)"><ui-icon :component="CopyOutline" /></ui-button>
+                  <ui-button v-if="activeBody" size="tiny" quaternary title="下载已保存正文" aria-label="下载已保存正文" :loading="bodyDownloadLoading" :disabled="activeBody.status === 'saving' || activeBody.status === 'error'" @click="downloadBody"><ui-icon :component="DownloadOutline" /></ui-button>
                 </div>
               </div>
-              <n-spin :show="bodyLoading"><pre class="log-pre">{{ pretty(activeIoRaw) || '—' }}</pre></n-spin>
+              <ui-spin :show="bodyLoading"><pre class="log-pre">{{ pretty(activeIoRaw) || '—' }}</pre></ui-spin>
               <div v-if="activeBody && loadedBodyId" class="body-pagination">
-                <n-button size="tiny" quaternary title="上一段" aria-label="上一段" :disabled="bodyLoading || bodyOffsets.length < 2" @click="previousBodyPage"><n-icon :component="ArrowBackOutline" /></n-button>
+                <ui-button size="tiny" quaternary title="上一段" aria-label="上一段" :disabled="bodyLoading || bodyOffsets.length < 2" @click="previousBodyPage"><ui-icon :component="ArrowBackOutline" /></ui-button>
                 <span>第 {{ bodyOffsets.length }} 段</span>
-                <n-button size="tiny" quaternary title="下一段" aria-label="下一段" :disabled="bodyLoading || bodyEof" @click="nextBodyPage"><n-icon :component="ArrowForwardOutline" /></n-button>
+                <ui-button size="tiny" quaternary title="下一段" aria-label="下一段" :disabled="bodyLoading || bodyEof" @click="nextBodyPage"><ui-icon :component="ArrowForwardOutline" /></ui-button>
               </div>
-            </n-card>
+            </ui-card>
           </template>
-        </n-spin>
-      </n-drawer-content>
-    </n-drawer>
+        </ui-spin>
+      </ui-drawer-content>
+    </ui-drawer>
   </div>
 </template>
 
@@ -744,7 +794,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   font-size: 13px;
-  color: #344054;
+  color: #546c58;
 }
 .meta-grid {
   display: grid;
@@ -756,10 +806,10 @@ onUnmounted(() => {
 .meta-k {
   display: inline-block;
   width: 88px;
-  color: #667085;
+  color: #819087;
 }
 .meta-grid > div { min-width: 0; overflow-wrap: anywhere; }
-@media (max-width: 600px) { .meta-grid { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 760px) { .meta-grid { grid-template-columns: minmax(0, 1fr); } }
 .block-head {
   display: flex;
   align-items: center;
@@ -778,8 +828,8 @@ onUnmounted(() => {
   overflow: auto;
   padding: 10px 12px;
   border-radius: 8px;
-  background: #0f1720;
-  color: #e2e8f0;
+  background: #edf1e6;
+  color: #425b35;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 12px;
   line-height: 1.45;
@@ -793,7 +843,7 @@ onUnmounted(() => {
   font-variant-numeric: tabular-nums;
 }
 .tok-cache {
-  color: #667085;
+  color: #819087;
   font-size: 12px;
 }
 .io-tabs {
@@ -813,15 +863,15 @@ onUnmounted(() => {
   background: #fbfcfd;
   cursor: pointer;
   text-align: left;
-  color: #344054;
+  color: #3c543e;
 }
 .io-tab:hover {
-  border-color: #98a2b3;
+  border-color: #b7c4ae;
 }
 .io-tab.active {
-  border-color: #0f766e;
-  background: #eef6f4;
-  box-shadow: inset 0 0 0 1px #0f766e;
+  border-color: #174b3d;
+  background: #f3f7ee;
+  box-shadow: inset 0 0 0 1px #174b3d;
 }
 .io-tab-label {
   font-size: 13px;
@@ -829,12 +879,22 @@ onUnmounted(() => {
 }
 .io-tab-hint {
   font-size: 11px;
-  color: #667085;
+  color: #819087;
 }
 .io-pane {
   margin-bottom: 8px;
 }
 :deep(.log-row-active td) {
-  background: #eef6f4 !important;
+  background: #f3f7ee !important;
+}
+:deep(.table-card.log-row-active) {
+  border-color: #b8cf9e;
+  background: #f3f7ee;
+}
+@media (max-width: 760px) {
+  .io-tabs { grid-template-columns: 1fr; }
+  .live-ctl { flex-wrap: wrap; }
+  .filter-bar { display: none !important; }
+  .filter-toggle { margin-bottom: 10px; }
 }
 </style>

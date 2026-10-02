@@ -249,3 +249,102 @@ func TestConcurrentRecoveryAcrossStores(t *testing.T) {
 		t.Fatalf("half-open admissions=%d", granted.Load())
 	}
 }
+
+func TestFirstTokenTimeoutWeightOpensSparseGate(t *testing.T) {
+	s, d := fixture(t)
+	ctx := context.Background()
+	s.Settings.FTTFailureWeight = 2
+	observe := func(store Store, dim Dimension, id string) {
+		t.Helper()
+		if err := store.Observe(ctx, dim, "", Outcome{RequestID: id, StartedAt: time.Now(), Reason: domain.FailureFirstTokenTimeout}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Two slow-fail requests weigh as four failures and open the gate.
+	observe(s, d, "a")
+	observe(s, d, "b")
+	if r := row(t, s, d.Scope()); !r.Open || r.Failures != 4 {
+		t.Fatalf("FTT weight ignored: %+v", r)
+	}
+	// With weighting off, the same traffic keeps the gate closed.
+	s2, d2 := fixture(t)
+	observe(s2, d2, "a")
+	observe(s2, d2, "b")
+	if r := row(t, s2, d2.Scope()); r.Open || r.Failures != 2 {
+		t.Fatalf("unweighted gate opened: %+v", r)
+	}
+}
+
+func TestTrafficScaledThresholdToleratesBursts(t *testing.T) {
+	s, d := fixture(t)
+	ctx := context.Background()
+	s.Settings.CircuitRateFactor = 0.15
+	observe := func(id string, success bool) {
+		t.Helper()
+		if err := s.Observe(ctx, d, "", Outcome{RequestID: id, StartedAt: time.Now(), Success: success, Reason: "request_scope_failure"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 30; i++ {
+		observe(fmt.Sprintf("ok-%d", i), true)
+	}
+	// 34 attempts scale the threshold to ceil(34*0.15)=6, so a four-failure
+	// blip (13% of traffic) no longer trips the fixed threshold of 3.
+	for i := 0; i < 4; i++ {
+		observe(fmt.Sprintf("bad-%d", i), false)
+	}
+	if r := row(t, s, d.Scope()); r.Open {
+		t.Fatalf("burst tripped the scaled threshold: %+v", r)
+	}
+	observe("bad-4", false)
+	observe("bad-5", false)
+	if r := row(t, s, d.Scope()); !r.Open || r.Failures != 6 {
+		t.Fatalf("scaled threshold never opened: %+v", r)
+	}
+}
+
+func TestSustainedFailureRuleCatchesColdDimension(t *testing.T) {
+	s, d := fixture(t)
+	ctx := context.Background()
+	// Eight attempts with five failures (62% failure rate) open the gate even
+	// though no burst window reached the failure threshold.
+	for i := 0; i < 3; i++ {
+		if err := s.Observe(ctx, d, "", Outcome{RequestID: fmt.Sprintf("ok-%d", i), StartedAt: time.Now(), Success: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 5; i++ {
+		if err := s.Observe(ctx, d, "", Outcome{RequestID: fmt.Sprintf("bad-%d", i), StartedAt: time.Now(), Reason: "request_scope_failure"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if r := row(t, s, d.Scope()); !r.Open {
+		t.Fatalf("sustained failure not detected: %+v", r)
+	}
+}
+
+func TestFinishCheckBackoffEscalation(t *testing.T) {
+	s, d := fixture(t)
+	ctx := context.Background()
+	expiredGate(t, s, d)
+	for _, want := range []time.Duration{time.Second, 30 * time.Second, 60 * time.Second, 90 * time.Second, 90 * time.Second} {
+		if err := s.DB.Model(&domain.RoutingCircuit{}).Where("scope = ?", d.Scope()).Update("next_check_at", time.Now().Add(-time.Second)).Error; err != nil {
+			t.Fatal(err)
+		}
+		token, err := s.ClaimCheck(ctx, d.Scope(), d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.FinishCheck(ctx, d.Scope(), token, false, false, "probe timeout", 0); err != nil {
+			t.Fatal(err)
+		}
+		r := row(t, s, d.Scope())
+		if r.CheckOK {
+			t.Fatal("failed check recorded as ok")
+		}
+		delay := time.Until(*r.NextCheckAt)
+		if delay < want-time.Second || delay > want+time.Second {
+			t.Fatalf("check backoff %v, want %v", delay, want)
+		}
+	}
+}

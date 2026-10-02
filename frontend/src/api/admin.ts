@@ -38,7 +38,7 @@ function stripEmptyKey(payload: PlatformKeyPayload): PlatformKeyPayload {
   return next
 }
 
-export function listUpstreams(params?: ListParams & { include_summary?: boolean }) {
+export function listUpstreams(params?: ListParams & { include_summary?: boolean; search?: string }) {
   return getList<Upstream>('/upstreams', params)
 }
 
@@ -58,7 +58,19 @@ export function deleteUpstream(id: number) {
   return del(`/upstreams/${id}`)
 }
 
-export function listKeys(params?: ListParams & { upstream_id?: number; upstream_ids?: number[]; route_group_id?: number }) {
+export type KeySortColumn = 'id' | 'name' | 'rate_multiplier' | 'health_status' | 'last_request_at'
+export type KeyListParams = ListParams & {
+  upstream_id?: number
+  upstream_ids?: number[]
+  route_group_id?: number
+  search?: string
+  status?: string
+  health_status?: string
+  sort?: KeySortColumn
+  order?: 'asc' | 'desc'
+}
+
+export function listKeys(params?: KeyListParams) {
   if (params?.upstream_id && params.route_group_id === undefined) {
     const { upstream_id, ...rest } = params
     return getList<PlatformKey>(`/upstreams/${upstream_id}/keys`, rest)
@@ -73,7 +85,7 @@ export function listKeyOptions(params?: ListParams) {
   return getList<KeyOption>('/keys', { ...params, view: 'options' })
 }
 
-export function listKeyRates(params?: ListParams) {
+export function listKeyRates(params?: ListParams & { upstream_id?: number; upstream_ids?: number[] }) {
   return getList<KeyRate>('/keys', { ...params, view: 'rates' })
 }
 
@@ -97,6 +109,18 @@ export function updateKey(id: number, payload: PlatformKeyPayload) {
 
 export function deleteKey(id: number) {
   return del(`/keys/${id}`)
+}
+
+export function batchKeyStatus(ids: number[], status: 'enabled' | 'disabled') {
+  return post<{ updated: number }>('/keys/batch-status', { ids, status })
+}
+
+export function batchKeyDelete(ids: number[]) {
+  return post<{ deleted: number }>('/keys/batch-delete', { ids })
+}
+
+export function batchKeyBilling(ids: number[]) {
+  return post<{ ok: number; failed: number; errors: Array<{ id: number; error: string }>; message: string }>('/keys/batch-billing', { ids })
 }
 
 export type ProbeOptions = { model?: string; prompt?: string; protocol?: 'openai' | 'anthropic' }
@@ -208,7 +232,7 @@ export function getStatus() {
   return get<unknown>('/status')
 }
 
-export function runProbes(body?: ProbeOptions & { deep?: boolean; upstream_id?: number; key_id?: number }) {
+export function runProbes(body?: ProbeOptions & { deep?: boolean; upstream_id?: number; key_id?: number; key_ids?: number[] }) {
   return post<ProbeResult>('/probes/run', body ?? {})
 }
 

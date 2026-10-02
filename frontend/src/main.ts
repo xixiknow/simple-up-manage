@@ -4,6 +4,7 @@ import App from './App.vue'
 import router from './router'
 import { setUnauthorizedHandler } from './api/http'
 import { useAuthStore } from './stores/auth'
+import './components/ui/rotation.css'
 import './style.css'
 
 const app = createApp(App)

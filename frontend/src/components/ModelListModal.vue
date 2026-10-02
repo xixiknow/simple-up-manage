@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { NButton, NEmpty, NInput, NModal, NTag, useMessage } from 'naive-ui'
+import { UiButton, UiEmpty, UiInput, UiModal, UiTag, useMessage } from '@/components/ui'
 import { fetchKeyModels } from '@/api/admin'
 import type { PlatformKey } from '@/api/types'
 import { errText, formatTime } from '@/utils/format'
@@ -73,42 +73,43 @@ function copyAll() {
 </script>
 
 <template>
-  <n-modal
+  <ui-modal
     :show="show"
     preset="card"
     :title="title"
-    style="width: 640px"
+    style="width: min(640px, calc(100vw - 24px))"
     @update:show="(v: boolean) => emit('update:show', v)"
   >
     <div class="head">
-      <n-input v-model:value="query" size="small" clearable placeholder="搜索模型 id" style="max-width: 280px" />
+      <ui-input v-model:value="query" size="small" clearable placeholder="搜索模型 id" style="max-width: 280px" />
       <span class="muted">
         共 {{ models.length }} 个
         <template v-if="row?.last_models_at"> · 获取于 {{ formatTime(row.last_models_at) }}</template>
       </span>
       <span style="flex: 1 1 auto" />
-      <n-button size="small" quaternary :disabled="!models.length" @click="copyAll">复制全部</n-button>
-      <n-button size="small" type="primary" secondary :loading="fetching" @click="refetch">重新获取</n-button>
+      <ui-button size="small" quaternary :disabled="!models.length" @click="copyAll">复制全部</ui-button>
+      <ui-button size="small" type="primary" secondary :loading="fetching" @click="refetch">重新获取</ui-button>
     </div>
-    <n-empty
+    <ui-empty
       v-if="!models.length"
       description="还没有获取过模型，点「重新获取」向提供商请求 GET /v1/models"
       style="padding: 24px 0"
     />
-    <n-empty v-else-if="!filtered.length" description="没有匹配的模型" style="padding: 24px 0" />
+    <ui-empty v-else-if="!filtered.length" description="没有匹配的模型" style="padding: 24px 0" />
     <div v-else class="list">
-      <n-tag v-for="m in filtered" :key="m" size="small" :bordered="false" class="model">{{ m }}</n-tag>
+      <ui-tag v-for="m in filtered" :key="m" size="small" :bordered="false" class="model">{{ m }}</ui-tag>
     </div>
     <p class="muted hint">
       调度时若该 Key 的模型列表非空，请求的 model 不在列表内则跳过该 Key；列表为空不过滤。可在「调度」页关闭该规则。
     </p>
-  </n-modal>
+  </ui-modal>
 </template>
 
 <style scoped>
 .head {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   margin-bottom: 12px;
 }
@@ -125,7 +126,7 @@ function copyAll() {
   font-size: 12px;
 }
 .muted {
-  color: #667085;
+  color: #819087;
   font-size: 12px;
 }
 .hint {

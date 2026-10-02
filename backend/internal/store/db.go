@@ -85,6 +85,10 @@ func AutoMigrate(db *gorm.DB) error {
 		&domain.SchedulerSettings{},
 		&domain.CatalogModel{},
 		&domain.CatalogMeta{},
+		&domain.IntelTestPlan{},
+		&domain.IntelTestRun{},
+		&domain.IntelTestResult{},
+		&domain.IntelTestOutput{},
 	); err != nil {
 		return err
 	}

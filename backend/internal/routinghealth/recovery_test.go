@@ -102,17 +102,20 @@ func TestAdmitRespectsFailedCheckBackoff(t *testing.T) {
 			if err := s.FinishCheck(ctx, scope, token, false, false, "rate limited", time.Minute); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := s.Admit(ctx, d, true); err != ErrUnavailable {
-				t.Fatalf("validation bypassed failed check backoff: %v", err)
+			// The synthetic checker still honors the backoff...
+			if _, err := s.ClaimCheck(ctx, scope, d); err == nil {
+				t.Fatal("check retry ignored failed check backoff")
 			}
-			if r := row(t, s, scope); r.Lease != "" || r.RecoveryAt != nil {
-				t.Fatalf("rejected admission changed validation state: %+v", r)
-			}
-			if err := s.DB.Model(&domain.RoutingCircuit{}).Where("scope = ?", scope).Update("next_check_at", time.Now().Add(-time.Second)).Error; err != nil {
-				t.Fatal(err)
-			}
+			// ...but a failed probe no longer vetoes real-traffic validation.
 			if _, err := s.Admit(ctx, d, true); err != nil {
-				t.Fatalf("validation blocked after backoff: %v", err)
+				t.Fatalf("validation blocked by failed check backoff: %v", err)
+			}
+			if r := row(t, s, scope); r.Lease == "" || r.RecoveryAt == nil {
+				t.Fatalf("admitted validation did not take the lease: %+v", r)
+			}
+			// Non-recovery traffic stays blocked while the gate is open.
+			if _, err := s.Admit(ctx, d, false); err != ErrUnavailable {
+				t.Fatalf("non-recovery admission passed during backoff: %v", err)
 			}
 		})
 	}

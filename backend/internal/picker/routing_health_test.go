@@ -133,8 +133,11 @@ func TestRecoveryChecksBeforeRealTraffic(t *testing.T) {
 		t.Fatalf("historical check readiness sent business traffic: %+v %v", d, err)
 	}
 	req.AllowKeys = map[uint]struct{}{keys[1].ID: {}}
-	if _, _, _, err := p.PickDecision(ctx, req); err != ErrNoUpstream {
-		t.Fatalf("outage bypassed dedicated recovery: %v", err)
+	// Outage: with no healthy candidate left, the real request validates the
+	// check-owned gate itself instead of failing the client outright.
+	key, _, d, err = p.PickDecision(ctx, req)
+	if err != nil || key == nil || key.ID != keys[1].ID || d.Reason != "recovery_validation" {
+		t.Fatalf("outage did not validate check-owned gate: %+v %v", d, err)
 	}
 	if err := p.db.Model(&gate).Update("open", false).Error; err != nil {
 		t.Fatal(err)

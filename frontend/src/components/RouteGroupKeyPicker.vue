@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import { useMessage } from 'naive-ui'
+import { useMessage } from '@/components/ui'
 import { listRouteCandidates, setRouteGroupKeys } from '@/api/admin'
 import {
   KIND_LABEL,
@@ -241,11 +241,11 @@ function requestClose(next: boolean) {
 </script>
 
 <template>
-  <n-modal
+  <ui-modal
     :show="show"
     preset="card"
     :title="group ? `选择提供商 Key · ${group.name}` : '选择提供商 Key'"
-    style="width: 960px"
+    style="width: min(960px, calc(100vw - 24px))"
     :mask-closable="!dirty"
     @update:show="requestClose"
   >
@@ -255,7 +255,7 @@ function requestClose(next: boolean) {
           <span class="muted">按提供商归组、按倍率升序，勾选整个提供商或单把 Key</span>
         </div>
         <div class="picker-filters">
-          <n-select
+          <ui-select
             v-model:value="filters.upstream"
             :options="upstreamOptions"
             clearable
@@ -263,7 +263,7 @@ function requestClose(next: boolean) {
             placeholder="全部提供商"
             style="width: 150px"
           />
-          <n-select
+          <ui-select
             v-model:value="filters.protocol"
             :options="PROTOCOL_OPTIONS"
             clearable
@@ -271,8 +271,8 @@ function requestClose(next: boolean) {
             placeholder="全部协议"
             style="width: 116px"
           />
-          <n-input-group class="rate-range">
-            <n-input-number
+          <ui-input-group class="rate-range">
+            <ui-input-number
               v-model:value="filters.rateMin"
               size="small"
               placeholder="倍率 ≥"
@@ -281,8 +281,8 @@ function requestClose(next: boolean) {
               :show-button="false"
               style="width: 86px"
             />
-            <n-input-group-label size="small">~</n-input-group-label>
-            <n-input-number
+            <ui-input-group-label size="small">~</ui-input-group-label>
+            <ui-input-number
               v-model:value="filters.rateMax"
               size="small"
               placeholder="<"
@@ -291,19 +291,19 @@ function requestClose(next: boolean) {
               :show-button="false"
               style="width: 72px"
             />
-          </n-input-group>
-          <n-input v-model:value="filters.keyword" size="small" clearable placeholder="搜索名称 / 预览" class="kw-input" />
-          <n-checkbox v-model:checked="filters.onlyUnassigned" size="small" class="nowrap">只看未归档</n-checkbox>
+          </ui-input-group>
+          <ui-input v-model:value="filters.keyword" size="small" clearable placeholder="搜索名称 / 预览" class="kw-input" />
+          <ui-checkbox v-model:checked="filters.onlyUnassigned" size="small" class="nowrap">只看未归档</ui-checkbox>
         </div>
       </div>
 
-      <n-alert v-if="draft.size === 0 && !dirty" type="info" :bordered="false" class="picker-hint">
+      <ui-alert v-if="draft.size === 0 && !dirty" type="info" :bordered="false" class="picker-hint">
         该分组还没有成员。绑定它的 API 密钥在保存前拿不到任何提供商 Key。
-      </n-alert>
+      </ui-alert>
 
       <div class="member-list">
         <div class="member-toolbar">
-          <n-checkbox
+          <ui-checkbox
             size="small"
             :checked="visibleCandidates.length > 0 && visibleSelectedCount === visibleCandidates.length"
             :indeterminate="visibleSelectedCount > 0 && visibleSelectedCount < visibleCandidates.length"
@@ -311,7 +311,7 @@ function requestClose(next: boolean) {
             @update:checked="selectVisible"
           >
             筛选结果 {{ visibleCandidates.length }} 把<template v-if="visibleSelectedCount"> · 已选 {{ visibleSelectedCount }}</template>
-          </n-checkbox>
+          </ui-checkbox>
           <div class="member-cols">
             <span class="col-rate">倍率</span>
             <span class="col-health">健康</span>
@@ -325,7 +325,7 @@ function requestClose(next: boolean) {
 
         <section v-for="up in sections" :key="up.id" class="up-section">
           <div class="up-row" @click="toggleCollapse(up.id)">
-            <n-checkbox
+            <ui-checkbox
               size="small"
               :checked="allChecked(up.keyIds)"
               :indeterminate="someChecked(up.keyIds)"
@@ -334,8 +334,8 @@ function requestClose(next: boolean) {
             />
             <span class="chevron" :class="{ open: !collapsed.has(up.id) }">›</span>
             <span class="up-name">{{ up.name }}</span>
-            <n-tag size="tiny" :bordered="false">{{ kindLabel(up.kind) }}</n-tag>
-            <n-tag v-for="p in up.protocols" :key="p" size="tiny" :bordered="false" type="info">{{ PROTOCOL_LABEL[p] }}</n-tag>
+            <ui-tag size="tiny" :bordered="false">{{ kindLabel(up.kind) }}</ui-tag>
+            <ui-tag v-for="p in up.protocols" :key="p" size="tiny" :bordered="false" type="info">{{ PROTOCOL_LABEL[p] }}</ui-tag>
             <span class="spacer" />
             <span class="count" :class="{ on: checkedCount(up.keyIds) > 0 }">{{ summary(up.keyIds) }}</span>
           </div>
@@ -348,27 +348,27 @@ function requestClose(next: boolean) {
               :class="{ on: draft.has(c.id), drift: isDrift(c) }"
               @click="toggleOne(c.id)"
             >
-              <n-checkbox size="small" :checked="draft.has(c.id)" @update:checked="() => toggleOne(c.id)" @click.stop />
+              <ui-checkbox size="small" :checked="draft.has(c.id)" @update:checked="() => toggleOne(c.id)" @click.stop />
               <div class="key-main">
                 <span class="key-name">{{ c.name || `#${c.id}` }}</span>
                 <span class="preview muted">{{ c.key_preview }}</span>
               </div>
               <div class="member-cols">
                 <span class="col-rate">
-                  <n-tooltip v-if="isDrift(c)" trigger="hover">
+                  <ui-tooltip v-if="isDrift(c)" trigger="hover">
                     <template #trigger>
                       <span class="rate-drift">{{ fmtRate(c.rate_multiplier) }}</span>
                     </template>
                     当前 {{ fmtRate(c.rate_multiplier) }}，超出参考区间 {{ rateRangeText(group) }}，调度时将跳过
-                  </n-tooltip>
+                  </ui-tooltip>
                   <span v-else>{{ fmtRate(c.rate_multiplier) }}</span>
                 </span>
                 <span class="col-health"><HealthTag :status="c.health_status" /></span>
                 <span class="col-balance mono">{{ formatMoney(c.last_balance) }}</span>
                 <span class="col-tags">
-                  <n-tag v-for="id in otherGroups(c)" :key="id" size="tiny" :bordered="false" class="other-tag">
+                  <ui-tag v-for="id in otherGroups(c)" :key="id" size="tiny" :bordered="false" class="other-tag">
                     {{ groupName[id] ?? `#${id}` }}
-                  </n-tag>
+                  </ui-tag>
                 </span>
               </div>
             </div>
@@ -388,13 +388,13 @@ function requestClose(next: boolean) {
           </template>
           <span v-else class="muted">· 无改动</span>
         </span>
-        <n-space size="small">
-          <n-button size="small" @click="requestClose(false)">取消</n-button>
-          <n-button size="small" type="primary" :disabled="!dirty" :loading="saving" @click="saveMembers">保存成员</n-button>
-        </n-space>
+        <ui-space size="small">
+          <ui-button size="small" @click="requestClose(false)">取消</ui-button>
+          <ui-button size="small" type="primary" :disabled="!dirty" :loading="saving" @click="saveMembers">保存成员</ui-button>
+        </ui-space>
       </div>
     </template>
-  </n-modal>
+  </ui-modal>
 </template>
 
 <style scoped>
@@ -433,6 +433,8 @@ function requestClose(next: boolean) {
   background: #fff;
 }
 .member-toolbar {
+  box-sizing: border-box;
+  min-width: 680px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -440,7 +442,7 @@ function requestClose(next: boolean) {
   background: #f8fafc;
   border-bottom: 1px solid #e4e7ec;
   font-size: 12px;
-  color: #667085;
+  color: #819087;
   position: sticky;
   top: 0;
   z-index: 1;
@@ -480,6 +482,8 @@ function requestClose(next: boolean) {
 }
 .up-row,
 .key-row {
+  box-sizing: border-box;
+  min-width: 680px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -518,7 +522,7 @@ function requestClose(next: boolean) {
   font-variant-numeric: tabular-nums;
 }
 .count.on {
-  color: #2563eb;
+  color: #54764e;
   font-weight: 500;
 }
 .key-row {
@@ -531,10 +535,10 @@ function requestClose(next: boolean) {
   background: #fafbfc;
 }
 .key-row.on {
-  background: #f3f7ff;
+  background: #f3f7ee;
 }
 .key-row.drift {
-  background: #fff6f4;
+  background: #fcf0eb;
 }
 .key-main {
   flex: 1 1 auto;
@@ -554,7 +558,7 @@ function requestClose(next: boolean) {
   opacity: 0.75;
 }
 .rate-drift {
-  color: #d92d20;
+  color: #a16d50;
   font-weight: 600;
 }
 .save-bar {
@@ -565,10 +569,67 @@ function requestClose(next: boolean) {
   font-size: 13px;
 }
 .save-bar.dirty .add {
-  color: #16a34a;
+  color: #578049;
 }
 .save-bar.dirty .del {
-  color: #d92d20;
+  color: #a16d50;
+}
+@media (max-width: 760px) {
+  .picker-filters :deep(.ui-select),
+  .picker-filters :deep(.ui-input),
+  .picker-filters :deep(.ui-input-number),
+  .rate-range {
+    width: 100% !important;
+    flex: 1 1 100%;
+  }
+  .member-list {
+    overflow: auto;
+  }
+  .save-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .member-toolbar,
+  .up-row,
+  .key-row {
+    min-width: 0;
+  }
+  .member-toolbar .member-cols {
+    display: none;
+  }
+  .key-row {
+    flex-wrap: wrap;
+    padding-left: 14px;
+    row-gap: 6px;
+  }
+  .key-row .member-cols {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    width: 100%;
+    padding-left: 0;
+  }
+  .key-row .col-rate,
+  .key-row .col-balance {
+    text-align: left;
+  }
+  .key-row .col-health {
+    justify-content: flex-start;
+  }
+  .key-row .col-tags {
+    padding-left: 0;
+  }
+  .key-row .col-rate::before {
+    content: '倍率 ';
+    color: #819087;
+    font-size: 11px;
+  }
+  .key-row .col-balance::before {
+    content: '余额 ';
+    color: #819087;
+    font-size: 11px;
+  }
 }
 .save-text .dot {
   color: #98a2b3;

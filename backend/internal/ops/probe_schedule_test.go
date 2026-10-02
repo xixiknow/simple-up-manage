@@ -101,7 +101,7 @@ func TestProbeFilteredCadence(t *testing.T) {
 				interval = 0
 			}
 			s := New(db, enc, nil)
-			r := s.probeFilteredAt(context.Background(), false, nil, interval, now)
+			r := s.probeFilteredAt(context.Background(), false, nil, nil, interval, now)
 			ok, failed, skipped := r.OK, r.Failed, r.Skipped
 			wantCalls := 0
 			if tc.wantProbe {
@@ -118,7 +118,7 @@ func TestProbeFilteredCadence(t *testing.T) {
 				t.Fatalf("probe logs=%d, want %d", logs, 1+wantCalls)
 			}
 			if tc.wantProbe && !tc.manual {
-				r2 := s.probeFilteredAt(context.Background(), false, nil, interval, now.Add(time.Second))
+				r2 := s.probeFilteredAt(context.Background(), false, nil, nil, interval, now.Add(time.Second))
 				ok, failed, skipped = r2.OK, r2.Failed, r2.Skipped
 				if ok != 0 || failed != 0 || skipped != 1 || calls.Load() != 1 {
 					t.Fatalf("duplicate probe in same window: ok=%d failed=%d skipped=%d calls=%d", ok, failed, skipped, calls.Load())
@@ -244,7 +244,7 @@ func TestProbeLogUsesStartMinute(t *testing.T) {
 	if !probe.CreatedAt.Equal(started) {
 		t.Fatalf("probe moved to completion minute: got %s want %s", probe.CreatedAt, started)
 	}
-	r := s.probeFilteredAt(context.Background(), false, nil, time.Minute, started.Add(time.Minute))
+	r := s.probeFilteredAt(context.Background(), false, nil, nil, time.Minute, started.Add(time.Minute))
 	ok, fail, skipped := r.OK, r.Failed, r.Skipped
 	if ok != 1 || fail != 0 || skipped != 0 {
 		t.Fatalf("cross-minute completion suppressed next probe: %d/%d/%d", ok, fail, skipped)

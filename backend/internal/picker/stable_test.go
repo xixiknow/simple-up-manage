@@ -96,8 +96,12 @@ func TestStableStatisticsIsolationAndExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cands[0].Samples != 0 || cands[0].TTFTp50 != 0 || cands[1].TTFTp50 != 4000 || cands[1].LatencySamples != 6 {
-		t.Fatalf("contaminated: %+v", cands)
+	// Cold dimensions fall back to the key's cross-model window: key 0's
+	// req.Model samples are expired, so its fresh "other"-model record stands
+	// in. Warm dimensions (key 1) keep strictly per-model stats and expired
+	// samples never resurface.
+	if cands[0].Samples != 8 || cands[0].TTFTp50 != 1 || cands[1].TTFTp50 != 4000 || cands[1].Samples != 7 || cands[1].LatencySamples != 6 {
+		t.Fatalf("unexpected stats: %+v %+v", cands[0], cands[1])
 	}
 	// A fresh picker recovers from attempts, not historical request totals.
 	fresh := NewBand(p.db, nil)

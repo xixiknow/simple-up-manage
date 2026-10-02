@@ -162,7 +162,10 @@ func (s *Service) CheckRecoveries(ctx context.Context) error {
 }
 
 func (s *Service) runRecoveryCheck(ctx context.Context, health routinghealth.Store, task recoveryTask, token string) {
-	checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// The check probes the failing dimension's own model; the timeout must be
+	// generous enough for reasoning models whose TTFT p95 approaches 30s.
+	timeout := time.Duration(s.probeSettings(ctx).RecoveryCheckTimeoutSec) * time.Second
+	checkCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	dim := task.dim
 	out := ProbeOutcome{Protocol: dim.Protocol, Model: dim.Model, Path: dim.Path, Stream: dim.Stream}
@@ -180,7 +183,7 @@ func (s *Service) runRecoveryCheck(ctx context.Context, health routinghealth.Sto
 		out.Error = "recovery check unavailable"
 	} else {
 		probeService := *s
-		probeService.Client = s.Client.WithTimeout(30 * time.Second)
+		probeService.Client = s.Client.WithTimeout(timeout)
 		out = probeService.sendBusinessProbe(checkCtx, &key, secret, out, "Reply OK.")
 	}
 	neutral = neutral || ctx.Err() != nil

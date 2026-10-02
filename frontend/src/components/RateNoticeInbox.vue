@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
-import { CashOutline } from '@vicons/ionicons5'
-import { useMessage } from 'naive-ui'
+import { CashOutline } from '@/components/ui/icons'
+import { useMessage } from '@/components/ui'
 import { RATE_CHANGE_SOURCE_LABEL, type RateChangeNotice } from '@/api/types'
 import { useRateNoticesStore } from '@/stores/rateNotices'
 import { errText, formatRate, formatTime } from '@/utils/format'
@@ -67,7 +67,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <n-popover
+  <ui-popover
     :show="open"
     trigger="click"
     placement="bottom-end"
@@ -76,18 +76,18 @@ onUnmounted(() => {
     @update:show="onOpen"
   >
     <template #trigger>
-      <n-badge :value="store.unread" :max="99" :show="store.unread > 0">
-        <n-button quaternary circle size="small" aria-label="价格变动">
+      <ui-badge :value="store.unread" :max="99" :show="store.unread > 0">
+        <ui-button quaternary circle size="small" aria-label="价格变动">
           <template #icon>
-            <n-icon size="18"><CashOutline /></n-icon>
+            <ui-icon size="18"><CashOutline /></ui-icon>
           </template>
-        </n-button>
-      </n-badge>
+        </ui-button>
+      </ui-badge>
     </template>
     <div class="inbox">
       <div class="head">
         <strong>价格变动</strong>
-        <n-button
+        <ui-button
           text
           size="tiny"
           :disabled="!store.hasUnread"
@@ -95,11 +95,11 @@ onUnmounted(() => {
           @click="onMarkAll"
         >
           全部已读
-        </n-button>
+        </ui-button>
       </div>
-      <n-spin :show="store.loading">
+      <ui-spin :show="store.loading">
         <div v-if="store.error" class="err">{{ store.error }}</div>
-        <n-empty v-else-if="!store.loading && !store.items.length" description="暂无价格变动" />
+        <ui-empty v-else-if="!store.loading && !store.items.length" description="暂无价格变动" />
         <div v-else class="list">
           <button
             v-for="item in store.items"
@@ -113,9 +113,9 @@ onUnmounted(() => {
             <span class="body">
               <span class="title">
                 <span class="name">{{ item.key_name || '—' }}</span>
-                <n-tag size="tiny" :bordered="false">
+                <ui-tag size="tiny" :bordered="false">
                   {{ RATE_CHANGE_SOURCE_LABEL[item.source] || item.source }}
-                </n-tag>
+                </ui-tag>
               </span>
               <span class="meta">
                 <span class="rate" :class="item.direction">
@@ -126,14 +126,14 @@ onUnmounted(() => {
             </span>
           </button>
         </div>
-      </n-spin>
+      </ui-spin>
     </div>
-  </n-popover>
+  </ui-popover>
 </template>
 
 <style scoped>
 .inbox {
-  width: 360px;
+  width: min(360px, calc(100vw - 24px));
   padding: 10px 0 8px;
   background: #fff;
   border-radius: 8px;
@@ -152,7 +152,7 @@ onUnmounted(() => {
 }
 .err {
   padding: 16px 14px;
-  color: #d03050;
+  color: #a16d50;
   font-size: 12px;
 }
 .list {
@@ -174,14 +174,14 @@ onUnmounted(() => {
   font: inherit;
 }
 .row:hover {
-  background: #f4f7f9;
+  background: #f4f7ef;
 }
 .row.unread {
-  background: #f0fdfa;
+  background: #f3f7ee;
   cursor: pointer;
 }
 .row.unread:hover {
-  background: #e6f7f4;
+  background: #e8eedb;
 }
 .dot {
   flex: none;
@@ -192,14 +192,14 @@ onUnmounted(() => {
   background: #cbd5e1;
 }
 .dot.up {
-  background: #d03050;
+  background: #a16d50;
 }
 .dot.down {
-  background: #18a058;
+  background: #578049;
 }
 .row.unread .dot.up,
 .row.unread .dot.down {
-  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
+  box-shadow: 0 0 0 3px rgba(23, 75, 61, 0.12);
 }
 .body {
   min-width: 0;
@@ -236,20 +236,20 @@ onUnmounted(() => {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 .rate.up {
-  color: #d03050;
+  color: #a16d50;
 }
 .rate.down {
-  color: #18a058;
+  color: #578049;
 }
 .time {
-  color: #667085;
+  color: #819087;
   font-size: 11px;
   white-space: nowrap;
 }
-:deep(.n-empty) {
+:deep(.ui-empty) {
   padding: 28px 0;
 }
-:deep(.n-spin-content) {
+:deep(.ui-spin-content) {
   min-height: 72px;
 }
 </style>

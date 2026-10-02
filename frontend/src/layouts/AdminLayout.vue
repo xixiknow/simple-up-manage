@@ -1,193 +1,293 @@
 <script setup lang="ts">
-import { computed, h, ref, onMounted, onUnmounted } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import type { Component } from 'vue'
-import { NIcon } from 'naive-ui'
-import {
-  KeyOutline,
-  ListOutline,
-  LogOutOutline,
-  PulseOutline,
-  ShuffleOutline,
-  ServerOutline,
-} from '@vicons/ionicons5'
+import { CloseOutline, KeyOutline, ListOutline, LogOutOutline, MenuOutline, PulseOutline, ShuffleOutline, ServerOutline, SparklesOutline, ChevronForwardOutline } from '@/components/ui/icons'
 import RateNoticeInbox from '@/components/RateNoticeInbox.vue'
 import { useAuthStore } from '@/stores/auth'
-
-function renderIcon(icon: Component) {
-  return () => h(NIcon, null, { default: () => h(icon) })
-}
-
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
-
-const menuOptions = [
-  { label: '仪表盘', key: '/dashboard', icon: renderIcon(PulseOutline) },
-  { label: '提供商', key: '/upstreams', icon: renderIcon(ServerOutline) },
-  { label: 'API 密钥', key: '/api-keys', icon: renderIcon(KeyOutline) },
-  { label: '调度', key: '/scheduler', icon: renderIcon(ShuffleOutline) },
-  { label: '请求记录', key: '/logs', icon: renderIcon(ListOutline) },
+const navOpen = ref(false)
+const navItems = [
+  { label: '仪表盘', key: '/dashboard', icon: PulseOutline },
+  { label: '提供商', key: '/upstreams', icon: ServerOutline },
+  { label: 'API 密钥', key: '/api-keys', icon: KeyOutline },
+  { label: '调度', key: '/scheduler', icon: ShuffleOutline },
+  { label: '测智', key: '/intel', icon: SparklesOutline },
+  { label: '请求记录', key: '/logs', icon: ListOutline },
 ]
-
-const STORAGE_KEY = 'sum-sider-collapsed'
-
-function readCollapsed() {
-  try {
-    return localStorage.getItem(STORAGE_KEY) === '1'
-  } catch {
-    return false
-  }
-}
-
-const mobileMedia = window.matchMedia('(max-width: 640px)')
-const mobile = ref(mobileMedia.matches)
-const collapsed = ref(mobile.value || readCollapsed())
-function updateMobile() { mobile.value = mobileMedia.matches; collapsed.value = mobile.value || readCollapsed() }
-onMounted(() => mobileMedia.addEventListener('change', updateMobile))
-onUnmounted(() => mobileMedia.removeEventListener('change', updateMobile))
-const activeKey = computed(() => route.path)
 const pageTitle = computed(() => (route.meta.title as string) || '控制台')
-
-function onCollapse(value: boolean) {
-  collapsed.value = value
-  try {
-    localStorage.setItem(STORAGE_KEY, value ? '1' : '0')
-  } catch {
-    /* ignore quota / private mode */
-  }
-}
-
-function onMenu(key: string) {
-  void router.push(key)
-}
-
-function logout() {
-  auth.logout()
-  void router.push('/login')
-}
+function go(key: string) { navOpen.value = false; void router.push(key) }
+function logout() { auth.logout(); void router.push('/login') }
 </script>
 
 <template>
-  <n-layout has-sider class="shell">
-    <n-layout-sider
-      bordered
-      collapse-mode="width"
-      :collapsed="collapsed"
-      :collapsed-width="64"
-      :width="216"
-      :show-trigger="!mobile"
-      :native-scrollbar="false"
-      content-style="display:flex;flex-direction:column;height:100%"
-      style="background: #10161c"
-      @update:collapsed="onCollapse"
-    >
-      <div class="brand" :class="{ collapsed }">
-        <span class="mark" />
-        <div v-if="!collapsed">
-          <strong>供货商管理</strong>
-          <small>Admin Console</small>
+  <div class="console-shell">
+    <aside class="console-aside">
+      <div class="brand"><span>供</span><div>供货商管理<small>ADMIN CONSOLE</small></div></div>
+      <div class="nav-label">工作台 / WORKSPACE</div>
+      <nav aria-label="主导航">
+        <button v-for="item in navItems" :key="item.key" type="button" :class="{ selected: route.path === item.key }" :aria-current="route.path === item.key ? 'page' : undefined" @click="go(item.key)">
+          <component :is="item.icon" class="nav-icon" />{{ item.label }}<ChevronForwardOutline v-if="route.path === item.key" class="nav-chevron" />
+        </button>
+      </nav>
+      <div class="aside-bottom"><span class="live-dot" />内部运维<small>管理时区 · Asia/Shanghai</small></div>
+    </aside>
+    <main class="console-main">
+      <header class="console-header">
+        <button class="nav-toggle" type="button" aria-label="打开导航" @click="navOpen = true"><MenuOutline /></button>
+        <div class="header-brand brand"><span>供</span><div>供货商管理<small>ADMIN CONSOLE</small></div></div>
+        <div class="breadcrumb"><span class="crumb-root">管理控制台</span><ChevronForwardOutline class="crumb-root" />{{ pageTitle }}</div>
+        <div class="header-right"><RateNoticeInbox /><button class="logout" type="button" @click="logout"><LogOutOutline />退出</button></div>
+      </header>
+      <div class="console-content"><router-view /></div>
+    </main>
+    <UiDrawer :show="navOpen" width="min(300px, 84vw)" @update:show="navOpen = $event">
+      <div class="nav-drawer">
+        <div class="nav-drawer-head">
+          <div class="brand"><span>供</span><div>供货商管理<small>ADMIN CONSOLE</small></div></div>
+          <button class="nav-drawer-close" type="button" aria-label="关闭导航" @click="navOpen = false"><CloseOutline /></button>
         </div>
+        <nav aria-label="主导航">
+          <button v-for="item in navItems" :key="item.key" type="button" :class="{ selected: route.path === item.key }" :aria-current="route.path === item.key ? 'page' : undefined" @click="go(item.key)">
+            <component :is="item.icon" class="nav-icon" />{{ item.label }}<ChevronForwardOutline v-if="route.path === item.key" class="nav-chevron" />
+          </button>
+        </nav>
+        <div class="aside-bottom"><span class="live-dot" />内部运维<small>管理时区 · Asia/Shanghai</small></div>
       </div>
-      <n-menu
-        :value="activeKey"
-        :options="menuOptions"
-        :collapsed="collapsed"
-        :root-indent="16"
-        :indent="16"
-        inverted
-        @update:value="onMenu"
-      />
-      <div v-if="!collapsed" class="sider-foot">内部运维 · v1</div>
-    </n-layout-sider>
-    <n-layout>
-      <n-layout-header bordered class="topbar">
-        <div class="crumb">{{ pageTitle }}</div>
-        <div class="top-actions">
-          <RateNoticeInbox />
-          <n-button quaternary size="small" @click="logout">
-            <template #icon>
-              <n-icon><LogOutOutline /></n-icon>
-            </template>
-            退出
-          </n-button>
-        </div>
-      </n-layout-header>
-      <n-layout-content class="content" :native-scrollbar="false">
-        <router-view />
-      </n-layout-content>
-    </n-layout>
-  </n-layout>
+    </UiDrawer>
+  </div>
 </template>
 
 <style scoped>
-.shell {
-  height: 100vh;
-}
+.console-shell {
+  display:flex;
+  min-height:100vh}
+.console-aside {
+  width:224px;
+  position:fixed;
+  inset:0 auto 0 0;
+  background:#153d32;
+  color:#c0d0c5;
+  display:flex;
+  flex-direction:column;
+  padding:31px 18px;
+  z-index:20}
 .brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 18px 16px 14px;
-  color: #e8eef4;
-}
-.brand.collapsed {
-  justify-content: center;
-  padding: 18px 8px 14px;
-}
-.brand strong {
-  display: block;
-  font-size: 14px;
-  letter-spacing: 0.04em;
-}
+  display:flex;
+  align-items:center;
+  gap:12px;
+  font-size:18px;
+  font-weight:650;
+  letter-spacing:1px}
+.brand>span {
+  display:grid;
+  place-items:center;
+  background:#d9e8b3;
+  color:#244734;
+  width:39px;
+  height:39px;
+  flex:none;
+  border-radius:11px;
+  font-family:serif;
+  font-size:26px}
 .brand small {
-  color: #8b98a5;
-  font-size: 11px;
+  font-size:8px;
+  letter-spacing:1.7px;
+  display:block;
+  font-weight:400;
+  margin-top:5px;
+  color:#9db5a5}
+.nav-label {
+  font-size:10px;
+  letter-spacing:1.5px;
+  margin:49px 14px 16px;
+  color:#81a18e}
+nav {
+  display:flex;
+  flex-direction:column;
+  gap:7px}
+nav button {
+  justify-content:flex-start;
+  padding:13px 14px;
+  border-radius:8px;
+  font-size:13px;
+  gap:13px}
+nav button:not(.selected):hover {
+  background:#ffffff0c;
+  color:#eef5e9}
+nav .selected {
+  background:#dbe9ba;
+  color:#234435;
+  font-weight:650}
+nav .selected:hover {
+  background:#e5efcc}
+nav button:focus-visible {
+  outline:2px solid #dbe9ba;
+  outline-offset:2px}
+.nav-icon {
+  width:19px;
+  height:19px}
+.nav-chevron {
+  width:14px;
+  height:14px;
+  margin-left:auto}
+.aside-bottom {
+  margin-top:auto;
+  padding:25px 12px 0;
+  font-size:11px;
+  line-height:2}
+.aside-bottom small {
+  display:block;
+  color:#88a392}
+.live-dot {
+  width:6px;
+  height:6px;
+  display:inline-block;
+  background:#9bc177;
+  border-radius:50%;
+  margin-right:7px}
+.console-main {
+  margin-left:224px;
+  width:calc(100% - 224px);
+  min-width:0;
+  min-height:100vh;
+  display:flex;
+  flex-direction:column}
+.console-header {
+  height:76px;
+  flex:none;
+  border-bottom:1px solid #e1e7df;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:0 39px;
+  background:#ffffff70}
+.breadcrumb,.header-right {
+  display:flex;
+  align-items:center;
+  gap:13px;
+  font-size:11px;
+  color:#7c8d81}
+.breadcrumb svg {
+  width:13px;
+  height:13px}
+.header-right {
+  gap:7px}
+.logout {
+  padding:8px;
+  font-size:12px;
+  border-radius:7px}
+.logout:hover {
+  background:#eef3e7}
+.logout svg {
+  width:16px;
+  height:16px}
+.console-content {
+  padding:36px 39px 55px;
+  max-width:1700px;
+  width:100%;
+  margin:0 auto;
+  flex:1;
+  min-width:0}
+.nav-toggle {
+  display:none;
+  width:36px;
+  height:36px;
+  border-radius:8px;
+  color:#546c58;
+  flex:none}
+.nav-toggle:hover {
+  background:#eef3e7}
+.nav-toggle svg {
+  width:20px;
+  height:20px}
+.header-brand {
+  display:none;
+  margin-right:auto}
+.nav-drawer {
+  display:flex;
+  flex-direction:column;
+  gap:18px;
+  height:100%;
+  padding:20px 16px;
+  overflow:auto;
+  background:#153d32;
+  color:#c0d0c5}
+.nav-drawer .brand {
+  font-size:16px}
+.nav-drawer .brand>span {
+  width:32px;
+  height:32px;
+  font-size:22px}
+.nav-drawer-head {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  flex:none}
+.nav-drawer-close {
+  width:34px;
+  height:34px;
+  border-radius:8px;
+  color:#9db5a5;
+  flex:none}
+.nav-drawer-close:hover {
+  background:#ffffff14;
+  color:#eef5e9}
+.nav-drawer-close svg {
+  width:18px;
+  height:18px}
+.nav-drawer .aside-bottom {
+  padding:20px 12px 6px}
+@media(max-width:1100px) {
+  .console-aside {
+  width:190px;
+  padding-inline:14px}
+.brand {
+  font-size:16px;
+  gap:9px}
+.console-main {
+  margin-left:190px;
+  width:calc(100% - 190px)}
+.console-content {
+  padding:28px 24px}
+.console-header {
+  padding:0 24px}
 }
-.mark {
-  width: 10px;
-  height: 22px;
-  border-radius: 2px;
-  background: linear-gradient(180deg, #2dd4bf, #0f766e);
+@media(max-width:760px) {
+  .console-shell {
+  display:block}
+.console-aside {
+  display:none}
+.console-main {
+  margin:0;
+  width:100%;
+  min-height:0}
+.console-header {
+  position:sticky;
+  top:0;
+  z-index:19;
+  height:55px;
+  padding:0 12px;
+  gap:10px;
+  background:#ffffff}
+.nav-toggle {
+  display:inline-flex}
+.header-brand {
+  display:flex;
+  font-size:16px;
+  gap:9px}
+.header-brand>span {
+  width:30px;
+  height:30px;
+  font-size:21px}
+.header-brand small {
+  display:none}
+.breadcrumb {
+  display:none}
+.console-content {
+  padding:16px 12px 40px}
 }
-.sider-foot {
-  margin-top: auto;
-  padding: 12px 16px 16px;
-  color: #64748b;
-  font-size: 11px;
-}
-.topbar {
-  height: 48px;
-  padding: 0 18px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  background: #f7f9fb;
-}
-.crumb {
-  font-size: 14px;
-  font-weight: 600;
-}
-.top-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.content {
-  padding: 16px 18px 24px;
-  background: #e8edf2;
-}
-@media (max-width: 640px) {
-  .content { padding: 12px 10px; }
-  .topbar { padding: 0 10px; }
-}
-:deep(.n-menu) {
-  background: transparent;
-}
-:deep(.n-layout-sider) {
-  color: #cbd5e1;
-}
-:deep(.n-layout-toggle-bar) {
-  background: #1f2937;
-}
+
 </style>

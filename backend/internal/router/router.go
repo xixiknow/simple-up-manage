@@ -46,6 +46,9 @@ func New(cfg *config.Config, db *gorm.DB, enc *crypto.AESGCM, opsSvc *ops.Servic
 		a.POST("/keys/:id/fetch-models", admin.FetchKeyModels)
 		a.POST("/upstreams/:id/fetch-models", admin.FetchUpstreamModels)
 		a.GET("/keys", admin.ListAllKeys)
+		a.POST("/keys/batch-status", admin.BatchKeyStatus)
+		a.POST("/keys/batch-delete", admin.BatchKeyDelete)
+		a.POST("/keys/batch-billing", admin.BatchKeyBilling)
 
 		a.GET("/consumer-keys", admin.ListConsumerKeys)
 		a.POST("/consumer-keys", admin.CreateConsumerKey)
@@ -81,6 +84,16 @@ func New(cfg *config.Config, db *gorm.DB, enc *crypto.AESGCM, opsSvc *ops.Servic
 		a.GET("/scheduler", admin.GetScheduler)
 		a.PUT("/scheduler", admin.UpdateScheduler)
 		a.GET("/scheduler/explain", admin.ExplainScheduler)
+
+		a.GET("/intel-tests/plans", admin.ListIntelPlans)
+		a.POST("/intel-tests/plans", admin.CreateIntelPlan)
+		a.PUT("/intel-tests/plans/:id", admin.UpdateIntelPlan)
+		a.DELETE("/intel-tests/plans/:id", admin.DeleteIntelPlan)
+		a.POST("/intel-tests/plans/:id/run", admin.RunIntelPlanNow)
+		a.GET("/intel-tests/plans/:id/summary", admin.IntelPlanSummary)
+		a.GET("/intel-tests/runs", admin.ListIntelRuns)
+		a.GET("/intel-tests/results", admin.ListIntelResults)
+		a.GET("/intel-tests/results/:id/output", admin.GetIntelResultOutput)
 
 		a.GET("/model-catalog", admin.GetModelCatalog)
 		a.POST("/model-catalog/sync", admin.SyncModelCatalog)

@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, h, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import type { DataTableColumns } from 'naive-ui'
-import { NButton } from 'naive-ui'
+import type { DataTableColumns } from '@/components/ui'
+import { UiButton } from '@/components/ui'
 import type { EChartsCoreOption } from 'echarts/core'
 import {
   getDashboardOverview,
@@ -194,7 +194,8 @@ function lineOption(points: DashTrendPoint[], keys: { key: keyof DashTrendPoint;
       data: points.map((p) => formatTime(p.bucket).slice(5, 16)),
       axisLabel: { fontSize: 10 },
     },
-    yAxis: { type: 'value', splitLine: { lineStyle: { color: '#eef2f6' } } },
+    color: ['#174b3d', '#8aa56a', '#a16d50', '#9d853f'],
+    yAxis: { type: 'value', splitLine: { lineStyle: { color: '#e5ebde' } } },
     series: keys.map((k) => ({
       name: k.name,
       type: 'line',
@@ -210,11 +211,12 @@ function lineOption(points: DashTrendPoint[], keys: { key: keyof DashTrendPoint;
 }
 
 const sparkOption = computed<EChartsCoreOption>(() => ({
+  color: ['#174b3d', '#8aa56a', '#a16d50', '#9d853f'],
   tooltip: { trigger: 'axis' },
   legend: { top: 0, textStyle: { fontSize: 11 } },
   grid: { left: 36, right: 12, top: 24, bottom: 20 },
   xAxis: { type: 'category', data: spark.value.map((p) => formatTime(new Date(p.t).toISOString()).slice(11, 19)), axisLabel: { fontSize: 10 } },
-  yAxis: { type: 'value', splitLine: { lineStyle: { color: '#eef2f6' } } },
+  yAxis: { type: 'value', splitLine: { lineStyle: { color: '#e5ebde' } } },
   series: [
     { name: '业务并发', type: 'line', showSymbol: false, data: spark.value.map((p) => p.biz) },
     { name: '业务 RPM', type: 'line', showSymbol: false, data: spark.value.map((p) => p.bizRpm) },
@@ -254,7 +256,7 @@ function rankColumns(dim: 'group' | 'provider'): DataTableColumns<DashRankingRow
       title: '',
       key: 'go',
       width: 70,
-      render: (r) => h(NButton, { size: 'tiny', text: true, type: 'primary', onClick: () => (dim === 'group' ? goGroup(r.id) : goProvider(r.id)) }, { default: () => '查看' }),
+      render: (r) => h(UiButton, { size: 'tiny', text: true, type: 'primary', onClick: () => (dim === 'group' ? goGroup(r.id) : goProvider(r.id)) }, { default: () => '查看' }),
     },
   ]
 }
@@ -265,7 +267,7 @@ const urgentColumns: DataTableColumns<DashUrgentItem> = [
   { title: '预计小时', key: 'hours_left', width: 90, render: (r) => (r.zero_consumption ? '暂无消耗' : r.hours_left == null ? '—' : r.hours_left.toFixed(1)) },
   { title: '24h 消耗', key: 'consumed_24h_usd', width: 100, render: (r) => money(r.consumed_24h_usd) },
   { title: '原因', key: 'reason', ellipsis: { tooltip: true }, minWidth: 160 },
-  { title: '', key: 'go', width: 70, render: (r) => h(NButton, { size: 'tiny', text: true, type: 'primary', onClick: () => goProvider(r.provider_id) }, { default: () => '查看' }) },
+  { title: '', key: 'go', width: 70, render: (r) => h(UiButton, { size: 'tiny', text: true, type: 'primary', onClick: () => goProvider(r.provider_id) }, { default: () => '查看' }) },
 ]
 
 const investColumns: DataTableColumns<DashInvestItem> = [
@@ -276,13 +278,13 @@ const investColumns: DataTableColumns<DashInvestItem> = [
   { title: '样本', key: 'samples', width: 70 },
   { title: '成功率', key: 'success_rate', width: 80, render: (r) => pct(r.success_rate) },
   { title: '原因', key: 'reason', ellipsis: { tooltip: true }, minWidth: 160 },
-  { title: '', key: 'go', width: 70, render: (r) => h(NButton, { size: 'tiny', text: true, type: 'primary', onClick: () => goProvider(r.provider_id) }, { default: () => '查看' }) },
+  { title: '', key: 'go', width: 70, render: (r) => h(UiButton, { size: 'tiny', text: true, type: 'primary', onClick: () => goProvider(r.provider_id) }, { default: () => '查看' }) },
 ]
 
 const watchColumns: DataTableColumns<DashWatchItem> = [
   { title: '提供商', key: 'name', ellipsis: { tooltip: true } },
   { title: '原因', key: 'reason', ellipsis: { tooltip: true } },
-  { title: '', key: 'go', width: 70, render: (r) => h(NButton, { size: 'tiny', text: true, type: 'primary', onClick: () => goProvider(r.provider_id) }, { default: () => '查看' }) },
+  { title: '', key: 'go', width: 70, render: (r) => h(UiButton, { size: 'tiny', text: true, type: 'primary', onClick: () => goProvider(r.provider_id) }, { default: () => '查看' }) },
 ]
 
 const unmeasuredText = computed(() => {
@@ -329,60 +331,61 @@ onUnmounted(() => {
   <div class="page dash">
     <div class="page-head">
       <div>
+        <span class="eyebrow">运行 / LIVE</span>
         <h2>仪表盘</h2>
         <p>实时运行、期间经营与充值建议。实时卡片不受下方日期筛选影响。</p>
       </div>
       <div class="toolbar">
-        <n-tag :type="liveStatus === 'live' ? 'success' : liveStatus === 'paused' ? 'default' : 'warning'" size="small">
+        <ui-tag :type="liveStatus === 'live' ? 'success' : liveStatus === 'paused' ? 'default' : 'warning'" size="small">
           {{ STATUS_LABEL[liveStatus] }}
-        </n-tag>
+        </ui-tag>
         <span v-if="liveUpdatedAt" class="muted" :class="{ stale: liveStale }">更新于 {{ liveUpdatedAt }}</span>
-        <n-switch :value="paused" size="small" @update:value="togglePause">
+        <ui-switch :value="paused" size="small" @update:value="togglePause">
           <template #checked>暂停</template>
           <template #unchecked>实时</template>
-        </n-switch>
+        </ui-switch>
       </div>
     </div>
 
-    <n-alert v-if="live && !live.window_complete" type="info" :bordered="false">
+    <ui-alert v-if="live && !live.window_complete" type="info" :bordered="false">
       进程刚启动，RPM 窗口还在积累（满 60 秒后完整）。
-    </n-alert>
+    </ui-alert>
 
     <div class="live-grid">
-      <n-card size="small" :bordered="false" :class="{ stale: liveStale }">
+      <ui-card size="small" :bordered="false" class="metric accent" :class="{ stale: liveStale }">
         <div class="metric-k">业务并发</div>
         <div class="metric-v">{{ live ? formatNumber(live.business_inflight) : '—' }}</div>
-      </n-card>
-      <n-card size="small" :bordered="false" :class="{ stale: liveStale }">
+      </ui-card>
+      <ui-card size="small" :bordered="false" :class="{ stale: liveStale }">
         <div class="metric-k">业务 RPM</div>
         <div class="metric-v">{{ live ? formatNumber(live.business_rpm) : '—' }}</div>
         <div class="muted">近 60 秒开始的业务请求</div>
-      </n-card>
-      <n-card size="small" :bordered="false" :class="{ stale: liveStale }">
+      </ui-card>
+      <ui-card size="small" :bordered="false" :class="{ stale: liveStale }">
         <div class="metric-k">上游尝试并发</div>
         <div class="metric-v">{{ live ? formatNumber(live.upstream_inflight) : '—' }}</div>
-      </n-card>
-      <n-card size="small" :bordered="false" :class="{ stale: liveStale }">
+      </ui-card>
+      <ui-card size="small" :bordered="false" :class="{ stale: liveStale }">
         <div class="metric-k">上游尝试 RPM</div>
         <div class="metric-v">{{ live ? formatNumber(live.upstream_rpm) : '—' }}</div>
         <div class="muted">近 60 秒实际 HTTP 调用</div>
-      </n-card>
+      </ui-card>
     </div>
-    <n-card size="small" title="实时短时曲线" :bordered="false">
+    <ui-card size="small" title="实时短时曲线" :bordered="false">
       <DashChart :option="sparkOption" height="180px" />
       <div class="muted">断线空档不插值。离开页面会关闭订阅。</div>
-    </n-card>
+    </ui-card>
 
-    <n-card size="small" :bordered="false">
+    <ui-card size="small" :bordered="false">
       <div class="toolbar" style="margin-bottom: 10px">
-        <n-radio-group v-model:value="period" size="small">
-          <n-radio-button value="today">今日</n-radio-button>
-          <n-radio-button value="7d">7 天</n-radio-button>
-          <n-radio-button value="30d">30 天</n-radio-button>
-          <n-radio-button value="all">累计</n-radio-button>
-          <n-radio-button value="custom">自定义</n-radio-button>
-        </n-radio-group>
-        <n-date-picker
+        <ui-radio-group v-model:value="period" size="small">
+          <ui-radio-button value="today">今日</ui-radio-button>
+          <ui-radio-button value="7d">7 天</ui-radio-button>
+          <ui-radio-button value="30d">30 天</ui-radio-button>
+          <ui-radio-button value="all">累计</ui-radio-button>
+          <ui-radio-button value="custom">自定义</ui-radio-button>
+        </ui-radio-group>
+        <ui-date-picker
           v-if="period === 'custom'"
           v-model:value="customRange"
           type="datetimerange"
@@ -390,29 +393,29 @@ onUnmounted(() => {
           start-placeholder="从"
           end-placeholder="到"
         />
-        <n-button size="small" :loading="histLoading" @click="loadHistory">刷新经营数据</n-button>
+        <ui-button size="small" :loading="histLoading" @click="loadHistory">刷新经营数据</ui-button>
         <span v-if="lastHistAt" class="muted">经营数据 {{ lastHistAt }}</span>
       </div>
-      <n-alert v-if="histError" type="error" :title="histError" style="margin-bottom: 10px">失败时保留上次数据，不显示虚假零值。</n-alert>
-      <n-alert v-if="dq && !dq.complete" type="warning" :bordered="false" style="margin-bottom: 10px">
+      <ui-alert v-if="histError" type="error" :title="histError" style="margin-bottom: 10px">失败时保留上次数据，不显示虚假零值。</ui-alert>
+      <ui-alert v-if="dq && !dq.complete" type="warning" :bordered="false" style="margin-bottom: 10px">
         数据不完整
         <span v-if="dq.overflow"> · 结算队列溢出</span>
         <span v-if="unmeasuredText"> · {{ unmeasuredText }}</span>
         <span v-if="overview?.meta.available_from"> · 统计起点 {{ formatTime(overview.meta.available_from) }}</span>
-      </n-alert>
-      <n-alert v-if="logsBeyondRetention" type="info" :bordered="false" style="margin-bottom: 10px">
+      </ui-alert>
+      <ui-alert v-if="logsBeyondRetention" type="info" :bordered="false" style="margin-bottom: 10px">
         当前区间超过请求日志保留期（约 24 小时），明细可能已清理，汇总仍可查。
-      </n-alert>
+      </ui-alert>
 
       <div class="split">
-        <n-card size="small" title="当前余额" embedded>
+        <ui-card size="small" title="当前余额" embedded>
           <div class="metric-v">{{ money(overview?.balance.total_known_usd) }}</div>
           <div class="muted">启用提供商 {{ money(overview?.balance.enabled_known_usd) }} · 不限额 {{ overview?.balance.unlimited_count ?? 0 }} · 未知 {{ overview?.balance.unknown_count ?? 0 }} · 过期 {{ overview?.balance.stale_count ?? 0 }}</div>
           <div class="muted">余额刷新时间 {{ formatTime(overview?.balance.refreshed_at) }}，与本页查询时间无关</div>
-        </n-card>
-        <n-card size="small" title="期间经营" embedded>
+        </ui-card>
+        <ui-card size="small" title="期间经营" embedded>
           <div class="fin-grid">
-            <div><span class="metric-k">请求开始 / 完成</span><div>{{ formatNumber(overview?.requests_started) }} / {{ formatNumber(overview?.requests_completed) }} <n-button text size="tiny" type="primary" @click="goLogs()">日志</n-button></div></div>
+            <div><span class="metric-k">请求开始 / 完成</span><div>{{ formatNumber(overview?.requests_started) }} / {{ formatNumber(overview?.requests_completed) }} <ui-button text size="tiny" type="primary" @click="goLogs()">日志</ui-button></div></div>
             <div><span class="metric-k">业务成功率</span><div>{{ pct(overview?.success_rate) }}</div></div>
             <div><span class="metric-k">已知收入</span><div>{{ money(overview?.finance.known_revenue_usd) }}</div></div>
             <div><span class="metric-k">已知成本</span><div>{{ money(overview?.finance.known_estimated_cost_usd) }}</div></div>
@@ -420,64 +423,64 @@ onUnmounted(() => {
             <div><span class="metric-k">毛利率 / 覆盖率</span><div>{{ pct(overview?.finance.margin) }} / {{ pct(overview?.finance.coverage) }}</div></div>
           </div>
           <div class="muted">完整集合收入 {{ money(overview?.finance.covered_revenue_usd) }} − 成本 {{ money(overview?.finance.covered_cost_usd) }}。毛利仅用完整测算集合。开始计数按开始时间，成功率与财务按完成时间。</div>
-        </n-card>
+        </ui-card>
       </div>
-    </n-card>
+    </ui-card>
 
     <div class="chart-grid">
-      <n-card size="small" title="流量 / 失败率" :bordered="false">
+      <ui-card size="small" title="流量 / 失败率" :bordered="false">
         <DashChart v-if="trends?.points?.length" :option="trafficOption" />
-        <n-empty v-else description="暂无趋势数据" />
-      </n-card>
-      <n-card size="small" title="消耗 / 毛利" :bordered="false">
+        <ui-empty v-else description="暂无趋势数据" />
+      </ui-card>
+      <ui-card size="small" title="消耗 / 毛利" :bordered="false">
         <DashChart v-if="trends?.points?.length" :option="moneyOption" />
-        <n-empty v-else description="暂无财务趋势" />
-      </n-card>
-      <n-card size="small" title="成功率 / 重试 / 首字延迟（近似分位数）" :bordered="false">
+        <ui-empty v-else description="暂无财务趋势" />
+      </ui-card>
+      <ui-card size="small" title="成功率 / 重试 / 首字延迟（近似分位数）" :bordered="false">
         <DashChart v-if="trends?.points?.length" :option="qualityOption" />
-        <n-empty v-else description="暂无质量趋势" />
-      </n-card>
+        <ui-empty v-else description="暂无质量趋势" />
+      </ui-card>
     </div>
 
-    <n-card size="small" :bordered="false">
+    <ui-card size="small" :bordered="false">
       <template #header>
-        <n-space align="center">
+        <ui-space align="center">
           <span>经营排行</span>
-          <n-radio-group v-model:value="rankingDim" size="small">
-            <n-radio-button value="group">分组</n-radio-button>
-            <n-radio-button value="provider">提供商</n-radio-button>
-          </n-radio-group>
-        </n-space>
+          <ui-radio-group v-model:value="rankingDim" size="small">
+            <ui-radio-button value="group">分组</ui-radio-button>
+            <ui-radio-button value="provider">提供商</ui-radio-button>
+          </ui-radio-group>
+        </ui-space>
       </template>
-      <n-data-table
+      <ui-data-table
         size="small"
         :columns="rankColumns(rankingDim)"
         :data="rankingDim === 'group' ? groupRank : providerRank"
         :scroll-x="860"
         :pagination="false"
       />
-    </n-card>
+    </ui-card>
 
     <div class="chart-grid">
-      <n-card size="small" title="急需充值（近 24 小时）" :bordered="false">
-        <n-data-table size="small" :columns="urgentColumns" :data="recs?.urgent ?? []" :scroll-x="720" />
+      <ui-card size="small" title="急需充值（近 24 小时）" :bordered="false">
+        <ui-data-table size="small" :columns="urgentColumns" :data="recs?.urgent ?? []" :scroll-x="720" />
         <div class="muted" style="margin-top: 8px">仅按本网关流量估算，不把其他渠道用量当作已知。</div>
-      </n-card>
-      <n-card size="small" title="值得投入 · 预估性价比（近 7 天）" :bordered="false">
-        <n-data-table size="small" :columns="investColumns" :data="recs?.invest ?? []" :scroll-x="860" />
+      </ui-card>
+      <ui-card size="small" title="值得投入 · 预估性价比（近 7 天）" :bordered="false">
+        <ui-data-table size="small" :columns="investColumns" :data="recs?.invest ?? []" :scroll-x="860" />
         <div class="muted" style="margin-top: 8px">
           共同需求覆盖 {{ pct(recs?.common_coverage) }}。{{ recs?.note }}
         </div>
         <div v-if="!recs?.invest?.length && recs?.demand_boards?.length" class="muted">共同需求不足，以下按需求分别比较。</div>
         <div v-for="board in recs?.demand_boards ?? []" :key="board.key" style="margin-top: 16px">
           <div style="margin-bottom: 8px">{{ board.label }} · 需求占比 {{ pct(board.weight) }}</div>
-          <n-data-table size="small" :columns="investColumns" :data="board.items" :scroll-x="860" />
+          <ui-data-table size="small" :columns="investColumns" :data="board.items" :scroll-x="860" />
         </div>
-      </n-card>
+      </ui-card>
     </div>
-    <n-card size="small" title="待观察" :bordered="false">
-      <n-data-table size="small" :columns="watchColumns" :data="recs?.watch ?? []" />
-    </n-card>
+    <ui-card size="small" title="待观察" :bordered="false">
+      <ui-data-table size="small" :columns="watchColumns" :data="recs?.watch ?? []" />
+    </ui-card>
   </div>
 </template>
 
@@ -497,15 +500,20 @@ onUnmounted(() => {
 .chart-grid {
   grid-template-columns: 1fr 1fr;
 }
+.metric.accent {
+  background: #e8eedb;
+}
 .metric-k {
-  color: #667085;
+  color: #758574;
   font-size: 12px;
 }
 .metric-v {
-  font-size: 26px;
-  font-weight: 650;
+  margin: 8px 0 4px;
+  color: #263b34;
+  font-size: 32px;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
-  letter-spacing: -0.02em;
+  letter-spacing: -1px;
 }
 .fin-grid {
   display: grid;
@@ -517,12 +525,22 @@ onUnmounted(() => {
   opacity: 0.55;
 }
 .neg {
-  color: #d92d20;
+  color: #a16d50;
 }
-@media (max-width: 960px) {
-  .live-grid,
+@media (max-width: 1100px) {
+  .live-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .split,
   .chart-grid {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 760px) {
+  .metric-v {
+    font-size: 28px;
+  }
+  .fin-grid {
     grid-template-columns: 1fr;
   }
 }

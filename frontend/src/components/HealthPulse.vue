@@ -50,7 +50,7 @@ function lines(cell: HealthPulseCell) {
       class="pulse-cell empty"
       aria-hidden="true"
     />
-    <n-tooltip
+    <ui-tooltip
       v-for="(cell, i) in cells"
       :key="`${cell.start}-${i}`"
       trigger="hover"
@@ -62,7 +62,7 @@ function lines(cell: HealthPulseCell) {
       <div class="tip">
         <div v-for="(line, li) in lines(cell)" :key="li" :class="{ title: li === 0 }">{{ line }}</div>
       </div>
-    </n-tooltip>
+    </ui-tooltip>
   </div>
 </template>
 
@@ -75,7 +75,7 @@ function lines(cell: HealthPulseCell) {
   min-width: 180px;
   height: 18px;
 }
-.pulse :deep(.n-tooltip-trigger) {
+.pulse :deep(.ui-tooltip-trigger) {
   flex: 1 1 0;
   min-width: 2px;
   display: flex;
@@ -88,16 +88,16 @@ function lines(cell: HealthPulseCell) {
   border-radius: 1px;
 }
 .pulse-cell.empty {
-  background: #e5e7eb;
+  background: #e5ebde;
 }
 .pulse-cell.ok {
-  background: #10b981;
+  background: #7da36a;
 }
 .pulse-cell.degraded {
-  background: #f59e0b;
+  background: #c4a35a;
 }
 .pulse-cell.bad {
-  background: #ef4444;
+  background: #c28d70;
 }
 .tip .title {
   font-weight: 600;

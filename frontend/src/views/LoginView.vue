@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { KeyOutline } from '@vicons/ionicons5'
 import { useAuthStore } from '@/stores/auth'
 import { errText } from '@/utils/format'
 
@@ -30,75 +29,187 @@ async function submit() {
 </script>
 
 <template>
-  <div class="login-wrap">
-    <div class="panel">
-      <div class="logo-row">
-        <span class="mark" />
+  <div class="login">
+    <section class="hero">
+      <div class="brand">
+        <span class="mark">供</span>
         <div>
-          <h1>供货商管理</h1>
-          <p>使用后端静态 ADMIN_TOKEN 登录</p>
+          <strong>供货商管理</strong>
+          <small>ADMIN CONSOLE</small>
         </div>
       </div>
-      <n-alert v-if="error" type="error" :title="error" style="margin-bottom: 12px" />
-      <n-form @submit.prevent="submit">
-        <n-form-item label="管理员 Token">
-          <n-input
+      <h1>每一次调度，<br />都有迹可循。</h1>
+      <p>提供商、密钥与请求的统一运维台。</p>
+      <div class="login-line"><i />实时运行 · 分组调度 · 请求追踪</div>
+    </section>
+    <div class="login-panel">
+      <span class="eyebrow">ADMIN ACCESS</span>
+      <h2>登录管理台</h2>
+      <p>使用后端静态 ADMIN_TOKEN 登录</p>
+      <ui-alert v-if="error" type="error" :title="error" style="margin-bottom: 12px" />
+      <ui-form @submit.prevent="submit">
+        <ui-form-item label="管理员 Token">
+          <ui-input
             v-model:value="token"
             type="password"
             show-password-on="click"
             placeholder="Authorization Bearer Token"
             size="large"
             @keydown.enter="submit"
-          >
-            <template #prefix>
-              <n-icon><KeyOutline /></n-icon>
-            </template>
-          </n-input>
-        </n-form-item>
-        <n-button type="primary" block size="large" :loading="loading" :disabled="!canSubmit" @click="submit">
+          />
+        </ui-form-item>
+        <ui-button type="primary" block size="large" :loading="loading" :disabled="!canSubmit" @click="submit">
           进入控制台
-        </n-button>
-      </n-form>
+        </ui-button>
+      </ui-form>
+      <small>Token 保存在本机浏览器。</small>
     </div>
   </div>
 </template>
 
 <style scoped>
-.login-wrap {
+.login {
   min-height: 100vh;
   display: grid;
-  place-items: center;
-  background:
-    radial-gradient(1200px 500px at 10% -10%, rgba(45, 212, 191, 0.18), transparent 50%),
-    #10161c;
+  grid-template-columns: 1.15fr 1fr;
+  background: #f7f6f1;
 }
-.panel {
-  width: 420px;
-  max-width: calc(100vw - 32px);
-  padding: 28px;
-  border-radius: 12px;
-  background: #f7f9fb;
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
-}
-.logo-row {
+.hero {
   display: flex;
-  gap: 12px;
+  flex-direction: column;
+  justify-content: center;
+  padding: 64px 10%;
+  background: #173f32;
+  color: #e2ebd5;
+}
+.brand {
+  display: flex;
   align-items: center;
-  margin-bottom: 20px;
-}
-.logo-row h1 {
-  margin: 0;
-  font-size: 18px;
-}
-.logo-row p {
-  margin: 4px 0 0;
-  color: #667085;
-  font-size: 12px;
+  gap: 12px;
+  margin-bottom: 72px;
 }
 .mark {
-  width: 12px;
-  height: 28px;
-  border-radius: 3px;
-  background: linear-gradient(180deg, #2dd4bf, #0f766e);
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+  background: #d9e8b3;
+  color: #244734;
+  font-family: Georgia, 'Songti SC', serif;
+  font-size: 24px;
+}
+.brand strong {
+  display: block;
+  font-size: 20px;
+  letter-spacing: 2px;
+}
+.brand small {
+  display: block;
+  margin-top: 4px;
+  color: #9db5a5;
+  font-size: 10px;
+  letter-spacing: 1.6px;
+}
+.hero h1 {
+  margin: 0;
+  font-family: Georgia, 'Songti SC', 'Microsoft YaHei', serif;
+  font-size: 44px;
+  font-weight: 500;
+  line-height: 1.45;
+  letter-spacing: 1px;
+}
+.hero > p {
+  margin: 20px 0 0;
+  color: #a5b89a;
+  font-size: 14px;
+}
+.login-line {
+  margin-top: 72px;
+  color: #a9ba96;
+  font-size: 12px;
+  letter-spacing: 1px;
+}
+.login-line i {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 10px;
+  border-radius: 50%;
+  background: #c4d79a;
+}
+.login-panel {
+  box-sizing: border-box;
+  min-width: 0;
+  align-self: center;
+  width: 100%;
+  max-width: 460px;
+  margin: auto;
+  padding: 48px 56px;
+}
+.eyebrow {
+  display: block;
+  margin-bottom: 12px;
+  color: #7c8f80;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 1.8px;
+}
+.login-panel h2 {
+  margin: 0;
+  color: #263b34;
+  font-size: 26px;
+  font-weight: 650;
+}
+.login-panel > p {
+  margin: 12px 0 28px;
+  color: #8a987d;
+  font-size: 13px;
+}
+.login-panel small {
+  display: block;
+  margin-top: 18px;
+  color: #9aa78b;
+  font-size: 11px;
+  text-align: center;
+}
+@media (max-width: 1100px) {
+  .hero {
+    padding: 48px 40px;
+  }
+  .hero h1 {
+    font-size: 36px;
+  }
+  .brand {
+    margin-bottom: 48px;
+  }
+  .login-line {
+    margin-top: 48px;
+  }
+  .login-panel {
+    padding: 40px 36px;
+  }
+}
+@media (max-width: 760px) {
+  .login {
+    display: block;
+  }
+  .hero {
+    padding: 18px 24px;
+  }
+  .brand {
+    margin-bottom: 0;
+  }
+  .hero h1,
+  .hero > p {
+    display: none;
+  }
+  .login-line {
+    display: none;
+  }
+  .login-panel {
+    max-width: none;
+    padding: 28px 24px 40px;
+  }
 }
 </style>

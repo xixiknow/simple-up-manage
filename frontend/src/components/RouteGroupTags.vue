@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { NPopselect, NTag, useMessage } from 'naive-ui'
-import type { SelectOption } from 'naive-ui'
+import { UiPopselect, UiTag, useMessage } from '@/components/ui'
+import type { SelectOption } from '@/components/ui'
 import { setKeyRouteGroups } from '@/api/admin'
 import type { RouteGroup, RouteGroupRef } from '@/api/types'
 import { errText } from '@/utils/format'
@@ -45,7 +45,7 @@ async function onChange(value: number[]) {
 </script>
 
 <template>
-  <n-popselect
+  <ui-popselect
     v-model:show="show"
     :value="current"
     :options="selectOptions"
@@ -58,14 +58,14 @@ async function onChange(value: number[]) {
   >
     <div class="rg-tags" :class="{ saving }" title="点击修改路由分组">
       <template v-if="groups && groups.length">
-        <n-tag v-for="g in groups" :key="g.id" size="tiny" :bordered="false" type="info">{{ g.name }}</n-tag>
+        <ui-tag v-for="g in groups" :key="g.id" size="tiny" :bordered="false" type="info">{{ g.name }}</ui-tag>
       </template>
-      <n-tag v-else size="tiny" :bordered="false" class="unassigned">未分组</n-tag>
+      <ui-tag v-else size="tiny" :bordered="false" class="unassigned">未分组</ui-tag>
     </div>
     <template #empty>
       <div class="rg-empty">还没有分组，先去「API 密钥」页新建</div>
     </template>
-  </n-popselect>
+  </ui-popselect>
 </template>
 
 <style scoped>
@@ -94,6 +94,6 @@ async function onChange(value: number[]) {
 .rg-empty {
   padding: 8px 12px;
   font-size: 12px;
-  color: #667085;
+  color: #819087;
 }
 </style>

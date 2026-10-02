@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -82,6 +83,64 @@ func lock(tx *gorm.DB, d Dimension, scope string) (domain.RoutingCircuit, error)
 
 var ErrUnavailable = errors.New("routing circuit unavailable")
 
+const (
+	// Bound on tracked window timestamps so the JSON columns stay small.
+	maxTrackedAttempts = 120
+	maxTrackedFailures = 64
+	// Upper bound for the traffic-scaled open threshold.
+	circuitMaxFailureThreshold = 8
+	// Sustained-failure fallback for cold dimensions: enough attempts in the
+	// rolling window with success below the floor opens the gate even though
+	// the burst threshold was never reached.
+	sustainedMinAttempts  = 8
+	sustainedSuccessFloor = 0.6
+)
+
+// trackTimestamp appends at (when non-zero) to times, drops entries at or
+// before the window cut, and keeps the slice bounded by cap.
+func trackTimestamp(times []int64, at, cut int64, cap int) []int64 {
+	kept := times[:0]
+	for _, t := range times {
+		if t > cut {
+			kept = append(kept, t)
+		}
+	}
+	if at != 0 {
+		kept = append(kept, at)
+	}
+	if overflow := len(kept) - cap; overflow > 0 {
+		kept = kept[overflow:]
+	}
+	return kept
+}
+
+// circuitThreshold scales the open threshold with observed attempt volume so
+// bursty dimensions tolerate transient blips while cold ones keep the base.
+func circuitThreshold(r *domain.RoutingCircuit, cfg domain.SchedulerSettings) int {
+	threshold := cfg.CircuitFailureThreshold
+	if cfg.CircuitRateFactor > 0 && len(r.AttemptTimes) > 0 {
+		dynamic := int(math.Ceil(float64(len(r.AttemptTimes)) * cfg.CircuitRateFactor))
+		if dynamic < threshold {
+			dynamic = threshold
+		}
+		if dynamic > circuitMaxFailureThreshold {
+			dynamic = circuitMaxFailureThreshold
+		}
+		threshold = dynamic
+	}
+	return threshold
+}
+
+// sustainedFailure catches cold dimensions whose failure rate is persistently
+// awful without ever accumulating enough failures inside one burst window.
+func sustainedFailure(r *domain.RoutingCircuit, cfg domain.SchedulerSettings) bool {
+	attempts := len(r.AttemptTimes)
+	if attempts < sustainedMinAttempts {
+		return false
+	}
+	return float64(r.Failures) >= float64(attempts)*(1-sustainedSuccessFloor)
+}
+
 // Admit reserves all applicable gates in a single transaction. The lease exceeds
 // the gateway's five-minute overall deadline, including retries.
 func (s Store) Admit(ctx context.Context, d Dimension, recovery bool) (string, error) {
@@ -102,8 +161,7 @@ func (s Store) AdmitRequest(ctx context.Context, d Dimension, recovery bool) (*A
 			if !r.Open {
 				continue
 			}
-			if !recovery || r.Until.After(now) || r.LeaseUntil.After(now) || (r.CheckUntil != nil && r.CheckUntil.After(now)) ||
-				(!r.CheckOK && r.NextCheckAt != nil && r.NextCheckAt.After(now)) {
+			if !recovery || r.Until.After(now) || r.LeaseUntil.After(now) || (r.CheckUntil != nil && r.CheckUntil.After(now)) {
 				return ErrUnavailable
 			}
 			if scope == KeyScope(d.KeyID) {
@@ -134,7 +192,7 @@ func closeCircuit(r *domain.RoutingCircuit, now time.Time) {
 	r.OpenedAt = now
 	r.Until = time.Time{}
 	r.Failures, r.BackoffSec = 0, 0
-	r.FailureTimes = nil
+	r.FailureTimes, r.AttemptTimes = nil, nil
 	r.Reason, r.Lease, r.CheckLease = "", "", ""
 	r.LeaseUntil = time.Time{}
 	r.CheckUntil, r.NextCheckAt = nil, nil
@@ -245,12 +303,19 @@ func (s Store) Observe(ctx context.Context, d Dimension, token string, o Outcome
 					row.CheckUntil = nil
 				}
 			} else if o.Success {
+				if row.Scope != key.Scope {
+					cut := now.Add(-time.Duration(cfg.CircuitWindowSec) * time.Second).UnixMilli()
+					row.AttemptTimes = trackTimestamp(row.AttemptTimes, now.UnixMilli(), cut, maxTrackedAttempts)
+				}
 				if !row.Open || owned {
 					if row.Open {
 						closeCircuit(row, now)
 					}
 					row.Failures = 0
 					row.FailureTimes = nil
+					// AttemptTimes deliberately survives isolated successes: the
+					// traffic-volume signal must age out via the window, not
+					// reset on every healthy response.
 					row.BackoffSec = 0
 					row.Reason = ""
 					row.Lease = ""
@@ -263,18 +328,25 @@ func (s Store) Observe(ctx context.Context, d Dimension, token string, o Outcome
 					open(row, now, o.Reason, o.RetryAfter, cfg)
 				}
 			} else if owned || !o.AuthFailure {
+				window := time.Duration(cfg.CircuitWindowSec) * time.Second
+				cut := now.Add(-window).UnixMilli()
+				row.AttemptTimes = trackTimestamp(row.AttemptTimes, now.UnixMilli(), cut, maxTrackedAttempts)
+				weight := 1
+				if o.Reason == domain.FailureFirstTokenTimeout && cfg.FTTFailureWeight > 1 {
+					weight = cfg.FTTFailureWeight
+				}
 				kept := row.FailureTimes[:0]
 				for _, at := range row.FailureTimes {
-					if at > now.Add(-time.Duration(cfg.CircuitWindowSec)*time.Second).UnixMilli() {
+					if at > cut {
 						kept = append(kept, at)
 					}
 				}
-				row.FailureTimes = append(kept, now.UnixMilli())
-				if len(row.FailureTimes) > cfg.CircuitFailureThreshold {
-					row.FailureTimes = row.FailureTimes[len(row.FailureTimes)-cfg.CircuitFailureThreshold:]
+				for i := 0; i < weight; i++ {
+					kept = append(kept, now.UnixMilli())
 				}
+				row.FailureTimes = trackTimestamp(kept, 0, cut, maxTrackedFailures)
 				row.Failures = len(row.FailureTimes)
-				if owned || o.Limited || o.Immediate || row.Failures >= cfg.CircuitFailureThreshold {
+				if owned || o.Limited || o.Immediate || row.Failures >= circuitThreshold(row, cfg) || sustainedFailure(row, cfg) {
 					open(row, now, o.Reason, o.RetryAfter, cfg)
 				}
 			}

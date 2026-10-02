@@ -8,7 +8,7 @@ import (
 	"simple-up-manage/internal/domain"
 )
 
-func TestFailedCheckBackoffCannotBypassViaOutage(t *testing.T) {
+func TestOutageValidatesKeyDespiteFailedCheckBackoff(t *testing.T) {
 	p, keys, req := stableFixture(t)
 	req.AllowKeys = map[uint]struct{}{keys[0].ID: {}}
 	now := time.Now()
@@ -17,9 +17,12 @@ func TestFailedCheckBackoffCannotBypassViaOutage(t *testing.T) {
 	if err := p.db.Create(&gate).Error; err != nil {
 		t.Fatal(err)
 	}
-	_, _, _, err := p.PickDecision(context.Background(), req)
-	if err != ErrNoUpstream {
-		t.Fatalf("check retry deadline bypassed: %v", err)
+	// A failed synthetic check delays the next probe but must not veto
+	// real-traffic validation when the gated key is the only candidate: the
+	// request itself becomes the evidence and reopens the gate on failure.
+	key, _, d, err := p.PickDecision(context.Background(), req)
+	if err != nil || key == nil || key.ID != keys[0].ID || d.Reason != "recovery_validation" {
+		t.Fatalf("outage did not validate despite check backoff: %+v %v", d, err)
 	}
 }
 

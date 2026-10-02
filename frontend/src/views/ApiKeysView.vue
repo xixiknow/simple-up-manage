@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, h, onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { NButton, NSpace, NTag, NTooltip, useDialog, useMessage } from 'naive-ui'
-import type { DataTableColumns, FormInst, FormRules, SelectOption } from 'naive-ui'
+import { UiButton, UiSpace, UiTag, UiTooltip, useDialog, useMessage } from '@/components/ui'
+import type { DataTableColumns, FormInst, FormRules, SelectOption } from '@/components/ui'
 import {
   createConsumerKey,
   createRouteGroup,
@@ -385,7 +385,7 @@ function confirmDeleteGroup(g: RouteGroup) {
 }
 
 const keyColumns = computed((): DataTableColumns<ConsumerKey> => [
-  { title: '名称', key: 'name', ellipsis: { tooltip: true }, minWidth: 120 },
+  { title: '名称', key: 'name', ellipsis: { tooltip: true }, minWidth: 120, mobileTitle: true },
   {
     title: '密钥',
     key: 'key_preview',
@@ -394,7 +394,7 @@ const keyColumns = computed((): DataTableColumns<ConsumerKey> => [
       return h('div', { class: 'key-cell' }, [
         h('span', { class: 'preview' }, row.key_preview || '—'),
         h(
-          NButton,
+          UiButton,
           {
             size: 'tiny',
             quaternary: true,
@@ -414,10 +414,10 @@ const keyColumns = computed((): DataTableColumns<ConsumerKey> => [
       const bound = row.route_groups ?? []
       if (!bound.length) {
         return h(
-          NTooltip,
+          UiTooltip,
           { trigger: 'hover' },
           {
-            trigger: () => h(NTag, { size: 'tiny', bordered: false }, { default: () => '不限' }),
+            trigger: () => h(UiTag, { size: 'tiny', bordered: false }, { default: () => '不限' }),
             default: () => '未绑定分组，调度时在所有提供商 Key 里选',
           },
         )
@@ -429,11 +429,11 @@ const keyColumns = computed((): DataTableColumns<ConsumerKey> => [
           const full = routeGroupById.value[g.id]
           const empty = full ? full.member_count === 0 : false
           return h(
-            NTooltip,
+            UiTooltip,
             { trigger: 'hover' },
             {
               trigger: () =>
-                h(NTag, { size: 'tiny', bordered: false, type: empty ? 'warning' : 'info' }, { default: () => g.name }),
+                h(UiTag, { size: 'tiny', bordered: false, type: empty ? 'warning' : 'info' }, { default: () => g.name }),
               default: () =>
                 full
                   ? `${full.member_count} 把 Key · ${full.protocol ? PROTOCOL_LABEL[full.protocol] : '协议不限'}${empty ? ' · 该分组没有成员，请求会 503' : ''}`
@@ -456,6 +456,7 @@ const keyColumns = computed((): DataTableColumns<ConsumerKey> => [
     title: '状态',
     key: 'status',
     width: 90,
+    mobileTag: true,
     render(row) {
       return h(StatusTag, { status: row.status })
     },
@@ -472,22 +473,23 @@ const keyColumns = computed((): DataTableColumns<ConsumerKey> => [
     title: '操作',
     key: 'actions',
     width: 220,
+    fixed: 'right',
     render(row) {
-      return h(NSpace, { size: 4 }, {
+      return h(UiSpace, { size: 4 }, {
         default: () => [
           h(
-            NButton,
+            UiButton,
             { size: 'tiny', loading: testingId.value === row.id, onClick: () => void runTest(row) },
             { default: () => '测试' },
           ),
           h(
-            NButton,
+            UiButton,
             { size: 'tiny', loading: pausingId.value === row.id, onClick: () => void togglePause(row) },
             { default: () => (row.status === 'enabled' ? '暂停' : '启用') },
           ),
-          h(NButton, { size: 'tiny', onClick: () => openEditKey(row) }, { default: () => '编辑' }),
+          h(UiButton, { size: 'tiny', onClick: () => openEditKey(row) }, { default: () => '编辑' }),
           h(
-            NButton,
+            UiButton,
             { size: 'tiny', type: 'error', quaternary: true, onClick: () => confirmDeleteKey(row) },
             { default: () => '删除' },
           ),
@@ -498,13 +500,13 @@ const keyColumns = computed((): DataTableColumns<ConsumerKey> => [
 ])
 
 const groupColumns: DataTableColumns<RouteGroup> = [
-  { title: '名称', key: 'name', ellipsis: { tooltip: true }, minWidth: 120 },
+  { title: '名称', key: 'name', ellipsis: { tooltip: true }, minWidth: 120, mobileTitle: true },
   {
     title: '协议',
     key: 'protocol',
     width: 100,
     render(row) {
-      return h(NTag, { size: 'tiny', bordered: false, type: row.protocol ? 'info' : 'default' }, { default: () => protocolLabel(row.protocol) })
+      return h(UiTag, { size: 'tiny', bordered: false, type: row.protocol ? 'info' : 'default' }, { default: () => protocolLabel(row.protocol) })
     },
   },
   {
@@ -520,6 +522,7 @@ const groupColumns: DataTableColumns<RouteGroup> = [
     title: '参考倍率',
     key: 'rate',
     width: 140,
+    mobileHide: true,
     render(row) {
       return rateRangeText(row)
     },
@@ -554,6 +557,7 @@ const groupColumns: DataTableColumns<RouteGroup> = [
     title: '状态',
     key: 'status',
     width: 90,
+    mobileTag: true,
     render(row) {
       return h(StatusTag, { status: row.status })
     },
@@ -562,13 +566,14 @@ const groupColumns: DataTableColumns<RouteGroup> = [
     title: '操作',
     key: 'actions',
     width: 240,
+    fixed: 'right',
     render(row) {
-      return h(NSpace, { size: 4 }, {
+      return h(UiSpace, { size: 4 }, {
         default: () => [
-          h(NButton, { size: 'tiny', onClick: () => openEditGroup(row) }, { default: () => '编辑' }),
-          h(NButton, { size: 'tiny', onClick: () => openPicker(row) }, { default: () => '选择提供商 Key' }),
+          h(UiButton, { size: 'tiny', onClick: () => openEditGroup(row) }, { default: () => '编辑' }),
+          h(UiButton, { size: 'tiny', onClick: () => openPicker(row) }, { default: () => '选择提供商 Key' }),
           h(
-            NButton,
+            UiButton,
             { size: 'tiny', type: 'error', quaternary: true, onClick: () => confirmDeleteGroup(row) },
             { default: () => '删除' },
           ),
@@ -587,19 +592,21 @@ onMounted(() => {
   <div class="page">
     <div class="page-head">
       <div>
+        <span class="eyebrow">凭证 / KEYS</span>
         <h2>API 密钥</h2>
         <p>上表是调用方凭证；下表是路由分组。密钥绑定分组后只在分组成员里选提供商 Key，未绑定则不限</p>
       </div>
     </div>
 
-    <n-alert v-if="error" type="error" :title="error" />
+    <ui-alert v-if="error" type="error" :title="error" />
 
-    <n-card size="small" title="我的密钥" :bordered="false">
+    <ui-card size="small" title="我的密钥" :bordered="false">
       <template #header-extra>
-        <n-button type="primary" size="small" @click="openCreateKey">新建密钥</n-button>
+        <ui-button type="primary" size="small" @click="openCreateKey">新建密钥</ui-button>
       </template>
-      <n-data-table
+      <ui-data-table
         size="small"
+        card
         :columns="keyColumns"
         :data="items"
         :loading="keysLoading"
@@ -621,39 +628,40 @@ onMounted(() => {
           },
         }"
       />
-    </n-card>
+    </ui-card>
 
-    <n-card size="small" title="分组" :bordered="false">
+    <ui-card size="small" title="分组" :bordered="false">
       <template #header-extra>
-        <n-button type="primary" size="small" @click="openCreateGroup">新建分组</n-button>
+        <ui-button type="primary" size="small" @click="openCreateGroup">新建分组</ui-button>
       </template>
-      <n-data-table
+      <ui-data-table
         size="small"
+        card
         :columns="groupColumns"
         :data="groups"
         :loading="groupsLoading"
         :scroll-x="1080"
         :row-class-name="(row: RouteGroup) => (highlightGroupId === row.id ? 'row-highlight' : '')"
       />
-    </n-card>
+    </ui-card>
 
-    <n-modal v-model:show="showKeyForm" preset="card" :title="editingKey ? '编辑 API 密钥' : '新建 API 密钥'" style="width: 480px">
-      <n-form ref="keyFormRef" :model="keyForm" :rules="keyRules" label-placement="left" label-width="90">
-        <n-form-item label="名称" path="name">
-          <n-input v-model:value="keyForm.name" />
-        </n-form-item>
-        <n-form-item label="额度" path="quota_usd">
-          <n-input-number v-model:value="keyForm.quota_usd" :min="0" :step="1" style="width: 100%" />
+    <ui-modal v-model:show="showKeyForm" preset="card" :title="editingKey ? '编辑 API 密钥' : '新建 API 密钥'" style="width: min(480px, calc(100vw - 24px))">
+      <ui-form ref="keyFormRef" :model="keyForm" :rules="keyRules" label-placement="left" label-width="90">
+        <ui-form-item label="名称" path="name">
+          <ui-input v-model:value="keyForm.name" />
+        </ui-form-item>
+        <ui-form-item label="额度" path="quota_usd">
+          <ui-input-number v-model:value="keyForm.quota_usd" :min="0" :step="1" style="width: 100%" />
           <template #feedback>
             <span class="muted">0 表示不限额度。消费明细按实际 token × 价格累计，与额度无关</span>
           </template>
-        </n-form-item>
-        <n-form-item label="RPM" path="rpm">
-          <n-input-number v-model:value="keyForm.rpm" :min="0" :step="1" style="width: 100%" />
-        </n-form-item>
-        <n-form-item label="分组" path="route_group_id">
+        </ui-form-item>
+        <ui-form-item label="RPM" path="rpm">
+          <ui-input-number v-model:value="keyForm.rpm" :min="0" :step="1" style="width: 100%" />
+        </ui-form-item>
+        <ui-form-item label="分组" path="route_group_id">
           <div style="width: 100%">
-            <n-select
+            <ui-select
               v-model:value="keyForm.route_group_id"
               :options="routeGroupOptions"
               :render-label="renderGroupOption"
@@ -662,15 +670,15 @@ onMounted(() => {
               placeholder="不选 = 不限，在全部 Key 里调度"
             >
               <template #action>
-                <n-button text size="tiny" @click="openCreateGroup">+ 新建分组</n-button>
+                <ui-button text size="tiny" @click="openCreateGroup">+ 新建分组</ui-button>
               </template>
               <template #empty>
                 <div class="muted" style="padding: 6px 0">
                   还没有分组。
-                  <n-button text size="tiny" type="primary" @click="openCreateGroup">去新建</n-button>
+                  <ui-button text size="tiny" type="primary" @click="openCreateGroup">去新建</ui-button>
                 </div>
               </template>
-            </n-select>
+            </ui-select>
             <div class="muted" style="margin-top: 6px">
               <template v-if="formKeySummary">
                 可用提供商 Key 共 <strong>{{ formKeySummary.keys }}</strong> 把
@@ -681,81 +689,81 @@ onMounted(() => {
               <template v-else>未绑定：在所有提供商 Key 里按价格/质量调度</template>
             </div>
           </div>
-        </n-form-item>
-        <n-form-item label="状态" path="status">
-          <n-radio-group v-model:value="keyForm.status">
-            <n-radio v-for="opt in STATUS_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.label }}</n-radio>
-          </n-radio-group>
-        </n-form-item>
-      </n-form>
+        </ui-form-item>
+        <ui-form-item label="状态" path="status">
+          <ui-radio-group v-model:value="keyForm.status">
+            <ui-radio v-for="opt in STATUS_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.label }}</ui-radio>
+          </ui-radio-group>
+        </ui-form-item>
+      </ui-form>
       <template #footer>
-        <n-space justify="end">
-          <n-button @click="showKeyForm = false">取消</n-button>
-          <n-button type="primary" :loading="keySaving" @click="saveKey">保存</n-button>
-        </n-space>
+        <ui-space justify="end">
+          <ui-button @click="showKeyForm = false">取消</ui-button>
+          <ui-button type="primary" :loading="keySaving" @click="saveKey">保存</ui-button>
+        </ui-space>
       </template>
-    </n-modal>
+    </ui-modal>
 
-    <n-modal v-model:show="revealShow" preset="card" title="请立即保存 API 密钥" style="width: 520px" :mask-closable="false">
-      <n-alert type="warning" title="列表只显示预览；完整密钥可用「复制」随时取出" style="margin-bottom: 12px" />
+    <ui-modal v-model:show="revealShow" preset="card" title="请立即保存 API 密钥" style="width: min(520px, calc(100vw - 24px))" :mask-closable="false">
+      <ui-alert type="warning" title="列表只显示预览；完整密钥可用「复制」随时取出" style="margin-bottom: 12px" />
       <div class="reveal-box">{{ revealed }}</div>
       <template #footer>
-        <n-space justify="end">
-          <n-button @click="copyRevealed">复制</n-button>
-          <n-button type="primary" @click="revealShow = false">我已保存</n-button>
-        </n-space>
+        <ui-space justify="end">
+          <ui-button @click="copyRevealed">复制</ui-button>
+          <ui-button type="primary" @click="revealShow = false">我已保存</ui-button>
+        </ui-space>
       </template>
-    </n-modal>
+    </ui-modal>
 
-    <n-modal v-model:show="showGroupForm" preset="card" :title="editingGroup ? '编辑分组' : '新建分组'" style="width: 540px">
-      <n-form ref="groupFormRef" :model="groupForm" :rules="groupRules" label-placement="left" label-width="100">
-        <n-form-item label="名称" path="name">
-          <n-input v-model:value="groupForm.name" placeholder="如 OpenAI-A" />
-        </n-form-item>
-        <n-form-item label="协议" path="protocol">
-          <n-select v-model:value="groupForm.protocol" :options="protocolFormOptions" />
+    <ui-modal v-model:show="showGroupForm" preset="card" :title="editingGroup ? '编辑分组' : '新建分组'" style="width: min(540px, calc(100vw - 24px))">
+      <ui-form ref="groupFormRef" :model="groupForm" :rules="groupRules" label-placement="left" label-width="100">
+        <ui-form-item label="名称" path="name">
+          <ui-input v-model:value="groupForm.name" placeholder="如 OpenAI-A" />
+        </ui-form-item>
+        <ui-form-item label="协议" path="protocol">
+          <ui-select v-model:value="groupForm.protocol" :options="protocolFormOptions" />
           <template #feedback>
             <span class="muted">仅该协议的请求会用到此分组；不限则两种协议都可</span>
           </template>
-        </n-form-item>
-        <n-form-item label="模型模式" path="models">
-          <n-dynamic-tags v-model:value="groupForm.models" />
+        </ui-form-item>
+        <ui-form-item label="模型模式" path="models">
+          <ui-dynamic-tags v-model:value="groupForm.models" />
           <template #feedback>
             <span class="muted">可选。如 grok-*、deepseek-*；留空表示所有模型。回车添加</span>
           </template>
-        </n-form-item>
-        <n-form-item label="参考倍率">
-          <n-space align="center" :wrap="false">
-            <n-input-number v-model:value="groupForm.rate_min" :min="0" :step="0.01" clearable placeholder="下限（含）" style="width: 140px" />
+        </ui-form-item>
+        <ui-form-item label="参考倍率">
+          <ui-space align="center">
+            <ui-input-number v-model:value="groupForm.rate_min" :min="0" :step="0.01" clearable placeholder="下限（含）" style="width: 140px" />
             <span class="muted">~</span>
-            <n-input-number v-model:value="groupForm.rate_max" :min="0" :step="0.01" clearable placeholder="上限（不含）" style="width: 140px" />
-          </n-space>
+            <ui-input-number v-model:value="groupForm.rate_max" :min="0" :step="0.01" clearable placeholder="上限（不含）" style="width: 140px" />
+          </ui-space>
           <template #feedback>
             <span class="muted">可选。成员倍率漂出区间会被标红，并在调度时跳过</span>
           </template>
-        </n-form-item>
-        <n-form-item label="售卖倍率">
+        </ui-form-item>
+        <ui-form-item label="售卖倍率">
           <div style="width: 100%">
-            <n-input-number v-model:value="groupForm.sale_multiplier" :min="0" :step="0.01" clearable placeholder="未配置" style="width: 100%" />
+            <ui-input-number v-model:value="groupForm.sale_multiplier" :min="0" :step="0.01" clearable placeholder="未配置" style="width: 100%" />
             <div class="muted" style="margin-top: 6px">仅用于仪表盘预估收入。留空表示未配置（不测算利润）；0 表示赠送。</div>
           </div>
-        </n-form-item>
-        <n-form-item label="描述" path="description">
-          <n-input v-model:value="groupForm.description" type="textarea" :autosize="{ minRows: 1, maxRows: 3 }" />
-        </n-form-item>
-        <n-form-item label="状态" path="status">
-          <n-radio-group v-model:value="groupForm.status">
-            <n-radio v-for="opt in STATUS_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.label }}</n-radio>
-          </n-radio-group>
-        </n-form-item>
-      </n-form>
+        </ui-form-item>
+        <ui-form-item label="描述" path="description">
+          <ui-input v-model:value="groupForm.description" type="textarea" :autosize="{ minRows: 1, maxRows: 3 }" />
+        </ui-form-item>
+        <ui-form-item label="状态" path="status">
+          <ui-radio-group v-model:value="groupForm.status">
+            <ui-radio v-for="opt in STATUS_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.label }}</ui-radio>
+          </ui-radio-group>
+        </ui-form-item>
+      </ui-form>
       <template #footer>
-        <n-space justify="end">
-          <n-button @click="showGroupForm = false">取消</n-button>
-          <n-button type="primary" :loading="groupSaving" @click="saveGroup">保存</n-button>
-        </n-space>
+        <ui-space justify="end">
+          <ui-button @click="showGroupForm = false">取消</ui-button>
+          <ui-button type="primary" :loading="groupSaving" @click="saveGroup">保存</ui-button>
+        </ui-space>
       </template>
-    </n-modal>
+    </ui-modal>
 
     <RouteGroupKeyPicker v-model:show="pickerShow" :group="pickerGroup" :groups="groups" @saved="reloadAll" />
   </div>
@@ -773,10 +781,14 @@ onMounted(() => {
   gap: 4px;
 }
 .warn {
-  color: #d92d20;
+  color: #a16d50;
 }
 :deep(.row-highlight td) {
-  background: #ecfdf5 !important;
+  background: #f3f7ee !important;
+}
+:deep(.table-card.row-highlight) {
+  border-color: #b8cf9e;
+  background: #f3f7ee;
 }
 :deep(.rg-option) {
   display: flex;
@@ -786,10 +798,10 @@ onMounted(() => {
 }
 :deep(.rg-option-meta) {
   font-size: 11px;
-  color: #667085;
+  color: #819087;
 }
 :deep(.rg-option-meta.warn) {
-  color: #d92d20;
+  color: #a16d50;
 }
 :deep(.dialog-pre) {
   margin: 0;

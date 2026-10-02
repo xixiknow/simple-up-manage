@@ -32,3 +32,6 @@ frontend/dist/
 # docker volumes
 data/
 pgdata/
+
+# zcode workspace
+.zcode/

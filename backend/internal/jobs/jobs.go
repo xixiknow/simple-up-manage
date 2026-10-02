@@ -37,6 +37,9 @@ func Start(cfg *config.Config, opsSvc *ops.Service, afterCatalog func(), stop <-
 		ok, fail, skipped := opsSvc.ProbeAllEnabled(ctx, cfg.Jobs.ProbeInterval)
 		log.Printf("job probe: ok=%d failed=%d skipped=%d", ok, fail, skipped)
 	})
+	go runTicker("intel", time.Minute, stop, func(ctx context.Context) {
+		opsSvc.RunDueIntelPlans()
+	})
 	syncCatalog := func(ctx context.Context) {
 		res, err := opsSvc.SyncModelCatalog(ctx)
 		if err != nil {

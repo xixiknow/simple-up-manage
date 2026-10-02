@@ -165,6 +165,35 @@ func (p *BandPicker) attemptCandidates(ctx context.Context, req Request, cands [
 	for _, r := range rows {
 		byKey[r.PlatformKeyID] = append(byKey[r.PlatformKeyID], r)
 	}
+	// Cold dimensions fall back to the key's cross-model window: a sparse
+	// (model, path, stream) slice would otherwise hide a key's track record
+	// and let degraded-pool ranking treat fresh and failing keys alike.
+	deficient := make([]uint, 0, len(ids))
+	for _, id := range ids {
+		if len(byKey[id]) < cfg.MinSamples {
+			deficient = append(deficient, id)
+		}
+	}
+	if len(deficient) > 0 {
+		cut := time.Now().Add(-time.Duration(cfg.WindowMinutes) * time.Minute)
+		kq := p.db.WithContext(ctx).Model(&domain.RequestAttempt{}).
+			Select("*, ROW_NUMBER() OVER (PARTITION BY platform_key_id ORDER BY completed_at DESC, id DESC) AS sample_rank").
+			Where("platform_key_id IN ? AND protocol = ? AND path = ? AND stream = ? AND stats_version = ? AND completed_at > ? AND result IN ?",
+				deficient, req.Protocol, req.Path, req.Stream, domain.AttemptStatsVersion, cut, []string{"success", "upstream_failure"})
+		var krows []domain.RequestAttempt
+		if err := p.db.WithContext(ctx).Table("(?) AS recent", kq).Where("sample_rank <= ?", cfg.WindowMaxSamples).Order("completed_at DESC, id DESC").Find(&krows).Error; err != nil {
+			return nil, err
+		}
+		keyRows := map[uint][]domain.RequestAttempt{}
+		for _, r := range krows {
+			keyRows[r.PlatformKeyID] = append(keyRows[r.PlatformKeyID], r)
+		}
+		for _, id := range deficient {
+			if len(keyRows[id]) > len(byKey[id]) {
+				byKey[id] = keyRows[id]
+			}
+		}
+	}
 	for i := range cands {
 		c := &cands[i]
 		if !c.Eligible {
@@ -347,6 +376,13 @@ func (p *BandPicker) stableDecision(ctx context.Context, req Request, mutate boo
 				explore := -1
 				for i, c := range cands {
 					if !c.Eligible || i == chosen || now-state.Explored[c.KeyID] < 60000 {
+						continue
+					}
+					// Do not spend exploration on candidates with a known bad
+					// record: they are already excluded from the reliable pool,
+					// and oldest-sample selection would otherwise keep feeding
+					// them the exploration budget.
+					if c.Samples >= 3 && c.SuccessRate < 0.8 {
 						continue
 					}
 					if explore < 0 || c.LastSampleAt < cands[explore].LastSampleAt || (c.LastSampleAt == cands[explore].LastSampleAt && c.KeyID < cands[explore].KeyID) {

@@ -1,0 +1,662 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>提供商管理 · master-detail 交互样例</title>
+<style>
+/* ===== 设计令牌：与控制台一致 ===== */
+:root {
+  --bg: #f4f6f2; --ink: #263b34; --muted: #819087; --line: #e1e7df;
+  --green: #174b3d; --green-hover: #236049; --accent-soft: #e8eedb;
+  --ok: #578049; --warn: #9d853f; --bad: #a16d50; --row: #f3f7ee;
+  --card: #ffffff; --rail-w: 292px;
+}
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 13px;
+}
+button { font: inherit; cursor: pointer; border: 0; background: none; color: inherit; -webkit-tap-highlight-color: transparent; }
+input, select { font: inherit; border: 1px solid #dce4da; border-radius: 7px; padding: 8px 11px; background: #fff; color: #243c31; outline: none; min-width: 0; }
+input:focus, select:focus { border-color: #6b917d; box-shadow: 0 0 0 3px #70957b16; }
+.mono { font-family: Consolas, ui-monospace, monospace; }
+.muted { color: var(--muted); }
+
+/* ===== 演示顶栏 ===== */
+.demo-bar {
+  position: sticky; top: 0; z-index: 50; display: flex; align-items: center; gap: 12px;
+  padding: 9px 16px; background: #234b37; color: #dbe9ba; font-size: 12px;
+}
+.demo-bar .dot { width: 7px; height: 7px; border-radius: 50%; background: #9bc177; }
+.demo-bar b { font-weight: 650; letter-spacing: .5px; }
+.demo-bar .spacer { flex: 1; }
+.demo-bar button {
+  padding: 6px 12px; border-radius: 7px; background: #ffffff14; color: #eef5e9; font-size: 12px;
+}
+.demo-bar button:hover { background: #ffffff26; }
+.demo-bar button.on { background: #dbe9ba; color: #234435; font-weight: 650; }
+
+/* ===== 舞台（手机视图时收缩成 390 框架） ===== */
+.stage { padding: 18px; transition: padding .2s; }
+.stage.phone { padding: 24px 0 40px; display: flex; justify-content: center; background: #dfe5da; min-height: calc(100vh - 38px); }
+.app {
+  max-width: 1700px; margin: 0 auto; padding: 4px 4px 30px;
+}
+.stage.phone .app {
+  width: 390px; max-width: none; margin: 0; background: var(--bg);
+  border-radius: 22px; box-shadow: 0 30px 80px #0c1d2340; overflow: hidden;
+  padding: 0; height: 844px; overflow-y: auto; position: relative;
+}
+
+/* ===== 页头 ===== */
+.page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; padding: 14px 20px 0; flex-wrap: wrap; }
+.stage.phone .page-head { padding: 16px 14px 0; }
+.eyebrow { display: block; margin-bottom: 7px; color: #7c8f80; font-size: 10px; font-weight: 650; letter-spacing: 1.6px; }
+.page-head h1 { margin: 0; font-size: 22px; font-weight: 650; letter-spacing: -.4px; }
+.page-head p { margin: 7px 0 0; color: #839083; font-size: 12px; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.toolbar .switch { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: #546c58; }
+
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 7px; font-size: 12px; white-space: nowrap; }
+.btn.primary { background: var(--green); color: #fff; }
+.btn.primary:hover { background: var(--green-hover); }
+.btn.secondary { border: 1px solid #dce3d7; background: #fff; color: #546c58; }
+.btn.secondary:hover { background: #eef3e7; }
+.btn.tiny { padding: 4px 9px; font-size: 11px; border-radius: 6px; }
+.btn.danger { color: var(--bad); }
+.btn.danger:hover { background: #faece6; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+
+/* ===== 双栏布局 ===== */
+.layout { display: flex; gap: 14px; padding: 14px 20px 0; align-items: flex-start; }
+.stage.phone .layout { display: block; padding: 12px 14px 0; position: relative; }
+
+/* 左栏 */
+.rail { width: var(--rail-w); flex: none; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.stage.phone .rail { width: 100%; }
+.rail-tools { padding: 12px 12px 8px; border-bottom: 1px solid #eef0e9; display: flex; flex-direction: column; gap: 9px; }
+.rail-tools input { width: 100%; }
+.chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.chip { padding: 5px 11px; border-radius: 999px; border: 1px solid #dce3d7; background: #fff; color: #546c58; font-size: 11px; }
+.chip.on { background: #e4edda; border-color: #b8cf9e; color: #4e6941; font-weight: 600; }
+.rail-list { max-height: calc(100vh - 330px); min-height: 300px; overflow-y: auto; }
+.stage.phone .rail-list { max-height: none; }
+.p-row { width: 100%; text-align: left; display: block; padding: 11px 14px; border-bottom: 1px solid #f0f2ec; }
+.p-row:hover { background: #fafbf5; }
+.p-row.on { background: var(--row); box-shadow: inset 3px 0 0 var(--green); }
+.p-line1 { display: flex; align-items: center; gap: 7px; }
+.p-name { font-weight: 650; font-size: 13px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.p-line2 { display: flex; align-items: center; gap: 7px; margin-top: 5px; font-size: 11px; color: var(--muted); }
+.p-bal { margin-left: auto; font-variant-numeric: tabular-nums; font-size: 12px; color: var(--ink); }
+.p-bal.low { color: var(--bad); font-weight: 650; }
+.rail-foot { padding: 9px 14px; font-size: 11px; color: var(--muted); border-top: 1px solid #eef0e9; background: #fbfcf8; }
+
+/* 右栏详情 */
+.detail { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.detail-empty { flex: 1; display: grid; place-items: center; color: #8c9b84; border: 1px dashed var(--line); border-radius: 12px; min-height: 420px; background: #fbfcf8; font-size: 12px; }
+
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px; min-width: 0; }
+
+.d-head { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
+.d-title { flex: 1; min-width: 220px; }
+.d-title h2 { margin: 0; font-size: 16px; font-weight: 650; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.d-title a { color: #54764e; font-size: 12px; text-decoration: none; }
+.d-title .note { margin-top: 5px; color: var(--muted); font-size: 12px; }
+.d-actions { display: flex; gap: 7px; flex-wrap: wrap; }
+
+.stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 9px; }
+.stat { border: 1px solid #eef0e9; border-radius: 10px; padding: 10px 13px; background: #fbfcf8; }
+.stat.k1 { background: var(--accent-soft); border-color: #dbe7c8; }
+.stat b { display: block; font-size: 19px; font-weight: 650; letter-spacing: -.3px; }
+.stat span { font-size: 10px; color: var(--muted); letter-spacing: .8px; }
+.stat .sub { font-size: 11px; color: var(--muted); margin-top: 3px; }
+.stat b.bad { color: var(--bad); }
+
+/* Key 工具条 + 表格 */
+.k-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+.k-tools input[type=search] { width: 210px; }
+.k-tools select { width: auto; }
+.k-tools .count { margin-left: auto; font-size: 12px; color: var(--muted); }
+
+.table-wrap { border: 1px solid var(--line); border-radius: 9px; overflow: auto; }
+table { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; text-align: left; font-size: 12px; }
+th { font-weight: 500; color: #8b9885; font-size: 10px; white-space: nowrap; background: #fafbf7; padding: 12px 11px; border-bottom: 1px solid #edf0e9; }
+td { padding: 11px; border-bottom: 1px solid #eff1eb; line-height: 1.6; vertical-align: middle; }
+tr:last-child td { border-bottom: 0; }
+tbody tr:hover td { background: #fcfdf9; }
+tr.sel td { background: var(--row); }
+.k-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.k-preview { color: var(--muted); font-size: 11px; }
+.col-check { width: 34px; } .col-name {} .col-status { width: 74px; } .col-health { width: 78px; }
+.col-rate { width: 76px; } .col-score { width: 64px; } .col-pulse { width: 130px; }
+.col-models { width: 64px; } .col-groups { width: 130px; } .col-ops { width: 150px; }
+.rate-drift { color: var(--bad); font-weight: 600; }
+.tag { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 5px; font-size: 10px; white-space: nowrap; background: #eff2eb; color: #75816d; }
+.tag.success { background: #eaf3e5; color: var(--ok); }
+.tag.error { background: #faece6; color: var(--bad); }
+.tag.warning { background: #faf2dd; color: var(--warn); }
+.tag.info { background: #e9eff5; color: #4a6b8a; }
+.tag.default { background: #eff2eb; color: #75816d; }
+.tag-group { background: #eef3e7; color: #54764e; }
+.pulse { display: flex; gap: 1px; height: 22px; align-items: stretch; }
+.pulse i { flex: 1; border-radius: 1px; background: #eef0e9; }
+
+.switch-ui { display: inline-block; position: relative; width: 34px; height: 19px; border-radius: 999px; background: #cfd8cb; transition: background .15s; flex: none; vertical-align: middle; }
+.switch-ui::after { content: ''; position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; border-radius: 50%; background: #fff; transition: left .15s; box-shadow: 0 1px 3px #0003; }
+.switch-ui.on { background: var(--green); }
+.switch-ui.on::after { left: 17px; }
+.switch-ui.busy { opacity: .6; }
+
+.pager { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 6px; padding-top: 13px; }
+.pager button { padding: 6px 10px; border-radius: 6px; border: 1px solid #dce3d7; background: #fff; color: #546c58; min-height: 30px; }
+.pager button.on { background: var(--green); color: #fff; border-color: var(--green); }
+.pager select { padding: 6px 9px; font-size: 12px; }
+
+/* 批量操作条 */
+.batch-bar {
+  position: sticky; bottom: 12px; display: none; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 12px; padding: 10px 14px; border-radius: 11px;
+  background: #234b37; color: #dbe9ba; box-shadow: 0 10px 30px #0c1d2345;
+}
+.batch-bar.show { display: flex; }
+.batch-bar .n { font-weight: 650; }
+.batch-bar .btn { background: #ffffff14; color: #eef5e9; }
+.batch-bar .btn:hover { background: #ffffff26; }
+.batch-bar .btn.warn { background: #887333; }
+.batch-bar .btn.danger { background: #865a43; }
+.batch-bar .btn.ghost { background: transparent; color: #9db5a5; }
+
+/* 空态 */
+.empty { padding: 44px 20px; text-align: center; color: #8c9b84; font-size: 12px; }
+
+/* 手机：详情覆盖层 */
+.d-overlay { display: none; }
+.stage.phone .d-overlay {
+  display: block; position: absolute; inset: 0; z-index: 30; background: var(--bg);
+  overflow-y: auto; padding: 12px 14px 40px; transform: translateX(100%); transition: transform .22s;
+}
+.stage.phone .d-overlay.open { transform: translateX(0); }
+.stage.phone .detail-pane { display: none; }
+.back-btn { display: none; }
+.stage.phone .back-btn {
+  display: inline-flex; align-items: center; gap: 5px; margin-bottom: 10px;
+  padding: 7px 12px; border-radius: 8px; background: #fff; border: 1px solid var(--line); font-size: 12px; color: #546c58;
+}
+
+/* toast / 确认框 */
+.toasts { position: fixed; right: 30px; bottom: 25px; z-index: 300; display: flex; flex-direction: column; gap: 8px; max-width: min(480px, calc(100vw - 24px)); }
+.toast { background: #234b37; color: #fff; border-radius: 8px; padding: 13px 18px; font-size: 13px; box-shadow: 0 5px 25px #233d222a; animation: pop .18s; }
+.toast.warning { background: #887333; }
+.toast.error { background: #865a43; }
+@keyframes pop { from { opacity: 0; transform: translateY(6px); } }
+.mask { position: fixed; inset: 0; z-index: 200; background: #14281e66; backdrop-filter: blur(2px); display: none; align-items: center; justify-content: center; padding: 20px; }
+.mask.open { display: flex; }
+.modal { background: #fcfdf9; width: 440px; max-width: 100%; border-radius: 14px; overflow: hidden; box-shadow: 0 25px 90px #0c1d2333; }
+.modal-head { padding: 18px 22px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e5ebde; font-size: 16px; font-weight: 650; }
+.modal-body { padding: 18px 22px; font-size: 13px; line-height: 1.8; color: #435a4c; max-height: 60vh; overflow: auto; }
+.modal-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 22px; border-top: 1px solid #e5ebde; }
+@media (max-width: 900px) {
+  .layout { flex-direction: column; }
+  .rail { width: 100%; }
+}
+</style>
+</head>
+<body>
+
+<div class="demo-bar">
+  <span class="dot"></span>
+  <b>提供商管理 · master-detail 交互样例</b>
+  <span style="opacity:.75">数据为模拟 · 所有按钮可点 · 批量操作本地生效</span>
+  <span class="spacer"></span>
+  <button id="phoneToggle">📱 手机视图</button>
+</div>
+
+<div class="stage" id="stage">
+  <div class="app">
+    <header class="page-head">
+      <div>
+        <span class="eyebrow">供给 / UPSTREAMS</span>
+        <h1>提供商</h1>
+        <p>左侧选择提供商，右侧管理它的 Key。列表异常优先，选中提供商的 Key 表格支持搜索、筛选、排序与批量操作</p>
+      </div>
+      <div class="toolbar">
+        <span class="switch"><span class="switch-ui on" id="liveSwitch"></span>自动刷新</span>
+        <button class="btn secondary" onclick="toast('列表已刷新（模拟）')">刷新</button>
+        <button class="btn primary" onclick="toast('正式版弹出新建提供商表单')">＋ 新建提供商</button>
+      </div>
+    </header>
+
+    <div class="layout">
+      <aside class="rail">
+        <div class="rail-tools">
+          <input type="search" id="providerSearch" placeholder="搜索提供商名称 / 地址 / 备注">
+          <div class="chips" id="quickChips"></div>
+        </div>
+        <div class="rail-list" id="railList"></div>
+        <div class="rail-foot" id="railFoot"></div>
+      </aside>
+
+      <section class="detail-pane" style="flex:1; min-width:0; display:flex;">
+        <div class="detail-empty" id="detailEmpty">← 从左侧选择一家提供商</div>
+        <div class="detail" id="detail" style="display:none"></div>
+      </section>
+
+      <div class="d-overlay" id="dOverlay">
+        <button class="back-btn" onclick="closeOverlay()">← 返回提供商列表</button>
+        <div class="detail" id="detailPhone"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+<div class="mask" id="mask">
+  <div class="modal">
+    <div class="modal-head"><span id="mTitle"></span><button onclick="closeModal()" style="font-size:22px;color:#89967d">×</button></div>
+    <div class="modal-body" id="mBody"></div>
+    <div class="modal-foot" id="mFoot"></div>
+  </div>
+</div>
+
+<script>
+/* ================= 假数据 ================= */
+let seed = 42
+function rnd() { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648 }
+function pick(a) { return a[Math.floor(rnd() * a.length)] }
+function int(min, max) { return min + Math.floor(rnd() * (max - min + 1)) }
+
+const KINDS = { new_api: 'NewAPI', sub2api: 'Sub2API', openai_compat: 'OpenAI 兼容', anthropic_compat: 'Anthropic 兼容' }
+const HEALTH = { healthy: ['健康', 'success'], degraded: ['慢响应', 'warning'], down: ['失败', 'error'], cooldown: ['冷却中', 'info'], low_balance: ['低余额', 'warning'] }
+const GROUPS = ['默认池', '高倍率', '欧区池']
+
+const providerDefs = [
+  ['NewAPI·主池', 'new_api', 151, 'healthy', 240.5, '主力池，探测全开'],
+  ['Sub2API·计费池', 'sub2api', 38, 'degraded', 32.0, '余额偏低，关注续费'],
+  ['OpenCompat·欧区', 'openai_compat', 6, 'down', 88.2, '今晚开始 5xx，待排查'],
+  ['Anthropic·官转', 'anthropic_compat', 4, 'cooldown', 120, '触发 429 冷却中'],
+  ['NewAPI·备用线路', 'new_api', 12, 'healthy', null, '不限额度'],
+  ['Sub2API·亚太', 'sub2api', 22, 'healthy', 156.8, ''],
+  ['OldPool·废弃', 'new_api', 9, 'down', 0, '已停用待清理', 'disabled'],
+]
+const nameSuffix = ['冷备', '快线', '夜间', '大额', '测试', '稳态', '灰度', '新客', '重试', '长文', '低价', '高并发']
+for (let i = 7; i < 24; i++) {
+  const health = pick(['healthy', 'healthy', 'healthy', 'degraded', 'cooldown', 'low_balance'])
+  providerDefs.push([`NewAPI·${nameSuffix[i - 7]}${i}`, 'new_api', int(2, 40), health, health === 'low_balance' ? int(3, 45) : int(50, 400), ''])
+}
+
+const providers = providerDefs.map((d, i) => {
+  const [name, kind, keyCount, health, balance, note, status] = d
+  const disabled = status === 'disabled'
+  const abnormal = health === 'down' || health === 'degraded' ? Math.max(1, Math.round(keyCount * 0.15)) : 0
+  return {
+    id: i + 1, name, kind, key_count: keyCount, health_status: disabled ? 'disabled' : health,
+    status: disabled ? 'disabled' : 'enabled', note, base_url: `https://api-${i + 1}.example.com`,
+    last_balance: balance, last_balance_at: '2026-10-01 19:4' + (i % 10),
+    abnormal_count: abnormal, concurrency: pick([0, 5, 10]),
+    health_counts: { healthy: keyCount - abnormal, degraded: health === 'degraded' ? abnormal : 0, down: health === 'down' ? abnormal : 0 },
+    last_request_at: `2026-10-01 2${int(0, 1)}:${String(int(10, 59))}`,
+  }
+})
+
+const keyCache = {}
+function keysOf(pid) {
+  if (keyCache[pid]) return keyCache[pid]
+  const p = providers.find(x => x.id === pid)
+  const arr = []
+  for (let i = 1; i <= p.key_count; i++) {
+    const health = i % 13 === 0 ? 'down' : i % 7 === 0 ? 'degraded' : i % 23 === 0 ? 'cooldown' : 'healthy'
+    const drift = i % 11 === 0
+    arr.push({
+      id: pid * 1000 + i, name: `${p.name.split('·')[0]}-key-${String(i).padStart(2, '0')}`,
+      key_preview: 'sk-...' + Math.floor(rnd() * 1e8).toString(16).padStart(8, '0').slice(0, 8),
+      status: rnd() < 0.06 ? 'disabled' : 'enabled', health_status: health,
+      rate_multiplier: drift ? 1.85 : Math.round((0.2 + rnd() * 1.4) * 100) / 100, drifted: drift,
+      channel_score: health === 'down' ? int(5, 30) : int(62, 98),
+      models_count: int(8, 220),
+      route_groups: rnd() < 0.5 ? [pick(GROUPS)] : [],
+      last_request_at: `2026-10-01 2${int(0, 1)}:${String(int(10, 59))}`,
+    })
+  }
+  keyCache[pid] = arr
+  return arr
+}
+
+/* ================= 状态 ================= */
+const state = {
+  selectedId: null, providerQuery: '', quick: 'all',
+  kQuery: '', kStatus: '', kHealth: '', kSort: 'id', kOrder: 'asc', kPage: 1, kPageSize: 20,
+  sel: new Set(), live: true,
+}
+
+/* ================= 工具 ================= */
+function $(id) { return document.getElementById(id) }
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])) }
+function toast(msg, type = '') {
+  const t = document.createElement('div')
+  t.className = 'toast ' + type; t.textContent = msg
+  $('toasts').appendChild(t)
+  setTimeout(() => t.remove(), 3600)
+}
+function openModal(title, bodyHTML, footHTML) {
+  $('mTitle').textContent = title; $('mBody').innerHTML = bodyHTML; $('mFoot').innerHTML = footHTML
+  $('mask').classList.add('open')
+}
+function closeModal() { $('mask').classList.remove('open') }
+$('mask').addEventListener('click', e => { if (e.target === $('mask')) closeModal() })
+function confirmModal(title, body, okText, onOk) {
+  openModal(title, body, `<button class="btn secondary" onclick="closeModal()">取消</button><button class="btn primary" id="mOk">${okText}</button>`)
+  $('mOk').onclick = () => { closeModal(); onOk() }
+}
+function tag(text, type) { return `<span class="tag ${type}">${text}</span>` }
+function healthTag(s) { const h = HEALTH[s]; return h ? tag(h[0], h[1]) : tag('停用', 'default') }
+function pulseHTML() {
+  let out = ''
+  for (let i = 0; i < 40; i++) {
+    const r = rnd()
+    out += `<i style="background:${r < .8 ? '#9bc177' : r < .92 ? '#d9c777' : r < .97 ? '#c98d6b' : '#eef0e9'}"></i>`
+  }
+  return `<span class="pulse">${out}</span>`
+}
+function balanceHTML(v) {
+  if (v == null) return '不限'
+  return '$' + v.toFixed(2)
+}
+
+/* ================= 左栏 ================= */
+function filteredProviders() {
+  const q = state.providerQuery.trim().toLowerCase()
+  return providers.filter(p =>
+    (!q || [p.name, p.base_url, p.note].some(v => v && v.toLowerCase().includes(q)))
+    && (state.quick === 'all'
+      || (state.quick === 'abnormal' && p.status === 'enabled' && p.abnormal_count > 0)
+      || (state.quick === 'low' && p.status === 'enabled' && p.last_balance != null && p.last_balance < 50)
+      || (state.quick === 'disabled' && p.status === 'disabled')))
+}
+function renderChips() {
+  const counts = {
+    all: providers.length,
+    abnormal: providers.filter(p => p.status === 'enabled' && p.abnormal_count > 0).length,
+    low: providers.filter(p => p.status === 'enabled' && p.last_balance != null && p.last_balance < 50).length,
+    disabled: providers.filter(p => p.status === 'disabled').length,
+  }
+  const labels = { all: '全部', abnormal: '异常', low: '低余额', disabled: '停用' }
+  $('quickChips').innerHTML = Object.keys(labels).map(k =>
+    `<button class="chip ${state.quick === k ? 'on' : ''}" onclick="setQuick('${k}')">${labels[k]} ${counts[k]}</button>`).join('')
+}
+function setQuick(k) { state.quick = k; renderChips(); renderRail() }
+function renderRail() {
+  const list = filteredProviders()
+  $('railList').innerHTML = list.length ? list.map(p => `
+    <button class="p-row ${state.selectedId === p.id ? 'on' : ''}" onclick="selectProvider(${p.id})">
+      <span class="p-line1">
+        <span class="p-name">${esc(p.name)}</span>
+        ${p.abnormal_count > 0 && p.status === 'enabled' ? tag('异常 ' + p.abnormal_count, 'error') : ''}
+        ${p.status === 'disabled' ? tag('停用', 'default') : ''}
+      </span>
+      <span class="p-line2">
+        ${tag(KINDS[p.kind], 'info')}
+        <span>${p.key_count} 把 Key</span>
+        <span class="p-bal ${p.last_balance != null && p.last_balance < 50 ? 'low' : ''}">${balanceHTML(p.last_balance)}</span>
+      </span>
+    </button>`).join('') : `<div class="empty">没有匹配的提供商</div>`
+  $('railFoot').textContent = `共 ${list.length} 家 · 异常优先排序`
+}
+$('providerSearch').addEventListener('input', e => { state.providerQuery = e.target.value; renderRail() })
+
+function selectProvider(id) {
+  state.selectedId = id
+  Object.assign(state, { kQuery: '', kStatus: '', kHealth: '', kSort: 'id', kOrder: 'asc', kPage: 1 })
+  state.sel.clear()
+  renderRail(); renderDetail()
+  if (document.getElementById('stage').classList.contains('phone')) $('dOverlay').classList.add('open')
+}
+function closeOverlay() { $('dOverlay').classList.remove('open') }
+
+/* ================= 右栏 ================= */
+function currentProvider() { return providers.find(p => p.id === state.selectedId) }
+function renderDetail() {
+  const p = currentProvider()
+  $('detailEmpty').style.display = p ? 'none' : 'grid'
+  $('detail').style.display = p ? 'flex' : 'none'
+  if (!p) return
+  const hc = p.health_counts || {}
+  const html = `
+  <div class="card">
+    <div class="d-head">
+      <div class="d-title">
+        <h2>${esc(p.name)} ${tag(p.status === 'enabled' ? '启用' : '停用', p.status === 'enabled' ? 'success' : 'default')} ${healthTag(p.health_status)} ${tag(KINDS[p.kind], 'info')}</h2>
+        <a href="#" onclick="return false">${esc(p.base_url)}</a>
+        ${p.note ? `<div class="note">备注：${esc(p.note)}</div>` : ''}
+      </div>
+      <div class="d-actions">
+        <button class="btn primary" onclick="toast('正式版弹出新建 Key 表单')">＋ 添加 Key</button>
+        <button class="btn secondary" onclick="toast('已对该提供商全部启用 Key 发起轻量探测（模拟）')">探测</button>
+        <button class="btn secondary" onclick="refreshBalance()">刷新余额</button>
+        <button class="btn secondary" onclick="toast('已拉取该提供商模型列表（模拟）')">获取模型</button>
+        <button class="btn secondary" onclick="toast('正式版此处为下拉菜单：编辑 / 启停 / 删除')">更多 ▾</button>
+      </div>
+    </div>
+  </div>
+  <div class="stat-row">
+    <div class="stat k1"><span>KEY 总数</span><b>${p.key_count}</b><div class="sub">启用 ${p.status === 'enabled' ? p.key_count : 0} · 停用 0</div></div>
+    <div class="stat"><span>异常 KEY</span><b class="${p.abnormal_count ? 'bad' : ''}">${p.abnormal_count}</b><div class="sub">失败 ${hc.down || 0} · 慢响应 ${hc.degraded || 0}</div></div>
+    <div class="stat"><span>余额</span><b class="${p.last_balance != null && p.last_balance < 50 ? 'bad' : ''}">${balanceHTML(p.last_balance)}</b><div class="sub">更新于 ${p.last_balance_at}</div></div>
+    <div class="stat"><span>并发上限</span><b>${p.concurrency || '不限'}</b><div class="sub">提供商级</div></div>
+    <div class="stat"><span>最近请求</span><b style="font-size:13px;padding-top:4px">${p.last_request_at}</b><div class="sub">管理时区 Asia/Shanghai</div></div>
+  </div>
+  <div class="card">
+    <div class="k-tools">
+      <input type="search" id="kSearch" placeholder="搜索 Key 名称 / 标识 / 预览" value="${esc(state.kQuery)}">
+      <select id="kStatus">
+        <option value="">状态：全部</option>
+        <option value="enabled" ${state.kStatus === 'enabled' ? 'selected' : ''}>启用</option>
+        <option value="disabled" ${state.kStatus === 'disabled' ? 'selected' : ''}>停用</option>
+      </select>
+      <select id="kHealth">
+        <option value="">健康：全部</option>
+        ${Object.keys(HEALTH).map(k => `<option value="${k}" ${state.kHealth === k ? 'selected' : ''}>${HEALTH[k][0]}</option>`).join('')}
+      </select>
+      <select id="kSort">
+        <option value="id" ${state.kSort === 'id' ? 'selected' : ''}>默认排序</option>
+        <option value="rate_asc" ${state.kSort === 'rate_asc' ? 'selected' : ''}>倍率从低到高</option>
+        <option value="rate_desc" ${state.kSort === 'rate_desc' ? 'selected' : ''}>倍率从高到低</option>
+        <option value="score" ${state.kSort === 'score' ? 'selected' : ''}>评分优先</option>
+        <option value="recent" ${state.kSort === 'recent' ? 'selected' : ''}>最近请求</option>
+      </select>
+      <span class="count" id="kCount"></span>
+    </div>
+    <div class="table-wrap" id="keyTable"></div>
+    <div class="pager" id="keyPager"></div>
+    <div class="batch-bar" id="batchBar"></div>
+  </div>`
+  $('detail').innerHTML = html
+  $('detailPhone').innerHTML = html
+  ;[['kSearch', 'kQuery'], ['kStatus', 'kStatus'], ['kHealth', 'kHealth']].forEach(([id, key]) => {
+    const el = document.getElementById(id)
+    if (el) el.addEventListener('input', () => { state[key] = el.value; state.kPage = 1; renderKeys() })
+  })
+  const sortEl = document.getElementById('kSort')
+  if (sortEl) sortEl.addEventListener('change', () => { state.kSort = sortEl.value; state.kPage = 1; renderKeys() })
+  renderKeys()
+}
+
+/* ---- Key 表：模拟服务端分页/筛选/排序 ---- */
+function queriedKeys() {
+  const q = state.kQuery.trim().toLowerCase()
+  let arr = keysOf(state.selectedId).filter(k =>
+    (!q || [k.name, k.key_preview].some(v => v.toLowerCase().includes(q)))
+    && (!state.kStatus || k.status === state.kStatus)
+    && (!state.kHealth || k.health_status === state.kHealth))
+  const s = state.kSort
+  if (s === 'rate_asc') arr.sort((a, b) => a.rate_multiplier - b.rate_multiplier || a.id - b.id)
+  if (s === 'rate_desc') arr.sort((a, b) => b.rate_multiplier - a.rate_multiplier || a.id - b.id)
+  if (s === 'score') arr.sort((a, b) => a.channel_score - b.channel_score || a.id - b.id)
+  if (s === 'recent') arr.sort((a, b) => b.last_request_at.localeCompare(a.last_request_at))
+  return arr
+}
+function renderKeys() {
+  const all = queriedKeys()
+  const pages = Math.max(1, Math.ceil(all.length / state.kPageSize))
+  if (state.kPage > pages) state.kPage = pages
+  const rows = all.slice((state.kPage - 1) * state.kPageSize, state.kPage * state.kPageSize)
+  const target = document.getElementById('stage').classList.contains('phone') ? 'detailPhone' : 'detail'
+  const table = document.getElementById('keyTable')
+  const pager = document.getElementById('keyPager')
+  if (!table) return
+  table.innerHTML = rows.length ? `
+    <table>
+      <colgroup><col class="col-check"><col><col class="col-status"><col class="col-health"><col class="col-rate"><col class="col-score"><col class="col-pulse"><col class="col-models"><col class="col-groups"><col class="col-ops"></colgroup>
+      <thead><tr>
+        <th class="col-check"><input type="checkbox" ${rows.length && rows.every(k => state.sel.has(k.id)) ? 'checked' : ''} onchange="toggleAll(this.checked)"></th>
+        <th>Key</th><th>状态</th><th>健康</th><th>倍率</th><th>评分</th><th>近 60 次</th><th>模型</th><th>分组</th><th>操作</th>
+      </tr></thead>
+      <tbody>${rows.map(k => `
+        <tr class="${state.sel.has(k.id) ? 'sel' : ''}">
+          <td><input type="checkbox" ${state.sel.has(k.id) ? 'checked' : ''} onchange="toggleSel(${k.id}, this.checked)"></td>
+          <td><div class="k-name" title="${esc(k.name)}">${esc(k.name)}</div><span class="k-preview mono">${k.key_preview}</span></td>
+          <td><span class="switch-ui ${k.status === 'enabled' ? 'on' : ''}" onclick="toggleKeyStatus(${k.id})"></span></td>
+          <td>${healthTag(k.health_status)}</td>
+          <td><span class="${k.drifted ? 'rate-drift' : ''}">×${k.rate_multiplier.toFixed(2)}</span></td>
+          <td>${k.channel_score}</td>
+          <td>${pulseHTML()}</td>
+          <td><button class="btn tiny secondary" onclick="toast('模型 ${k.models_count} 个 · 正式版弹出模型列表')">${k.models_count}</button></td>
+          <td>${k.route_groups.length ? k.route_groups.map(g => `<span class="tag tag-group">${g}</span>`).join(' ') : '<span class="muted">—</span>'}</td>
+          <td style="white-space:nowrap">
+            <button class="btn tiny secondary" onclick="toast('已探测 ${esc(k.name)}（模拟）')">探测</button>
+            <button class="btn tiny secondary" onclick="toast('正式版弹出编辑 Key 表单')">编辑</button>
+            <button class="btn tiny danger" onclick="deleteKey(${k.id})">删除</button>
+          </td>
+        </tr>`).join('')}</tbody>
+    </table>` : `<div class="empty">没有匹配的 Key</div>`
+  pager.innerHTML = `
+    <span class="muted">共 ${all.length} 条</span>
+    <button ${state.kPage <= 1 ? 'disabled' : ''} onclick="gotoPage(${state.kPage - 1})">‹</button>
+    ${Array.from({ length: Math.min(5, pages) }, (_, i) => {
+      const n = Math.max(1, Math.min(state.kPage - 2, pages - 4)) + i
+      return n <= pages ? `<button class="${n === state.kPage ? 'on' : ''}" onclick="gotoPage(${n})">${n}</button>` : ''
+    }).join('')}
+    <button ${state.kPage >= pages ? 'disabled' : ''} onclick="gotoPage(${state.kPage + 1})">›</button>
+    <select onchange="state.kPageSize = +this.value; state.kPage = 1; renderKeys()">
+      ${[20, 50, 100].map(s => `<option ${s === state.kPageSize ? 'selected' : ''}>${s}</option>`).join('')}
+    </select>`
+  document.getElementById('kCount').textContent = `本页 ${rows.length} 把`
+  renderBatchBar()
+}
+function gotoPage(n) { state.kPage = n; renderKeys() }
+function toggleAll(on) {
+  const rows = queriedKeys().slice((state.kPage - 1) * state.kPageSize, state.kPage * state.kPageSize)
+  rows.forEach(k => on ? state.sel.add(k.id) : state.sel.delete(k.id))
+  renderKeys()
+}
+function toggleSel(id, on) { on ? state.sel.add(id) : state.sel.delete(id); renderKeys() }
+
+/* ---- 批量操作条 ---- */
+function renderBatchBar() {
+  const bar = document.getElementById('batchBar')
+  if (!bar) return
+  const n = state.sel.size
+  bar.className = 'batch-bar' + (n ? ' show' : '')
+  if (!n) { bar.innerHTML = ''; return }
+  bar.innerHTML = `
+    <span>已选 <span class="n">${n}</span> 把 Key</span>
+    <button class="btn" onclick="batchStatus('enabled')">启用</button>
+    <button class="btn" onclick="batchStatus('disabled')">停用</button>
+    <button class="btn" onclick="batchProbe()">探测</button>
+    <button class="btn" onclick="batchBilling()">同步倍率</button>
+    <button class="btn" onclick="batchGroup()">分组</button>
+    <button class="btn danger" onclick="batchDelete()">删除</button>
+    <button class="btn ghost" onclick="state.sel.clear(); renderKeys()">取消选择</button>`
+}
+function requireSel() {
+  if (!state.sel.size) { toast('请先勾选 Key', 'warning'); return false }
+  return true
+}
+function batchStatus(status) {
+  if (!requireSel()) return
+  keysOf(state.selectedId).forEach(k => { if (state.sel.has(k.id)) k.status = status })
+  toast(`已批量${status === 'enabled' ? '启用' : '停用'} ${state.sel.size} 把 Key（POST /keys/batch-status）`)
+  state.sel.clear(); renderKeys()
+}
+function batchProbe() {
+  if (!requireSel()) return
+  toast(`已对 ${state.sel.size} 把 Key 发起探测（POST /probes/run · key_ids）`)
+}
+function batchBilling() {
+  if (!requireSel()) return
+  toast(`已对 ${state.sel.size} 把 Key 同步倍率（POST /keys/batch-billing），结果 3 秒后通知`, 'warning')
+}
+function batchGroup() {
+  if (!requireSel()) return
+  openModal('批量调整路由分组', `
+    <div style="margin-bottom:10px">对已选 <b>${state.sel.size}</b> 把 Key：</div>
+    <select id="gSel" style="width:100%">${GROUPS.map(g => `<option>${g}</option>`).join('')}</select>
+    <div style="margin-top:12px;display:flex;gap:8px">
+      <button class="btn secondary" style="flex:1;justify-content:center" onclick="applyGroup('add')">加入该分组</button>
+      <button class="btn secondary" style="flex:1;justify-content:center" onclick="applyGroup('remove')">移出该分组</button>
+    </div>`, '')
+}
+function applyGroup(op) {
+  const g = document.getElementById('gSel').value
+  keysOf(state.selectedId).forEach(k => {
+    if (!state.sel.has(k.id)) return
+    const has = k.route_groups.includes(g)
+    if (op === 'add' && !has) k.route_groups.push(g)
+    if (op === 'remove') k.route_groups = k.route_groups.filter(x => x !== g)
+  })
+  closeModal()
+  toast(`已${op === 'add' ? '加入' : '移出'}分组「${g}」· ${state.sel.size} 把（POST /route-groups/:id/keys/batch）`)
+  state.sel.clear(); renderKeys()
+}
+function batchDelete() {
+  if (!requireSel()) return
+  const n = state.sel.size
+  confirmModal('批量删除 Key', `将删除选中的 <b>${n}</b> 把 Key，其路由分组关联会一并移除。此操作不可恢复。`, '删除', () => {
+    keyCache[state.selectedId] = keyCache[state.selectedId].filter(k => !state.sel.has(k.id))
+    const p = currentProvider(); p.key_count -= n
+    toast(`已删除 ${n} 把 Key（POST /keys/batch-delete）`, 'error')
+    state.sel.clear(); renderDetail()
+  })
+}
+
+/* ---- 行级操作 ---- */
+function toggleKeyStatus(id) {
+  const k = keysOf(state.selectedId).find(x => x.id === id)
+  k.status = k.status === 'enabled' ? 'disabled' : 'enabled'
+  toast(`${k.name} 已${k.status === 'enabled' ? '启用' : '停用'}（PUT /keys/:id）`)
+  renderKeys()
+}
+function deleteKey(id) {
+  const k = keysOf(state.selectedId).find(x => x.id === id)
+  confirmModal('删除 Key', `确认删除 <b>${esc(k.name)}</b>（${k.key_preview}）？其分组关联会一并移除。`, '删除', () => {
+    keyCache[state.selectedId] = keyCache[state.selectedId].filter(x => x.id !== id)
+    currentProvider().key_count--
+    toast(`已删除 ${k.name}`, 'error'); state.sel.delete(id); renderDetail()
+  })
+}
+function refreshBalance() {
+  const p = currentProvider()
+  p.last_balance = p.last_balance == null ? 88.8 : Math.round((p.last_balance + 5.2) * 100) / 100
+  p.last_balance_at = '2026-10-01 20:0' + int(0, 9)
+  toast(`余额已刷新：${balanceHTML(p.last_balance)}（POST /upstreams/:id/refresh-balance）`)
+  renderDetail(); renderRail()
+}
+
+/* ================= 全局交互 ================= */
+$('liveSwitch').addEventListener('click', function () {
+  state.live = !state.live; this.classList.toggle('on', state.live)
+  toast(state.live ? '自动刷新已开启（15s 轮询）' : '自动刷新已关闭')
+})
+$('phoneToggle').addEventListener('click', function () {
+  const on = $('stage').classList.toggle('phone')
+  this.classList.toggle('on', on)
+  this.textContent = on ? '✕ 退出手机视图' : '📱 手机视图'
+  if (!on) { $('dOverlay').classList.remove('open'); $('detail').style.display = currentProvider() ? 'flex' : 'none' }
+  renderKeys()
+})
+
+/* ================= 初始化 ================= */
+renderChips(); renderRail(); selectProvider(1)
+</script>
+</body>
+</html>

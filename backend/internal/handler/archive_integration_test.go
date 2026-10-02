@@ -121,7 +121,7 @@ func TestGatewayDoneOnlyArchivesAndDiagnostics(t *testing.T) {
 				reqStart = time.Now().Add(-proxyOverallTimeout + 500*time.Millisecond)
 			}
 			callStart := time.Now()
-			out := h.forwardOnce(c, &ck, &key, &up, "openai", "m", "", "fixture", []byte(request), snap, lg, reqStart)
+			out := h.forwardOnce(c, &ck, &key, &up, "openai", "m", "", "fixture", []byte(request), snap, lg, reqStart, 0)
 			elapsed := time.Since(callStart)
 			archive.Wait()
 			var a domain.RequestAttempt

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, h, onMounted, reactive, ref } from 'vue'
-import { NTag, useMessage } from 'naive-ui'
-import type { DataTableColumns, FormInst, FormRules, SelectOption } from 'naive-ui'
+import { UiTag, useMessage } from '@/components/ui'
+import type { DataTableColumns, FormInst, FormRules, SelectOption } from '@/components/ui'
 import { useRoute } from 'vue-router'
 import { explainScheduler, flattenExplain, getModelCatalog, getScheduler, listConsumerKeys, syncModelCatalog, updateScheduler } from '@/api/admin'
 import type { CatalogVendor, ConsumerKey, ProbeVendorId, Protocol, SchedulerCandidate, SchedulerSettings } from '@/api/types'
@@ -88,6 +88,11 @@ const form = reactive<SchedulerSettings>({
 	 circuit_failure_threshold: 3,
 	 circuit_cooldown_sec: 30,
 	 circuit_max_cooldown_sec: 300,
+  circuit_rate_factor: 0.15,
+  ftt_failure_weight: 2,
+  recovery_budget_per_min: 3,
+  recovery_check_timeout_sec: 60,
+  failover_first_token_wait_sec: 10,
   switch_improvement_ratio: 0.20,
   switch_improvement_ms: 2000,
   switch_confirm_sec: 60,
@@ -267,43 +272,52 @@ function pct(n: number) {
 }
 
 const columns: DataTableColumns<SchedulerCandidate> = [
-	{ title: 'Key', key: 'key_name', width: 190, fixed: 'left', ellipsis: { tooltip: true } },
+	{ title: 'Key', key: 'key_name', width: 190, fixed: 'left', ellipsis: { tooltip: true }, mobileTitle: true },
 	{ title: '提供商', key: 'upstream_name', width: 160, ellipsis: { tooltip: true } },
-	{ title: '探测时间', key: 'probe_at', width: 165, render: row => row.probe_at ? new Date(row.probe_at).toLocaleString() : '—' },
-	{ title: '探测状态', key: 'probe_status', width: 110, render: row => ({healthy:'正常',degraded:'慢响应',down:'失败',unknown:'暂无探测'}[row.probe_status ?? 'unknown'] ?? row.probe_status) },
-	{ title: '探测模型', key: 'probe_model', width: 150, ellipsis: { tooltip: true } },
-	{ title: '探测接口', key: 'probe_path', width: 175, ellipsis: { tooltip: true } },
-	{ title: '探测模式', key: 'probe_stream', width: 85, render: row => row.probe_path ? (row.probe_stream ? '流式' : '非流式') : '—' },
-	{ title: '业务熔断', key: 'circuit_state', width: 100, render: row => ({closed:'未熔断',open:'熔断',half_open:'等待恢复'}[row.circuit_state ?? 'closed'] ?? row.circuit_state) },
+	{ title: '探测时间', key: 'probe_at', width: 165, mobileHide: true, render: row => row.probe_at ? new Date(row.probe_at).toLocaleString() : '—' },
+	{ title: '探测状态', key: 'probe_status', width: 110, mobileHide: true, render: row => ({healthy:'正常',degraded:'慢响应',down:'失败',unknown:'暂无探测'}[row.probe_status ?? 'unknown'] ?? row.probe_status) },
+	{ title: '探测模型', key: 'probe_model', width: 150, mobileHide: true, ellipsis: { tooltip: true } },
+	{ title: '探测接口', key: 'probe_path', width: 175, mobileHide: true, ellipsis: { tooltip: true } },
+	{ title: '探测模式', key: 'probe_stream', width: 85, mobileHide: true, render: row => row.probe_path ? (row.probe_stream ? '流式' : '非流式') : '—' },
+	{
+		title: '业务熔断', key: 'circuit_state', width: 100, mobileTag: true,
+		render: row => {
+			const label = ({closed:'未熔断',open:'熔断',half_open:'等待恢复'}[row.circuit_state ?? 'closed'] ?? row.circuit_state)
+			return h(UiTag, { type: row.circuit_state === 'open' ? 'error' : row.circuit_state === 'half_open' ? 'warning' : 'success', size: 'small', bordered: false }, { default: () => label })
+		},
+	},
 	{ title: '恢复阶段', key: 'recovery_status', width: 140, render: row => ({cooldown:'冷却中',waiting_check:'等待恢复检查',checking:'恢复检查中',check_failed:'恢复检查失败',waiting_request:'等待业务验证',waiting_session:'保持当前会话',waiting_budget:'等待恢复名额',validating:'业务验证中'}[row.recovery_status ?? ''] ?? '—') },
-	{ title: '恢复检查时间', key: 'recovery_check_at', width: 165, render: row => row.recovery_check_at ? new Date(row.recovery_check_at).toLocaleString() : '—' },
-	{ title: '下次恢复检查', key: 'recovery_next_check_at', width: 165, render: row => row.recovery_next_check_at ? new Date(row.recovery_next_check_at).toLocaleString() : '—' },
-	{ title: '恢复检查错误', key: 'recovery_check_error', width: 180, ellipsis: { tooltip: true } },
-	{ title: '影响范围', key: 'circuit_scope', width: 120, render: row => row.circuit_scope === 'key' ? '整个 Key' : row.circuit_scope === 'request' ? '当前模型与接口' : '—' },
-	{ title: '熔断原因', key: 'circuit_reason', width: 155, ellipsis: { tooltip: true }, render: row => CIRCUIT_LABEL[row.circuit_reason ?? ''] ?? row.circuit_reason ?? '—' },
+	{ title: '恢复检查时间', key: 'recovery_check_at', width: 165, mobileHide: true, render: row => row.recovery_check_at ? new Date(row.recovery_check_at).toLocaleString() : '—' },
+	{ title: '下次恢复检查', key: 'recovery_next_check_at', width: 165, mobileHide: true, render: row => row.recovery_next_check_at ? new Date(row.recovery_next_check_at).toLocaleString() : '—' },
+	{ title: '恢复检查错误', key: 'recovery_check_error', width: 180, mobileHide: true, ellipsis: { tooltip: true } },
+	{ title: '影响范围', key: 'circuit_scope', width: 120, mobileHide: true, render: row => row.circuit_scope === 'key' ? '整个 Key' : row.circuit_scope === 'request' ? '当前模型与接口' : '—' },
+	{ title: '熔断原因', key: 'circuit_reason', width: 155, mobileHide: true, ellipsis: { tooltip: true }, render: row => CIRCUIT_LABEL[row.circuit_reason ?? ''] ?? row.circuit_reason ?? '—' },
 	{ title: '冷却 / 租约截止', key: 'circuit_until', width: 165, render: row => row.circuit_until ? new Date(row.circuit_until).toLocaleString() : '—' },
-  { title: '选路原因', key: 'decision_reason', width: 140, ellipsis: { tooltip: true }, render: row => row.decision_reason === 'recovery_validation' ? '恢复验证' : row.decision_reason },
-  { title: '延迟样本', key: 'latency_samples', width: 85 },
+  { title: '选路原因', key: 'decision_reason', width: 140, mobileHide: true, ellipsis: { tooltip: true }, render: row => row.decision_reason === 'recovery_validation' ? '恢复验证' : row.decision_reason },
+  { title: '延迟样本', key: 'latency_samples', width: 85, mobileHide: true },
   {
     title: '选中',
     key: 'selected',
     width: 70,
+    mobileHide: true,
     render(row) {
-      return row.selected ? h(NTag, { type: 'success', size: 'small', bordered: false }, { default: () => '是' }) : '—'
+      return row.selected ? h(UiTag, { type: 'success', size: 'small', bordered: false }, { default: () => '是' }) : '—'
     },
   },
   {
     title: '带内',
     key: 'in_band',
     width: 70,
+    mobileHide: true,
     render(row) {
-      return row.in_band ? h(NTag, { type: 'info', size: 'small', bordered: false }, { default: () => '近优' }) : '—'
+      return row.in_band ? h(UiTag, { type: 'info', size: 'small', bordered: false }, { default: () => '近优' }) : '—'
     },
   },
   {
     title: '健康',
     key: 'health_status',
     width: 110,
+    mobileHide: true,
     render(row) {
       return h(HealthTag, { status: row.health_status })
     },
@@ -312,6 +326,7 @@ const columns: DataTableColumns<SchedulerCandidate> = [
     title: '质量',
     key: 'quality',
     width: 80,
+    mobileHide: true,
     render(row) {
       return row.eligible ? row.quality.toFixed(3) : '—'
     },
@@ -320,6 +335,7 @@ const columns: DataTableColumns<SchedulerCandidate> = [
     title: '有效成本',
     key: 'effective_cost',
     width: 90,
+    mobileHide: true,
     render(row) {
       return row.eligible ? row.effective_cost.toFixed(3) : '—'
     },
@@ -328,6 +344,7 @@ const columns: DataTableColumns<SchedulerCandidate> = [
     title: '倍率',
     key: 'rate',
     width: 70,
+    mobileHide: true,
     render(row) {
       return row.rate ? row.rate.toFixed(3) : '—'
     },
@@ -344,6 +361,7 @@ const columns: DataTableColumns<SchedulerCandidate> = [
     title: '缓存',
     key: 'cache_rate',
     width: 70,
+    mobileHide: true,
     render(row) {
       return row.samples ? pct(row.cache_rate) : '—'
     },
@@ -356,7 +374,7 @@ const columns: DataTableColumns<SchedulerCandidate> = [
       return row.ttft_p50 ? `${row.ttft_p50}ms` : '—'
     },
   },
-  { title: '样本', key: 'samples', width: 60 },
+  { title: '样本', key: 'samples', width: 60, mobileHide: true },
   {
     title: '运行负载',
     key: 'key_inflight',
@@ -391,119 +409,136 @@ onMounted(async () => {
   <div class="page">
     <div class="page-head">
       <div>
+        <span class="eyebrow">路由 / ROUTING</span>
         <h2>调度</h2>
         <p>{{ RANKING_OPTIONS.find(option => option.value === form.ranking_mode)?.label }}</p>
       </div>
-      <n-button type="primary" size="small" :loading="saving" @click="save">保存配置</n-button>
+      <ui-button type="primary" size="small" :loading="saving" @click="save">保存配置</ui-button>
     </div>
 
-    <n-alert v-if="error" type="error" :title="error" />
+    <ui-alert v-if="error" type="error" :title="error" />
 
-    <n-form ref="formRef" :model="form" :rules="rules" label-placement="left" label-width="128">
+    <ui-form ref="formRef" :model="form" :rules="rules" label-placement="left" label-width="128">
       <div class="cards">
-        <n-card v-if="form.ranking_mode !== 'stable_latency'" size="small" title="质量评分" :bordered="false" :loading="loading">
+        <ui-card v-if="form.ranking_mode !== 'stable_latency'" size="small" title="质量评分" :bordered="false" :loading="loading">
           <p class="muted card-hint">三项是相对比例。没有真实调用时不计缓存，剩余权重按比例放大。</p>
           <div class="grid">
-            <n-form-item label="成功率权重" path="weight_success">
-              <n-input-number v-model:value="form.weight_success" :min="0" :max="1" :step="0.05" style="width: 100%" />
-            </n-form-item>
-            <n-form-item label="缓存率权重" path="weight_cache">
-              <n-input-number v-model:value="form.weight_cache" :min="0" :max="1" :step="0.05" style="width: 100%" />
-            </n-form-item>
-            <n-form-item label="TTFT 权重" path="weight_ttft">
-              <n-input-number v-model:value="form.weight_ttft" :min="0" :max="1" :step="0.05" style="width: 100%" />
-            </n-form-item>
+            <ui-form-item label="成功率权重" path="weight_success">
+              <ui-input-number v-model:value="form.weight_success" :min="0" :max="1" :step="0.05" style="width: 100%" />
+            </ui-form-item>
+            <ui-form-item label="缓存率权重" path="weight_cache">
+              <ui-input-number v-model:value="form.weight_cache" :min="0" :max="1" :step="0.05" style="width: 100%" />
+            </ui-form-item>
+            <ui-form-item label="TTFT 权重" path="weight_ttft">
+              <ui-input-number v-model:value="form.weight_ttft" :min="0" :max="1" :step="0.05" style="width: 100%" />
+            </ui-form-item>
           </div>
-        </n-card>
-        <n-card v-if="form.ranking_mode === 'stable_latency'" size="small" title="稳定首字优先" :bordered="false">
+        </ui-card>
+        <ui-card v-if="form.ranking_mode === 'stable_latency'" size="small" title="稳定首字优先" :bordered="false">
           <div class="grid">
-            <n-form-item label="最小改善比例"><n-input-number v-model:value="form.switch_improvement_ratio" :min="0.01" :max="1" :step="0.05" /></n-form-item>
-            <n-form-item label="最小改善 ms"><n-input-number v-model:value="form.switch_improvement_ms" :min="1" :step="500" /></n-form-item>
-            <n-form-item label="改善确认秒数"><n-input-number v-model:value="form.switch_confirm_sec" :min="1" :step="10" /></n-form-item>
+            <ui-form-item label="最小改善比例"><ui-input-number v-model:value="form.switch_improvement_ratio" :min="0.01" :max="1" :step="0.05" /></ui-form-item>
+            <ui-form-item label="最小改善 ms"><ui-input-number v-model:value="form.switch_improvement_ms" :min="1" :step="500" /></ui-form-item>
+            <ui-form-item label="改善确认秒数"><ui-input-number v-model:value="form.switch_confirm_sec" :min="1" :step="10" /></ui-form-item>
           </div>
-        </n-card>
-        <n-card size="small" title="观测窗口" :bordered="false" :loading="loading">
+        </ui-card>
+        <ui-card size="small" title="观测窗口" :bordered="false" :loading="loading">
           <div class="grid">
-            <n-form-item label="窗口分钟">
-              <n-input-number v-model:value="form.window_minutes" :min="1" :max="180" style="width: 100%" />
-            </n-form-item>
-            <n-form-item label="窗口样本">
-              <n-input-number v-model:value="form.window_max_samples" :min="10" :max="500" style="width: 100%" />
-            </n-form-item>
-            <n-form-item label="最少样本">
-              <n-input-number v-model:value="form.min_samples" :min="1" :max="50" style="width: 100%" />
-            </n-form-item>
-            <n-form-item v-if="form.ranking_mode !== 'stable_latency'" label="TTFT 上限 ms">
-              <n-input-number v-model:value="form.ttft_cap_ms" :min="500" :max="30000" style="width: 100%" />
-            </n-form-item>
+            <ui-form-item label="窗口分钟">
+              <ui-input-number v-model:value="form.window_minutes" :min="1" :max="180" style="width: 100%" />
+            </ui-form-item>
+            <ui-form-item label="窗口样本">
+              <ui-input-number v-model:value="form.window_max_samples" :min="10" :max="500" style="width: 100%" />
+            </ui-form-item>
+            <ui-form-item label="最少样本">
+              <ui-input-number v-model:value="form.min_samples" :min="1" :max="50" style="width: 100%" />
+            </ui-form-item>
+            <ui-form-item v-if="form.ranking_mode !== 'stable_latency'" label="TTFT 上限 ms">
+              <ui-input-number v-model:value="form.ttft_cap_ms" :min="500" :max="30000" style="width: 100%" />
+            </ui-form-item>
           </div>
-        </n-card>
-        <n-card size="small" title="选路策略" :bordered="false" :loading="loading">
+        </ui-card>
+        <ui-card size="small" title="选路策略" :bordered="false" :loading="loading">
           <div class="grid">
-            <n-form-item label="候选排序">
-              <n-select v-model:value="form.ranking_mode" :options="RANKING_OPTIONS" style="width: 100%" />
-            </n-form-item>
-            <n-form-item v-if="form.ranking_mode !== 'stable_latency'" label="近优带宽 ε" path="epsilon">
-              <n-input-number v-model:value="form.epsilon" :min="0.01" :max="0.5" :step="0.01" style="width: 100%" />
-            </n-form-item>
-            <n-form-item label="按模型列表过滤">
-              <n-space align="center" size="small">
-                <n-switch v-model:value="form.filter_by_models" />
+            <ui-form-item label="候选排序">
+              <ui-select v-model:value="form.ranking_mode" :options="RANKING_OPTIONS" style="width: 100%" />
+            </ui-form-item>
+            <ui-form-item v-if="form.ranking_mode !== 'stable_latency'" label="近优带宽 ε" path="epsilon">
+              <ui-input-number v-model:value="form.epsilon" :min="0.01" :max="0.5" :step="0.01" style="width: 100%" />
+            </ui-form-item>
+            <ui-form-item label="按模型列表过滤">
+              <ui-space align="center" size="small">
+                <ui-switch v-model:value="form.filter_by_models" />
                 <span class="muted">Key 已获取的模型列表非空且不含请求 model 时跳过该 Key</span>
-              </n-space>
-            </n-form-item>
+              </ui-space>
+            </ui-form-item>
           </div>
-        </n-card>
-        <n-card size="small" title="故障与粘滞" :bordered="false" :loading="loading">
+        </ui-card>
+        <ui-card size="small" title="故障与粘滞" :bordered="false" :loading="loading">
           <div class="grid">
-			<n-form-item label="探索比例"><n-input-number v-model:value="form.exploration_ratio" :min="0" :max="0.05" :step="0.01" style="width: 100%" /></n-form-item>
-            <n-form-item label="故障转移次数">
-              <n-input-number v-model:value="form.failover_max" :min="1" :max="5" style="width: 100%" />
-            </n-form-item>
-            <n-form-item label="故障重试次数">
-              <n-input-number v-model:value="form.retry_max" :min="0" :max="5" style="width: 100%" />
-            </n-form-item>
-            <n-form-item label="熔断初始冷却秒">
-              <n-input-number v-model:value="form.circuit_cooldown_sec" :min="1" :max="600" style="width: 100%" />
-            </n-form-item>
-            <n-form-item label="熔断最长冷却秒">
-              <n-input-number v-model:value="form.circuit_max_cooldown_sec" :min="form.circuit_cooldown_sec" :max="3600" style="width: 100%" />
-            </n-form-item>
-            <n-form-item label="业务失败窗口秒">
-              <n-input-number v-model:value="form.circuit_window_sec" :min="1" :max="3600" style="width: 100%" />
-            </n-form-item>
-            <n-form-item label="连续失败请求数">
-              <n-input-number v-model:value="form.circuit_failure_threshold" :min="1" :max="100" style="width: 100%" />
-            </n-form-item>
-            <n-form-item label="粘滞 TTL 秒">
-              <n-input-number v-model:value="form.sticky_ttl_sec" :min="60" :max="86400" style="width: 100%" />
-            </n-form-item>
-            <n-form-item label="Anthropic 粘滞">
-              <n-switch v-model:value="form.sticky_anthropic" />
-            </n-form-item>
-            <n-form-item label="OpenAI 粘滞">
-              <n-switch v-model:value="form.sticky_openai" />
-            </n-form-item>
+			<ui-form-item label="探索比例"><ui-input-number v-model:value="form.exploration_ratio" :min="0" :max="0.05" :step="0.01" style="width: 100%" /></ui-form-item>
           </div>
-        </n-card>
+        </ui-card>
+        <ui-card size="small" title="熔断与恢复" :bordered="false" :loading="loading">
+          <div class="grid">
+            <ui-form-item label="失败阈值">
+              <ui-input-number v-model:value="form.circuit_failure_threshold" :min="1" :max="100" :precision="0" style="width: 100%" />
+            </ui-form-item>
+            <ui-form-item label="流量系数">
+              <ui-space align="center" size="small">
+                <ui-input-number v-model:value="form.circuit_rate_factor" :min="0" :max="1" :step="0.05" style="width: 110px" />
+                <span class="muted">阈值为 max(失败阈值, 窗口尝试数×系数)，0 表示固定阈值</span>
+              </ui-space>
+            </ui-form-item>
+            <ui-form-item label="FTT 记失败">
+              <ui-space align="center" size="small">
+                <ui-input-number v-model:value="form.ftt_failure_weight" :min="1" :max="10" :precision="0" style="width: 110px" />
+                <span class="muted">首字超时一次按 N 次失败记账</span>
+              </ui-space>
+            </ui-form-item>
+            <ui-form-item label="熔断窗口秒">
+              <ui-input-number v-model:value="form.circuit_window_sec" :min="10" :max="600" :precision="0" style="width: 100%" />
+            </ui-form-item>
+            <ui-form-item label="冷却秒">
+              <ui-input-number v-model:value="form.circuit_cooldown_sec" :min="5" :max="600" :precision="0" style="width: 100%" />
+            </ui-form-item>
+            <ui-form-item label="最大冷却秒">
+              <ui-input-number v-model:value="form.circuit_max_cooldown_sec" :min="30" :max="3600" :precision="0" style="width: 100%" />
+            </ui-form-item>
+            <ui-form-item label="恢复名额/分">
+              <ui-space align="center" size="small">
+                <ui-input-number v-model:value="form.recovery_budget_per_min" :min="1" :max="10" :precision="0" style="width: 110px" />
+                <span class="muted">每分组每分钟真流量恢复验证次数</span>
+              </ui-space>
+            </ui-form-item>
+            <ui-form-item label="恢复检查超时秒">
+              <ui-input-number v-model:value="form.recovery_check_timeout_sec" :min="30" :max="300" :precision="0" :step="5" style="width: 100%" />
+            </ui-form-item>
+            <ui-form-item label="重试首字等待秒">
+              <ui-space align="center" size="small">
+                <ui-input-number v-model:value="form.failover_first_token_wait_sec" :min="3" :max="30" :precision="0" style="width: 110px" />
+                <span class="muted">换 Key 重试的首字等待上限</span>
+              </ui-space>
+            </ui-form-item>
+          </div>
+        </ui-card>
       </div>
-    </n-form>
+    </ui-form>
 
-    <n-card size="small" title="探测模型" :bordered="false" :loading="loading">
+    <ui-card size="small" title="探测模型" :bordered="false" :loading="loading">
       <template #header-extra>
-        <n-space align="center" size="small">
+        <ui-space align="center" size="small">
           <span class="muted">
             {{ catalogSource }}
             ·
             {{ catalogCount ? `${catalogCount} 个模型` : '未同步' }}
             <template v-if="catalogSyncedAt"> · {{ formatTime(catalogSyncedAt) }}</template>
           </span>
-          <n-button size="small" :loading="syncingCatalog" @click="syncCatalog()">同步模型库</n-button>
-        </n-space>
+          <ui-button size="small" :loading="syncingCatalog" @click="syncCatalog()">同步模型库</ui-button>
+        </ui-space>
       </template>
-      <n-form :model="form" label-placement="left" label-width="128" class="grid">
-        <n-form-item v-for="vendor in catalogVendors" :key="vendor.id" :label="vendor.name">
-          <n-select
+      <ui-form :model="form" label-placement="left" label-width="128" class="grid">
+        <ui-form-item v-for="vendor in catalogVendors" :key="vendor.id" :label="vendor.name">
+          <ui-select
             :value="probeValue(vendor)"
             filterable
             :options="vendorOptions(vendor)"
@@ -512,21 +547,21 @@ onMounted(async () => {
             :loading="syncingCatalog"
             @update:value="(value: string) => setProbeValue(vendor, value)"
           />
-        </n-form-item>
-        <n-form-item label="探测超时（秒）">
-          <n-input-number v-model:value="form.probe_timeout_sec" :min="1" :max="300" :precision="0" :step="5" style="width: 100%" />
-        </n-form-item>
-      </n-form>
-    </n-card>
+        </ui-form-item>
+        <ui-form-item label="探测超时（秒）">
+          <ui-input-number v-model:value="form.probe_timeout_sec" :min="1" :max="300" :precision="0" :step="5" style="width: 100%" />
+        </ui-form-item>
+      </ui-form>
+    </ui-card>
 
-    <n-card size="small" title="候选解释" :bordered="false">
-      <n-space style="margin-bottom: 12px" align="center">
-        <n-select v-if="query.protocol === 'openai'" v-model:value="query.path" :options="[{ label: 'Responses', value: '/v1/responses' }, { label: 'Chat Completions', value: '/v1/chat/completions' }]" style="width: 180px" />
-        <n-checkbox v-model:checked="query.stream">流式</n-checkbox>
-        <n-input v-model:value="query.session" placeholder="会话 ID（可选）" style="width: 200px" />
-        <n-select v-model:value="query.protocol" :options="PROTOCOL_OPTIONS" style="width: 150px" />
-        <n-input v-model:value="query.model" placeholder="模型，如 claude-sonnet-4" style="width: 240px" />
-        <n-select
+    <ui-card size="small" title="候选解释" :bordered="false">
+      <ui-space class="explain-bar" style="margin-bottom: 12px" align="center">
+        <ui-select v-if="query.protocol === 'openai'" v-model:value="query.path" :options="[{ label: 'Responses', value: '/v1/responses' }, { label: 'Chat Completions', value: '/v1/chat/completions' }]" style="width: 180px" />
+        <ui-checkbox v-model:checked="query.stream">流式</ui-checkbox>
+        <ui-input v-model:value="query.session" placeholder="会话 ID（可选）" style="width: 200px" />
+        <ui-select v-model:value="query.protocol" :options="PROTOCOL_OPTIONS" style="width: 150px" />
+        <ui-input v-model:value="query.model" placeholder="模型，如 claude-sonnet-4" style="width: 240px" />
+        <ui-select
           v-model:value="query.consumer"
           :options="consumerOptions"
           clearable
@@ -534,23 +569,25 @@ onMounted(async () => {
           placeholder="以 API 密钥视角（可选）"
           style="width: 260px"
         />
-        <n-button size="small" :loading="explaining" @click="loadExplain">预览选路</n-button>
-        <n-checkbox v-if="filteredOutCount" v-model:checked="showFiltered" size="small">
+        <ui-button size="small" :loading="explaining" @click="loadExplain">预览选路</ui-button>
+        <ui-checkbox v-if="filteredOutCount" v-model:checked="showFiltered" size="small">
           显示被分组过滤的 {{ filteredOutCount }} 把
-        </n-checkbox>
-      </n-space>
-      <n-alert v-if="query.consumer && !routeBound" type="info" :bordered="false" style="margin-bottom: 8px">
+        </ui-checkbox>
+      </ui-space>
+      <ui-alert v-if="query.consumer && !routeBound" type="info" :bordered="false" style="margin-bottom: 8px">
         该 API 密钥未绑定分组，在全部 Key 里调度
-      </n-alert>
-      <n-alert
+      </ui-alert>
+      <ui-alert
         v-else-if="query.consumer && routeBound && !visibleCandidates.length"
         type="warning"
         :bordered="false"
         style="margin-bottom: 8px"
       >
         该 API 密钥绑定的分组里没有匹配此协议/模型的 Key，请求会返回 503
-      </n-alert>
-      <n-data-table
+      </ui-alert>
+      <ui-data-table
+        card
+        card-collapse
         :scroll-x="4115"
         size="small"
         :columns="columns"
@@ -558,7 +595,7 @@ onMounted(async () => {
         :loading="explaining"
         :row-class-name="(row: SchedulerCandidate) => (row.selected ? 'row-selected' : '')"
       />
-    </n-card>
+    </ui-card>
   </div>
 </template>
 
@@ -577,16 +614,20 @@ onMounted(async () => {
   grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
   gap: 0 16px;
 }
-@media (max-width: 640px) {
-  :deep(.n-card-header) { flex-wrap: wrap; gap: 8px; }
-  :deep(.n-card-header__main) { flex-shrink: 0; }
-  :deep(.n-card-header__extra) { margin-left: 0; max-width: 100%; }
-  :deep(.n-form-item) { flex-direction: column; }
-  :deep(.n-form-item-label) { width: auto !important; justify-content: flex-start; padding-bottom: 6px; }
-  :deep(.n-form-item-blank), :deep(.n-input-number) { width: 100%; min-width: 0; }
-  :deep(.n-card__content) { padding: 12px; }
+@media (max-width: 760px) {
+  .explain-bar {
+    width: 100%;
+  }
+  .explain-bar :deep(.ui-select),
+  .explain-bar :deep(.ui-input) {
+    width: 100% !important;
+  }
 }
 :deep(.row-selected td) {
-  background: #ecfdf5 !important;
+  background: #f3f7ee !important;
+}
+:deep(.table-card.row-selected) {
+  border-color: #b8cf9e;
+  background: #f3f7ee;
 }
 </style>

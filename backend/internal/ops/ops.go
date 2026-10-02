@@ -822,22 +822,31 @@ func (s *Service) ProbeAllEnabled(ctx context.Context, skipRecent time.Duration)
 }
 
 func (s *Service) ProbeFiltered(ctx context.Context, deep bool, upstreamID *uint, skipRecent time.Duration) (int, int, int) {
-	r := s.probeFilteredAt(ctx, deep, upstreamID, skipRecent, time.Now())
+	r := s.probeFilteredAt(ctx, deep, upstreamID, nil, skipRecent, time.Now())
 	return r.OK, r.Failed, r.Skipped
 }
 
 func (s *Service) ProbeFilteredDetail(ctx context.Context, deep bool, upstreamID *uint, skipRecent time.Duration, options ...ProbeOptions) (int, int, int, map[string]int) {
-	r := s.probeFilteredAt(ctx, deep, upstreamID, skipRecent, time.Now(), options...)
+	r := s.probeFilteredAt(ctx, deep, upstreamID, nil, skipRecent, time.Now(), options...)
+	return r.OK, r.Failed, r.Skipped, r.SkippedReasons
+}
+
+// ProbeKeysDetail probes an explicit key id list; the console batch action uses it.
+func (s *Service) ProbeKeysDetail(ctx context.Context, deep bool, keyIDs []uint, options ...ProbeOptions) (int, int, int, map[string]int) {
+	r := s.probeFilteredAt(ctx, deep, nil, keyIDs, 0, time.Now(), options...)
 	return r.OK, r.Failed, r.Skipped, r.SkippedReasons
 }
 
 const probeConcurrency = 8
 
-func (s *Service) probeFilteredAt(ctx context.Context, deep bool, upstreamID *uint, skipRecent time.Duration, now time.Time, options ...ProbeOptions) ProbeBatchResult {
+func (s *Service) probeFilteredAt(ctx context.Context, deep bool, upstreamID *uint, keyIDs []uint, skipRecent time.Duration, now time.Time, options ...ProbeOptions) ProbeBatchResult {
 	out := ProbeBatchResult{SkippedReasons: map[string]int{}}
 	q := s.DB.WithContext(ctx).Where("status = ?", domain.StatusEnabled)
 	if upstreamID != nil && *upstreamID > 0 {
 		q = q.Where("upstream_id = ?", *upstreamID)
+	}
+	if len(keyIDs) > 0 {
+		q = q.Where("id IN ?", keyIDs)
 	}
 	var keys []domain.PlatformKey
 	if err := q.Find(&keys).Error; err != nil {

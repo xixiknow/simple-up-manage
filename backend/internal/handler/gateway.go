@@ -225,6 +225,7 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 
 	attempts := 2
 	retries := 1
+	failoverWait := 10 * time.Second
 	if h.Picker != nil {
 		s := h.Picker.Settings()
 		if n := s.FailoverMax; n > 0 {
@@ -233,6 +234,7 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 		if s.RetryMax >= 0 {
 			retries = s.RetryMax
 		}
+		failoverWait = time.Duration(s.FailoverFirstTokenWaitSec) * time.Second
 	}
 	allow, drift, bound, err := ops.ResolveSnapshotAllowKeys(c.Request.Context(), h.DB, groupID, protocol, model)
 	if err != nil {
@@ -270,6 +272,8 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 	var exclude, excludeProviders, excludeKeyModels []uint
 	businessRequestID := uuid.NewString()
 	waitState := recoveryWaitState{}
+	lastResort := false
+	lastFailAction := ""
 	for attempt := 0; attempt < attempts; attempt++ {
 		pickReq := picker.Request{
 			ConsumerID: ck.ID, Path: path, Stream: reqSnap.ReqStream, SessionSource: sessionSource,
@@ -288,6 +292,18 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 
 		if err != nil {
 			if errors.Is(err, picker.ErrNoUpstream) {
+				if attempt > 0 && !lastResort && isTransientFailureAction(lastFailAction) &&
+					len(exclude)+len(excludeProviders)+len(excludeKeyModels) > 0 &&
+					time.Since(reqStart) < proxyOverallTimeout-15*time.Second {
+					// Last resort: a transient failure emptied the candidate set
+					// via exclusions or gates. Give the route one clean re-pick
+					// with the shortened first-token wait instead of 502-ing the
+					// client while the upstream may still be usable.
+					lastResort = true
+					exclude, excludeProviders, excludeKeyModels = nil, nil, nil
+					attempt--
+					continue
+				}
 				h.recordNoRoute(c, lg, pickReq, decision)
 				if attempt == 0 || lastMsg == domain.ProbeSkipDisabled {
 					lastMsg = "no enabled upstream for protocol"
@@ -386,8 +402,15 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 			}
 			defer finishRouting()
 		}
+		shortWait := time.Duration(0)
+		if attempt > 0 {
+			shortWait = failoverWait
+		}
 		for r := 0; r <= retries; r++ {
-			outcome = h.forwardOnce(c, ck, pk, up, protocol, model, session, reqID, body, reqSnap, lg, reqStart, onOutput)
+			if r > 0 {
+				shortWait = failoverWait
+			}
+			outcome = h.forwardOnce(c, ck, pk, up, protocol, model, session, reqID, body, reqSnap, lg, reqStart, shortWait, onOutput)
 			if decision.Reason == "recovery_validation" {
 				outcome.retrySame = false
 			}
@@ -422,6 +445,7 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 			break
 		}
 		finishRouting()
+		lastFailAction = outcome.action
 		if _, scoped := h.Picker.(picker.CircuitController); !scoped && outcome.failOver && !outcome.capacityBusy {
 			h.applyFailure(c.Request.Context(), pk, up, model, outcome)
 		}
@@ -519,7 +543,7 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
-func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain.PlatformKey, up *domain.Upstream, protocol, model, session, reqID string, body []byte, reqSnap ioCapture, lg *liveLog, reqStart time.Time, outputCallbacks ...func()) (outcome forwardOutcome) {
+func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain.PlatformKey, up *domain.Upstream, protocol, model, session, reqID string, body []byte, reqSnap ioCapture, lg *liveLog, reqStart time.Time, shortFirstWait time.Duration, outputCallbacks ...func()) (outcome forwardOutcome) {
 	attempt := domain.RequestAttempt{ID: uuid.NewString(), PlatformKeyID: pk.ID, Protocol: protocol, Model: model, Path: c.Request.URL.Path, Stream: reqSnap.ReqStream, StatsVersion: domain.AttemptStatsVersion}
 	if lg != nil {
 		attempt.RequestLogID = lg.id
@@ -627,6 +651,11 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 	firstWait := h.firstTokenWait
 	if firstWait <= 0 {
 		firstWait = proxyFirstTokenWait
+	}
+	// Failover and same-key retries must not compound the full first-token
+	// stall: the client already paid it once on the failed attempt.
+	if shortFirstWait > 0 && shortFirstWait < firstWait {
+		firstWait = shortFirstWait
 	}
 	if wantStream {
 		firstWatch.start(cancelAttempt, firstWait, deadline)
@@ -771,7 +800,7 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 			if isTimeoutErr(err) {
 				action = "upstream_timeout"
 				if firstWatch.timedOut() {
-					action = "first_token_timeout"
+					action = domain.FailureFirstTokenTimeout
 				} else if collector.compaction {
 					action, msg = "compaction_timeout", "compaction timeout"
 				}
@@ -924,6 +953,20 @@ func classifyHTTPFailure(code int, body []byte) forwardOutcome {
 
 func shouldFailoverStatus(code int) bool {
 	return classifyHTTPFailure(code, nil).failOver
+}
+
+// transientFailureActions are outcomes worth one last clean re-pick when the
+// exclusion tables have emptied the candidate set. Only long-stall failures
+// qualify (first-token / transport timeouts): fast 5xx storms are already
+// bounded by same-key retries and must not be replayed against a dead route.
+var transientFailureActions = map[string]bool{
+	domain.FailureFirstTokenTimeout: true,
+	"transport_failure":             true,
+	"upstream_timeout":              true,
+}
+
+func isTransientFailureAction(action string) bool {
+	return transientFailureActions[action]
 }
 
 func (h *Gateway) Models(c *gin.Context) {

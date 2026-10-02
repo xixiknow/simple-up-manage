@@ -1,6 +1,6 @@
 # 供货商管理 · 管理控制台
 
-Vue 3 + Vite + TypeScript + Vue Router + Pinia + Naive UI 前端。对接 `/api/v1/admin/*`，通过 Vite 代理到 `http://localhost:8080`。
+Vue 3 + Vite + TypeScript + Vue Router + Pinia 前端。对接 `/api/v1/admin/*`，通过 Vite 代理到 `http://localhost:8080`。
 
 ## 运行
 
@@ -53,4 +53,14 @@ npm run preview
 python tests/ui_regression.py --url http://127.0.0.1:8081
 ```
 
-脚本在浏览器中拦截管理接口，使用 150 家提供商、单家 151 把 Key 和 53 条请求记录；不写入服务端数据。截图输出到 `frontend/data/ui-regression/`。
+脚本在浏览器中拦截管理接口，使用 150 家提供商、单家 151 把 Key 和 53 条请求记录；不写入服务端数据。截图输出到 `frontend/data/ui-regression/`。提供商页为 master-detail 布局（左列表 + 右详情），设计与接口见 `docs/upstream-console-redesign.md`。
+
+## 响应式视觉验收
+
+UI 采用 src/components/ui/ 中从轮序移植的本地原生 Vue 组件。手机（≤760px）导航为汉堡抽屉，提供商 / 密钥 / 请求记录 / 调度四张大表在手机端渲染为卡片（`UiDataTable` 的 `card` 模式），筛选收进抽屉；Pad（761–1100px）保持侧栏，筛选控件流式折行。
+
+先运行 npm run build，再运行 npm run preview -- --host 127.0.0.1 --port 5174。
+
+执行 python tests/visual_regression.py --url http://127.0.0.1:5174 --channel chrome。使用 Playwright 自带 Chromium 时可省略 --channel。原有 ui_regression.py 也支持此参数。
+
+视觉验收覆盖 1440、834、390 宽度及编辑状态跨断点保持；390 档额外验证导航抽屉开合、表格卡片化与筛选抽屉流程。全部管理接口都使用浏览器 fixture，不写服务端数据。

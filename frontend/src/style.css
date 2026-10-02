@@ -1,3 +1,19 @@
+:root {
+  --bg: #f4f6f2;
+  --ink: #263b34;
+  --muted: #819087;
+  --line: #e1e7df;
+  --green: #174b3d;
+  --accent-soft: #e8eedb;
+  --ok: #578049;
+  --warn: #9d853f;
+  --bad: #a16d50;
+  --row: #f3f7ee;
+  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  color: var(--ink);
+  background: var(--bg);
+}
+
 html,
 body,
 #app {
@@ -6,20 +22,28 @@ body,
 }
 
 body {
-  font-family: ui-sans-serif, system-ui, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  background: #e8edf2;
-  color: #1f2933;
+  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
 }
 
 code,
 .mono {
-  font-family: ui-monospace, SFMono-Regular, 'Cascadia Code', Consolas, monospace;
+  font-family: Consolas, 'Cascadia Code', ui-monospace, monospace;
 }
 
 .page {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
+  min-width: 0;
 }
 
 .page-head {
@@ -29,17 +53,28 @@ code,
   gap: 12px;
 }
 
+.eyebrow {
+  display: block;
+  margin-bottom: 8px;
+  color: #7c8f80;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 1.6px;
+}
+
 .page-head h2 {
   margin: 0;
-  font-size: 18px;
+  color: var(--ink);
+  font-size: 22px;
   font-weight: 650;
-  letter-spacing: 0.02em;
+  letter-spacing: -0.4px;
 }
 
 .page-head p {
-  margin: 4px 0 0;
-  color: #667085;
+  margin: 8px 0 0;
+  color: #839083;
   font-size: 12px;
+  line-height: 1.6;
 }
 
 .toolbar {
@@ -49,13 +84,40 @@ code,
   align-items: center;
 }
 
+/* 窄屏筛选抽屉：页面上的筛选条隐藏，控件收进抽屉（.filter-stack 在抽屉内纵向排列） */
+.filter-toggle {
+  display: none;
+  align-items: center;
+  gap: 8px;
+}
+
+.filter-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 11px;
+  color: #6d805f;
+}
+
+.filter-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 .muted {
-  color: #667085;
+  color: var(--muted);
   font-size: 12px;
 }
 
 .preview {
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-family: Consolas, 'Cascadia Code', ui-monospace, monospace;
   font-size: 12px;
 }
 
@@ -71,16 +133,93 @@ code,
   justify-content: space-between;
   gap: 8px;
   padding: 8px 10px;
-  border: 1px solid #e4e7ec;
-  border-radius: 6px;
-  background: #fbfcfd;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcf8;
 }
 
 .reveal-box {
   padding: 12px;
   border-radius: 8px;
-  background: #0f1720;
-  color: #e2e8f0;
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  background: #234b37;
+  color: #e8f0e4;
+  font-family: Consolas, 'Cascadia Code', ui-monospace, monospace;
   word-break: break-all;
+}
+
+.page .ui-card {
+  border: 1px solid var(--line);
+  box-shadow: none;
+}
+
+.page .ui-card .ui-card {
+  background: #fbfcf8;
+}
+
+@media (max-width: 1100px) {
+  .matrix-grid {
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  }
+}
+
+@media (max-width: 1100px) and (min-width: 761px) {
+  /* Pad 档：固定宽度筛选控件改为流式，2~3 个一行 */
+  .toolbar > .ui-select,
+  .toolbar > .ui-input,
+  .explain-bar > .ui-select,
+  .explain-bar > .ui-input {
+    flex: 1 1 200px;
+    width: auto !important;
+    min-width: 0 !important;
+    max-width: none !important;
+  }
+}
+
+@media (max-width: 760px) {
+  .page-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .filter-toggle {
+    display: flex;
+  }
+
+  .page-head h2 {
+    font-size: 20px;
+  }
+
+  .toolbar > .ui-select,
+  .toolbar > .ui-input,
+  .toolbar > .ui-date-picker {
+    flex: 1 1 calc(50% - 8px);
+    width: auto !important;
+    min-width: 0 !important;
+    max-width: none !important;
+  }
+
+  .toolbar > .ui-date-picker,
+  .toolbar > .ui-radio-group {
+    flex-basis: 100%;
+  }
+
+  .ui-radio-group {
+    display: flex;
+    flex-wrap: wrap;
+    max-width: 100%;
+  }
+
+  .ui-card-header {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .ui-card-header__extra {
+    margin-left: 0 !important;
+    max-width: 100%;
+  }
+
+  .ui-modal {
+    max-width: calc(100vw - 16px);
+  }
 }

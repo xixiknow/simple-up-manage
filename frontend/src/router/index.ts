@@ -45,6 +45,12 @@ const router = createRouter({
           meta: { title: '调度' },
         },
         {
+          path: 'intel',
+          name: 'intel',
+          component: () => import('@/views/IntelTestsView.vue'),
+          meta: { title: '测智' },
+        },
+        {
           path: 'logs',
           name: 'logs',
           component: () => import('@/views/RequestLogsView.vue'),

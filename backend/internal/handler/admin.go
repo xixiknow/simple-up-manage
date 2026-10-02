@@ -39,6 +39,10 @@ func (h *Admin) ListUpstreams(c *gin.Context) {
 	page, pageSize := httpx.PageParams(c)
 	var total int64
 	q := h.DB.Model(&domain.Upstream{})
+	if raw := strings.TrimSpace(c.Query("search")); raw != "" {
+		like := "%" + strings.ToLower(raw) + "%"
+		q = q.Where("LOWER(name) LIKE ? OR LOWER(base_url) LIKE ? OR LOWER(COALESCE(note, '')) LIKE ?", like, like, like)
+	}
 	if err := q.Count(&total).Error; err != nil {
 		httpx.Internal(c, err.Error())
 		return
@@ -330,6 +334,56 @@ func (h *Admin) buildUpstream(body upstreamBody, existing *domain.Upstream) (*do
 	return u, nil
 }
 
+// keySortColumns whitelists the sortable columns for key list endpoints; anything
+// else is rejected so the client cannot inject arbitrary ORDER BY expressions.
+var keySortColumns = map[string]string{
+	"id":              "platform_keys.id",
+	"name":            "platform_keys.name",
+	"rate_multiplier": "platform_keys.rate_multiplier",
+	"health_status":   "platform_keys.health_status",
+	"last_request_at": "platform_keys.last_request_at",
+}
+
+func parseKeySort(c *gin.Context) (col string, desc bool, ok bool) {
+	raw := strings.TrimSpace(c.Query("sort"))
+	if raw == "" {
+		return "platform_keys.id", false, true
+	}
+	col, ok = keySortColumns[raw]
+	if !ok {
+		return "", false, false
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Query("order"))) {
+	case "", "asc":
+		return col, false, true
+	case "desc":
+		return col, true, true
+	}
+	return "", false, false
+}
+
+func applyKeyListFilters(c *gin.Context, q *gorm.DB) (*gorm.DB, bool) {
+	if raw := strings.TrimSpace(c.Query("search")); raw != "" {
+		like := "%" + strings.ToLower(raw) + "%"
+		q = q.Where("LOWER(name) LIKE ? OR LOWER(COALESCE(name_tag, '')) LIKE ? OR LOWER(key_preview) LIKE ?", like, like, like)
+	}
+	if status := strings.TrimSpace(c.Query("status")); status != "" {
+		if !domain.ValidStatus(status) {
+			httpx.BadRequest(c, "invalid status")
+			return nil, false
+		}
+		q = q.Where("status = ?", status)
+	}
+	if health := strings.TrimSpace(c.Query("health_status")); health != "" {
+		if !domain.ValidHealth(health) {
+			httpx.BadRequest(c, "invalid health_status")
+			return nil, false
+		}
+		q = q.Where("health_status = ?", health)
+	}
+	return q, true
+}
+
 func (h *Admin) ListUpstreamKeys(c *gin.Context) {
 	id, ok := httpx.ParseID(c, "id")
 	if !ok {
@@ -339,16 +393,33 @@ func (h *Admin) ListUpstreamKeys(c *gin.Context) {
 		writeGormErr(c, err)
 		return
 	}
+	sortCol, desc, ok := parseKeySort(c)
+	if !ok {
+		httpx.BadRequest(c, "invalid sort")
+		return
+	}
 	page, pageSize := httpx.PageParams(c)
-	q := h.DB.Model(&domain.PlatformKey{}).Where("upstream_id = ?", id)
+	countQ, ok := applyKeyListFilters(c, h.DB.Model(&domain.PlatformKey{}).Where("upstream_id = ?", id))
+	if !ok {
+		return
+	}
 	var total int64
-	if err := q.Count(&total).Error; err != nil {
+	if err := countQ.Count(&total).Error; err != nil {
 		httpx.Internal(c, err.Error())
 		return
 	}
+	dir := "ASC"
+	if desc {
+		dir = "DESC"
+	}
+	findQ, ok := applyKeyListFilters(c, h.DB.Preload("Upstream").Where("upstream_id = ?", id))
+	if !ok {
+		return
+	}
 	var items []domain.PlatformKey
-	if err := h.DB.Preload("Upstream").Where("upstream_id = ?", id).
-		Order("id ASC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&items).Error; err != nil {
+	if err := findQ.
+		Order(sortCol + " " + dir).Order("platform_keys.id ASC").
+		Offset((page - 1) * pageSize).Limit(pageSize).Find(&items).Error; err != nil {
 		httpx.Internal(c, err.Error())
 		return
 	}
@@ -703,7 +774,7 @@ func (h *Admin) ListAllKeys(c *gin.Context) {
 	}
 	// routeFilter: "" = any, "0" = unassigned, "<id>" = member of that route group.
 	routeFilter := strings.TrimSpace(c.Query("route_group_id"))
-	applyFilters := func(q *gorm.DB) *gorm.DB {
+	applyFilters := func(q *gorm.DB) (*gorm.DB, bool) {
 		if len(upstreamIDs) > 0 {
 			q = q.Where("upstream_id IN ?", upstreamIDs)
 		}
@@ -717,9 +788,12 @@ func (h *Admin) ListAllKeys(c *gin.Context) {
 		default:
 			q = q.Where("id IN (?)", h.DB.Model(&domain.RouteGroupKey{}).Select("platform_key_id").Where("route_group_id = ?", routeFilter))
 		}
-		return q
+		return applyKeyListFilters(c, q)
 	}
-	q := applyFilters(h.DB.Model(&domain.PlatformKey{}))
+	q, ok := applyFilters(h.DB.Model(&domain.PlatformKey{}))
+	if !ok {
+		return
+	}
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
 		httpx.Internal(c, err.Error())
@@ -752,9 +826,22 @@ func (h *Admin) ListAllKeys(c *gin.Context) {
 		httpx.List(c, items, total, page, pageSize)
 		return
 	}
-	var items []domain.PlatformKey
-	dbq := applyFilters(h.DB.Preload("Upstream"))
-	if err := dbq.Order("id ASC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&items).Error; err != nil {
+	sortCol, desc, ok := parseKeySort(c)
+	if !ok {
+		httpx.BadRequest(c, "invalid sort")
+		return
+	}
+	dir := "ASC"
+	if desc {
+		dir = "DESC"
+	}
+	items := []domain.PlatformKey{}
+	findQ, ok := applyFilters(h.DB.Preload("Upstream"))
+	if !ok {
+		return
+	}
+	if err := findQ.Order(sortCol + " " + dir).Order("platform_keys.id ASC").
+		Offset((page - 1) * pageSize).Limit(pageSize).Find(&items).Error; err != nil {
 		httpx.Internal(c, err.Error())
 		return
 	}
@@ -1143,9 +1230,10 @@ func (h *Admin) Status(c *gin.Context) {
 
 func (h *Admin) RunProbes(c *gin.Context) {
 	var body struct {
-		Deep       bool  `json:"deep"`
-		UpstreamID *uint `json:"upstream_id"`
-		KeyID      *uint `json:"key_id"`
+		Deep       bool   `json:"deep"`
+		UpstreamID *uint  `json:"upstream_id"`
+		KeyID      *uint  `json:"key_id"`
+		KeyIDs     []uint `json:"key_ids"`
 		ops.ProbeOptions
 	}
 	if err := c.ShouldBindJSON(&body); err != nil && !errors.Is(err, io.EOF) {
@@ -1163,6 +1251,25 @@ func (h *Admin) RunProbes(c *gin.Context) {
 			return
 		}
 		httpx.OK(c, out)
+		return
+	}
+	if len(body.KeyIDs) > 0 {
+		if len(body.KeyIDs) > 200 {
+			httpx.BadRequest(c, "at most 200 key_ids")
+			return
+		}
+		ok, fail, skipped, reasons := h.Ops.ProbeKeysDetail(c.Request.Context(), body.Deep, body.KeyIDs, body.ProbeOptions)
+		msg := fmt.Sprintf("成功 %d，失败 %d", ok, fail)
+		if skipped > 0 {
+			msg = fmt.Sprintf("%s，跳过 %d", msg, skipped)
+		}
+		httpx.OK(c, gin.H{
+			"ok":              ok,
+			"failed":          fail,
+			"skipped":         skipped,
+			"skipped_reasons": reasons,
+			"message":         msg,
+		})
 		return
 	}
 	ok, fail, skipped, reasons := h.Ops.ProbeFilteredDetail(c.Request.Context(), body.Deep, body.UpstreamID, 0, body.ProbeOptions)

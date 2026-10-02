@@ -79,7 +79,8 @@ func (p *BandPicker) applyRoutingHealth(ctx context.Context, req Request, cands 
 	}
 	now := time.Now()
 	normal := 0
-	recovery := -1
+	bestRequest := -1
+	bestAny := -1
 	for i := range cands {
 		c := &cands[i]
 		c.CircuitState = "closed"
@@ -152,8 +153,17 @@ func (p *BandPicker) applyRoutingHealth(ctx context.Context, req Request, cands 
 			if c.Eligible {
 				c.Eligible = false
 				c.SkipReason = reason
-				if reason == "recovery_pending" && c.RecoveryStatus == "waiting_request" && (recovery < 0 || recoveryBefore(*c, cands[recovery])) {
-					recovery = i
+				// waiting_check/check_failed/backoff gates belong to the
+				// synthetic checker, but they qualify as a last resort when
+				// nothing else in the group is healthy.
+				if reason == "recovery_pending" || reason == "recovery_check_backoff" {
+					if reason == "recovery_pending" && c.RecoveryStatus == "waiting_request" {
+						if bestRequest < 0 || recoveryBefore(*c, cands[bestRequest]) {
+							bestRequest = i
+						}
+					} else if bestAny < 0 || recoveryBefore(*c, cands[bestAny]) {
+						bestAny = i
+					}
 				}
 			}
 		} else if c.Eligible {
@@ -175,15 +185,12 @@ func (p *BandPicker) applyRoutingHealth(ctx context.Context, req Request, cands 
 			bound = true
 		}
 	}
-	// Prefer check-ready candidates, but preserve the last-resort real-request
-	// path for disabled probes, historical dimensions and total outages.
-	if normal > 0 {
-		recovery = -1
-		for i, c := range cands {
-			if c.SkipReason == "recovery_pending" && c.RecoveryStatus == "waiting_request" && (recovery < 0 || recoveryBefore(c, cands[recovery])) {
-				recovery = i
-			}
-		}
+	// Prefer the real-request path (disabled probes, historical dimensions);
+	// when no normal candidate exists, a check-owned half-open gate may be
+	// validated by the request itself — it then doubles as the evidence.
+	recovery := bestRequest
+	if normal == 0 && bestAny >= 0 && (recovery < 0 || recoveryBefore(cands[bestAny], cands[recovery])) {
+		recovery = bestAny
 	}
 	allowed := recovery >= 0 && normal == 0
 	if recovery >= 0 && normal > 0 && !bound {

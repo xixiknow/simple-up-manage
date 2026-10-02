@@ -38,6 +38,18 @@ const (
 	RateChangeDown      = "down"
 	RateChangeBilling   = "billing"
 	RateChangeManual    = "manual"
+
+	IntelQuestionCandy   = "candy"
+	IntelQuestionPelican = "pelican"
+
+	IntelVerdictCorrect   = "correct"
+	IntelVerdictIncorrect = "incorrect"
+	IntelVerdictSuccess   = "success"
+	IntelVerdictInvalid   = "invalid"
+	IntelVerdictError     = "error"
+
+	IntelRunRunning  = "running"
+	IntelRunFinished = "finished"
 )
 
 type Upstream struct {
@@ -374,6 +386,90 @@ type RateChangeNotice struct {
 }
 
 type JSONStrings []string
+
+// IntelTestPlan is a scheduled or manual intelligence test over one route
+// group with one model and one question kind.
+type IntelTestPlan struct {
+	ID           uint   `gorm:"primaryKey" json:"id"`
+	Name         string `gorm:"size:128" json:"name"`
+	RouteGroupID uint   `gorm:"index;not null" json:"route_group_id"`
+	Model        string `gorm:"size:128;not null" json:"model"`
+	// QuestionKind is intel candy or pelican.
+	QuestionKind string `gorm:"size:16;not null;default:candy" json:"question_kind"`
+	// Prompt overrides the built-in question when non-empty.
+	Prompt string `gorm:"type:text" json:"prompt"`
+	// Protocol pins openai / anthropic; empty picks per key (openai first).
+	Protocol string `gorm:"size:16" json:"protocol"`
+	// IntervalMinutes of 0 means manual-only; otherwise the minimum is 15.
+	IntervalMinutes int `gorm:"not null;default:0" json:"interval_minutes"`
+	// Parallel is the per-run worker count, clamped to 1-8.
+	Parallel  int        `gorm:"not null;default:4" json:"parallel"`
+	Enabled   bool       `gorm:"not null;default:true" json:"enabled"`
+	LastRunAt *time.Time `json:"last_run_at"`
+	NextRunAt *time.Time `gorm:"index" json:"next_run_at"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+}
+
+func ValidIntelQuestion(kind string) bool {
+	return kind == IntelQuestionCandy || kind == IntelQuestionPelican
+}
+
+// IntelSuccessVerdict is the verdict that counts as a pass for a question kind.
+func IntelSuccessVerdict(kind string) string {
+	if kind == IntelQuestionPelican {
+		return IntelVerdictSuccess
+	}
+	return IntelVerdictCorrect
+}
+
+// IntelTestRun tracks one execution of a plan for progress polling and history.
+type IntelTestRun struct {
+	ID         uint       `gorm:"primaryKey" json:"id"`
+	PlanID     uint       `gorm:"index;not null" json:"plan_id"`
+	Status     string     `gorm:"size:16;not null;default:running;index" json:"status"`
+	Total      int        `gorm:"not null;default:0" json:"total"`
+	Done       int        `gorm:"not null;default:0" json:"done"`
+	Success    int        `gorm:"not null;default:0" json:"success"`
+	StartedAt  time.Time  `json:"started_at"`
+	FinishedAt *time.Time `json:"finished_at"`
+	CreatedAt  time.Time  `gorm:"index" json:"created_at"`
+}
+
+// IntelTestResult binds one sample to its group-provider-key-model combination.
+// Key / upstream names are snapshotted so gallery labels survive deletions.
+type IntelTestResult struct {
+	ID            uint   `gorm:"primaryKey" json:"id"`
+	RunID         uint   `gorm:"index;not null" json:"run_id"`
+	PlanID        uint   `gorm:"index;not null" json:"plan_id"`
+	RouteGroupID  uint   `gorm:"index;not null" json:"route_group_id"`
+	UpstreamID    uint   `gorm:"index;not null" json:"upstream_id"`
+	PlatformKeyID uint   `gorm:"index;not null" json:"platform_key_id"`
+	KeyName       string `gorm:"size:256" json:"key_name"`
+	UpstreamName  string `gorm:"size:128" json:"upstream_name"`
+	Model         string `gorm:"size:128;index" json:"model"`
+	QuestionKind  string `gorm:"size:16" json:"question_kind"`
+	Protocol      string `gorm:"size:16" json:"protocol"`
+	Verdict       string `gorm:"size:16;index" json:"verdict"`
+	StatusCode    int    `json:"status_code"`
+	LatencyMs     int    `json:"latency_ms"`
+	Tokens        int    `json:"tokens"`
+	// AnswerPreview keeps the candy answer text (short); pelican leaves it empty.
+	AnswerPreview string    `gorm:"size:512" json:"answer_preview"`
+	OutputSize    int       `json:"output_size"`
+	HasOutput     bool      `json:"has_output"`
+	ErrorMessage  string    `gorm:"type:text" json:"error_message"`
+	CreatedAt     time.Time `gorm:"index" json:"created_at"`
+}
+
+// IntelTestOutput holds the full model output in a side table so result list
+// queries never drag large payloads.
+type IntelTestOutput struct {
+	ID         uint      `gorm:"primaryKey" json:"id"`
+	ResultID   uint      `gorm:"uniqueIndex;not null" json:"result_id"`
+	OutputText string    `gorm:"type:text" json:"output_text"`
+	CreatedAt  time.Time `json:"created_at"`
+}
 
 func (j JSONStrings) Value() (driver.Value, error) {
 	if j == nil {

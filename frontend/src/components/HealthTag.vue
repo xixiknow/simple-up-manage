@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { NTag } from 'naive-ui'
+import { UiTag } from '@/components/ui'
 import { HEALTH_LABEL, type HealthStatus } from '@/api/types'
 
 const props = defineProps<{ status?: HealthStatus | string | null }>()
@@ -23,5 +23,5 @@ const meta = computed(() => {
 </script>
 
 <template>
-  <n-tag :type="meta.type" size="small" :bordered="false">{{ meta.label }}</n-tag>
+  <ui-tag :type="meta.type" size="small" :bordered="false">{{ meta.label }}</ui-tag>
 </template>
