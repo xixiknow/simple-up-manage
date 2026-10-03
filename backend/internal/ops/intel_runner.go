@@ -31,6 +31,10 @@ const (
 // ErrIntelRunInProgress reports that the plan already has an active run.
 var ErrIntelRunInProgress = errors.New("intel test run already in progress")
 
+// ErrIntelGroupMissing reports that the plan's route group no longer exists,
+// so neither full runs nor quarantine retests may start.
+var ErrIntelGroupMissing = errors.New("intel plan route group no longer exists")
+
 // intelRunning guards one concurrent run per plan across Service clones and
 // overlapping triggers (ticker + manual button).
 var intelRunning sync.Map
@@ -43,6 +47,9 @@ func (s *Service) RunIntelPlan(planID uint) (*domain.IntelTestRun, error) {
 	var plan domain.IntelTestPlan
 	if err := s.DB.First(&plan, planID).Error; err != nil {
 		return nil, err
+	}
+	if !s.intelPlanGroupExists(&plan) {
+		return nil, ErrIntelGroupMissing
 	}
 	s.finalizeStaleIntelRuns()
 	if _, busy := intelRunning.LoadOrStore(planID, struct{}{}); busy {
@@ -86,6 +93,9 @@ func (s *Service) RunIntelQuarantine(planID uint) (*domain.IntelTestRun, error) 
 	}
 	if !plan.QuarantineEnabled || plan.QuestionKind != domain.IntelQuestionCandy {
 		return nil, nil
+	}
+	if !s.intelPlanGroupExists(&plan) {
+		return nil, ErrIntelGroupMissing
 	}
 	s.finalizeStaleIntelRuns()
 	if _, busy := intelRunning.LoadOrStore(planID, struct{}{}); busy {

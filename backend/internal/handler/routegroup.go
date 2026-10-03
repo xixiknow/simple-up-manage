@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -371,6 +372,17 @@ func (h *Admin) DeleteRouteGroup(c *gin.Context) {
 		return
 	}
 	err := h.DB.Transaction(func(tx *gorm.DB) error {
+		// Intel plans bound to this group lose their reason to exist: clear
+		// quarantine states (stops all retests) and disable the plans so the
+		// scheduler never fires an orphaned full run. Plans stay queryable.
+		if err := tx.Where("plan_id IN (SELECT id FROM intel_test_plans WHERE route_group_id = ?)", id).
+			Delete(&domain.IntelQuarantineState{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&domain.IntelTestPlan{}).Where("route_group_id = ?", id).
+			Update("enabled", false).Error; err != nil {
+			return err
+		}
 		if err := tx.Where("route_group_id = ?", id).Delete(&domain.RouteGroupKey{}).Error; err != nil {
 			return err
 		}
@@ -401,8 +413,18 @@ func (h *Admin) respondRouteGroup(c *gin.Context, id uint, created bool) {
 	httpx.OK(c, out[0])
 }
 
-// replaceRouteGroupKeys sets the full member list of a route group.
+// replaceRouteGroupKeys sets the full member list of a route group. Keys
+// dropped from the list lose their intel quarantine records in the same
+// transaction so the retest loop stops for them immediately.
 func replaceRouteGroupKeys(tx *gorm.DB, groupID uint, keyIDs []uint) error {
+	var old []uint
+	if err := tx.Model(&domain.RouteGroupKey{}).Where("route_group_id = ?", groupID).
+		Pluck("platform_key_id", &old).Error; err != nil {
+		return err
+	}
+	if err := clearIntelQuarantineForKeys(tx, []uint{groupID}, removedIDs(old, keyIDs)); err != nil {
+		return err
+	}
 	if err := tx.Where("route_group_id = ?", groupID).Delete(&domain.RouteGroupKey{}).Error; err != nil {
 		return err
 	}
@@ -428,6 +450,45 @@ func insertRouteGroupKeys(tx *gorm.DB, groupID uint, keyIDs []uint) error {
 	}
 	// Ignore duplicates so batch add is idempotent.
 	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error
+}
+
+// removedIDs returns the ids present in old but missing from new.
+func removedIDs(old, new []uint) []uint {
+	keep := make(map[uint]struct{}, len(new))
+	for _, id := range uniqueIDs(new) {
+		keep[id] = struct{}{}
+	}
+	var removed []uint
+	for _, id := range uniqueIDs(old) {
+		if _, ok := keep[id]; !ok {
+			removed = append(removed, id)
+		}
+	}
+	return removed
+}
+
+// clearIntelQuarantineForKeys drops the intel quarantine states of the given
+// keys under every intel plan that targets one of the given groups. Operator
+// member removal must stop quarantine retesting: the operator has decided the
+// key no longer belongs, so the recovery loop has nothing left to protect.
+// System-driven removal (evaluateIntelQuarantine) never goes through here.
+func clearIntelQuarantineForKeys(tx *gorm.DB, groupIDs, keyIDs []uint) error {
+	groupIDs = uniqueIDs(groupIDs)
+	keyIDs = uniqueIDs(keyIDs)
+	if len(groupIDs) == 0 || len(keyIDs) == 0 {
+		return nil
+	}
+	q := tx.Where(
+		"platform_key_id IN ? AND plan_id IN (SELECT id FROM intel_test_plans WHERE route_group_id IN ?)",
+		keyIDs, groupIDs,
+	).Delete(&domain.IntelQuarantineState{})
+	if q.Error != nil {
+		return q.Error
+	}
+	if q.RowsAffected > 0 {
+		log.Printf("intel quarantine cleared for keys %v of groups %v (%d states)", keyIDs, groupIDs, q.RowsAffected)
+	}
+	return nil
 }
 
 func uniqueIDs(in []uint) []uint {
@@ -500,6 +561,9 @@ func (h *Admin) BatchRouteGroupKeys(c *gin.Context) {
 	}
 	err := h.DB.Transaction(func(tx *gorm.DB) error {
 		if rm := uniqueIDs(body.Remove); len(rm) > 0 {
+			if err := clearIntelQuarantineForKeys(tx, []uint{g.ID}, rm); err != nil {
+				return err
+			}
 			if err := tx.Where("route_group_id = ? AND platform_key_id IN ?", g.ID, rm).Delete(&domain.RouteGroupKey{}).Error; err != nil {
 				return err
 			}
@@ -543,6 +607,14 @@ func (h *Admin) SetKeyRouteGroups(c *gin.Context) {
 			if int(count) != len(groupIDs) {
 				return errors.New("some route_group_ids do not exist")
 			}
+		}
+		var oldGroups []uint
+		if err := tx.Model(&domain.RouteGroupKey{}).Where("platform_key_id = ?", k.ID).
+			Pluck("route_group_id", &oldGroups).Error; err != nil {
+			return err
+		}
+		if err := clearIntelQuarantineForKeys(tx, removedIDs(oldGroups, groupIDs), []uint{k.ID}); err != nil {
+			return err
 		}
 		if err := tx.Where("platform_key_id = ?", k.ID).Delete(&domain.RouteGroupKey{}).Error; err != nil {
 			return err

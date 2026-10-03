@@ -48,11 +48,28 @@ func (s *Service) intelQuarantinedStates(planID uint, dueOnly bool) ([]domain.In
 	return states, err
 }
 
+// intelPlanGroupExists reports whether the plan's route group still exists.
+// Once the operator deletes the group there is nothing left to protect: no
+// full runs and no quarantine retests may run for the plan.
+func (s *Service) intelPlanGroupExists(plan *domain.IntelTestPlan) bool {
+	var groupExists int64
+	if err := s.DB.Model(&domain.RouteGroup{}).Where("id = ?", plan.RouteGroupID).Count(&groupExists).Error; err != nil {
+		return false
+	}
+	return groupExists > 0
+}
+
 // intelQuarantineKeys resolves the testable platform keys for the given
-// quarantine states: the key must still exist and be enabled, its upstream
-// enabled, and it must support the plan's model.
+// quarantine states: the plan's group must still exist, the key must exist
+// and be enabled, its upstream enabled, and it must support the plan's model.
+// Quarantined keys are deliberately outside the group while quarantined, so
+// membership is intentionally not checked here; only the group's existence
+// stops retesting once an operator deletes it.
 func (s *Service) intelQuarantineKeys(plan *domain.IntelTestPlan, states []domain.IntelQuarantineState) []domain.PlatformKey {
 	if len(states) == 0 {
+		return nil
+	}
+	if !s.intelPlanGroupExists(plan) {
 		return nil
 	}
 	ids := make([]uint, 0, len(states))
@@ -244,8 +261,19 @@ func (s *Service) evaluateIntelQuarantine(plan *domain.IntelTestPlan, key *domai
 
 // restoreIntelKey re-adds the quarantined key to the plan's group and closes
 // the quarantine round. Idempotent when the operator already re-added it.
+// When the plan's group no longer exists the key is not re-added anywhere;
+// the state is dropped so the scoreboard keeps no phantom quarantine.
 func (s *Service) restoreIntelKey(plan *domain.IntelTestPlan, state *domain.IntelQuarantineState) {
 	now := time.Now()
+	if !s.intelPlanGroupExists(plan) {
+		if err := s.DB.Delete(&domain.IntelQuarantineState{}, state.ID).Error; err != nil {
+			log.Printf("intel quarantine restore drop plan=%d key=%d: %v", plan.ID, state.PlatformKeyID, err)
+			return
+		}
+		log.Printf("intel key %d (%s) quarantine state dropped: group %d no longer exists (plan %d)",
+			state.PlatformKeyID, state.KeyName, plan.RouteGroupID, plan.ID)
+		return
+	}
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
 		row := domain.RouteGroupKey{RouteGroupID: plan.RouteGroupID, PlatformKeyID: state.PlatformKeyID, CreatedAt: now}
 		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
@@ -267,12 +295,14 @@ func (s *Service) restoreIntelKey(plan *domain.IntelTestPlan, state *domain.Inte
 }
 
 // runIntelQuarantineDue reports plan ids that have a quarantined key due for
-// retest, restricted to enabled candy plans with quarantine switched on.
+// retest, restricted to enabled candy plans with quarantine switched on and
+// whose route group still exists (a deleted group has nothing to protect).
 func (s *Service) runIntelQuarantineDue() []uint {
 	var planIDs []uint
 	err := s.DB.Model(&domain.IntelQuarantineState{}).
 		Select("DISTINCT intel_quarantine_states.plan_id").
 		Joins("JOIN intel_test_plans ON intel_test_plans.id = intel_quarantine_states.plan_id").
+		Joins("JOIN route_groups ON route_groups.id = intel_test_plans.route_group_id").
 		Where("intel_quarantine_states.status = ?", domain.IntelQuarantineQuarantined).
 		Where("intel_quarantine_states.next_test_at IS NULL OR intel_quarantine_states.next_test_at <= ?", time.Now()).
 		Where("intel_test_plans.enabled = ? AND intel_test_plans.quarantine_enabled = ? AND intel_test_plans.question_kind = ?",

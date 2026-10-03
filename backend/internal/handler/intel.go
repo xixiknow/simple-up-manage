@@ -297,6 +297,10 @@ func (h *Admin) RunIntelPlanNow(c *gin.Context) {
 		httpx.Fail(c, 409, "run_in_progress", "该任务正在测试中")
 		return
 	}
+	if errors.Is(err, ops.ErrIntelGroupMissing) {
+		httpx.Fail(c, 409, "group_missing", "该任务的路由分组已不存在，请先删除或重建任务")
+		return
+	}
 	if err != nil {
 		writeGormErr(c, err)
 		return

@@ -118,6 +118,9 @@ func AutoMigrate(db *gorm.DB) error {
 	if err := migrateUpstreamGroupsToKeys(db); err != nil {
 		return err
 	}
+	if err := cleanupIntelStaleReferences(db); err != nil {
+		return err
+	}
 	return migrateDashboard(db)
 }
 
