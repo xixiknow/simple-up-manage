@@ -7,10 +7,13 @@ function icon(name: string, nodes: IconNode) {
 }
 
 export const AddOutline = icon("AddOutline", [["path",{"d":"M5 12h14","key":"1ays0h"}],["path",{"d":"M12 5v14","key":"s699le"}]])
+export const CheckOutline = icon("CheckOutline", [["path",{"d":"M20 6 9 17l-5-5","key":"1chka"}]])
+export const ClockOutline = icon("ClockOutline", [["circle",{"cx":"12","cy":"12","r":"10","key":"1clkc"}],["polyline",{"points":"12 6 12 12 16 14","key":"1clkt"}]])
 export const CreateOutline = icon("CreateOutline", [["path",{"d":"M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7","key":"1m0v6g"}],["path",{"d":"M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z","key":"ohrbg2"}]])
 export const EllipsisHorizontalOutline = icon("EllipsisHorizontalOutline", [["circle",{"cx":"12","cy":"12","r":"1","key":"41hilf"}],["circle",{"cx":"19","cy":"12","r":"1","key":"1wjl8i"}],["circle",{"cx":"5","cy":"12","r":"1","key":"1pcz8c"}]])
 export const RefreshOutline = icon("RefreshOutline", [["path",{"d":"M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8","key":"v9h5vc"}],["path",{"d":"M21 3v5h-5","key":"1q7to0"}],["path",{"d":"M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16","key":"3uifl3"}],["path",{"d":"M8 16H3v5","key":"1cv678"}]])
 export const CashOutline = icon("CashOutline", [["rect",{"width":"20","height":"12","x":"2","y":"6","rx":"2","key":"9lu3g6"}],["circle",{"cx":"12","cy":"12","r":"2","key":"1c9p78"}],["path",{"d":"M6 12h.01M18 12h.01","key":"113zkx"}]])
+export const NotificationsOutline = icon("NotificationsOutline", [["path",{"d":"M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9","key":"1vwsy1"}],["path",{"d":"M10.3 21a1.94 1.94 0 0 0 3.4 0","key":"1j8jcmp"}]])
 export const KeyOutline = icon("KeyOutline", [["path",{"d":"M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z","key":"1s6t7t"}],["circle",{"cx":"16.5","cy":"7.5","r":".5","fill":"currentColor","key":"w0ekpg"}]])
 export const ListOutline = icon("ListOutline", [["path",{"d":"M3 12h.01","key":"nlz23k"}],["path",{"d":"M3 18h.01","key":"1tta3j"}],["path",{"d":"M3 6h.01","key":"1rqtza"}],["path",{"d":"M8 12h13","key":"1za7za"}],["path",{"d":"M8 18h13","key":"1lx6n3"}],["path",{"d":"M8 6h13","key":"ik3vkj"}]])
 export const LogOutOutline = icon("LogOutOutline", [["path",{"d":"M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4","key":"1uf3rs"}],["polyline",{"points":"16 17 21 12 16 7","key":"1gabdz"}],["line",{"x1":"21","x2":"9","y1":"12","y2":"12","key":"1uyos4"}]])
@@ -18,6 +21,9 @@ export const PulseOutline = icon("PulseOutline", [["path",{"d":"M22 12h-2.48a2 2
 export const ShuffleOutline = icon("ShuffleOutline", [["path",{"d":"m18 14 4 4-4 4","key":"10pe0f"}],["path",{"d":"m18 2 4 4-4 4","key":"pucp1d"}],["path",{"d":"M2 18h1.973a4 4 0 0 0 3.3-1.7l5.454-8.6a4 4 0 0 1 3.3-1.7H22","key":"1ailkh"}],["path",{"d":"M2 6h1.972a4 4 0 0 1 3.6 2.2","key":"km57vx"}],["path",{"d":"M22 18h-6.041a4 4 0 0 1-3.3-1.8l-.359-.45","key":"os18l9"}]])
 export const ServerOutline = icon("ServerOutline", [["rect",{"width":"20","height":"8","x":"2","y":"2","rx":"2","ry":"2","key":"ngkwjq"}],["rect",{"width":"20","height":"8","x":"2","y":"14","rx":"2","ry":"2","key":"iecqi9"}],["line",{"x1":"6","x2":"6.01","y1":"6","y2":"6","key":"16zg32"}],["line",{"x1":"6","x2":"6.01","y1":"18","y2":"18","key":"nzw8ys"}]])
 export const ChevronForwardOutline = icon("ChevronForwardOutline", [["path",{"d":"m9 18 6-6-6-6","key":"mthhwq"}]])
+export const ChevronBackOutline = icon("ChevronBackOutline", [["path",{"d":"m15 18-6-6 6-6","key":"15czc0"}]])
+export const RepeatOutline = icon("RepeatOutline", [["path",{"d":"m17 2 4 4-4 4","key":"1over"}],["path",{"d":"M3 11v-1a4 4 0 0 1 4-4h14","key":"1repb"}],["path",{"d":"m7 22-4-4 4-4","key":"1repc"}],["path",{"d":"M21 13v1a4 4 0 0 1-4 4H3","key":"1repd"}]])
+export const ArrowLeftRightOutline = icon("ArrowLeftRightOutline", [["path",{"d":"M8 3 4 7l4 4","key":"1alra"}],["path",{"d":"M4 7h16","key":"1alrc"}],["path",{"d":"m16 21 4-4-4-4","key":"1alrd"}],["path",{"d":"M20 17H4","key":"1alre"}]])
 export const ArrowBackOutline = icon("ArrowBackOutline", [["path",{"d":"m12 19-7-7 7-7","key":"1l729n"}],["path",{"d":"M19 12H5","key":"x3x0zl"}]])
 export const ArrowForwardOutline = icon("ArrowForwardOutline", [["path",{"d":"M5 12h14","key":"1ays0h"}],["path",{"d":"m12 5 7 7-7 7","key":"xquz4c"}]])
 export const CopyOutline = icon("CopyOutline", [["rect",{"width":"14","height":"14","x":"8","y":"8","rx":"2","ry":"2","key":"17jyea"}],["path",{"d":"M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2","key":"zix9uf"}]])

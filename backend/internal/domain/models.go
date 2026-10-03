@@ -39,6 +39,10 @@ const (
 	RateChangeBilling   = "billing"
 	RateChangeManual    = "manual"
 
+	NoticeKindRateChange   = "rate_change"
+	NoticeKindModelChange  = "model_change"
+	NoticeSourceModelsSync = "models_sync"
+
 	IntelQuestionCandy   = "candy"
 	IntelQuestionPelican = "pelican"
 
@@ -50,6 +54,12 @@ const (
 
 	IntelRunRunning  = "running"
 	IntelRunFinished = "finished"
+
+	IntelRunScopeFull       = "full"
+	IntelRunScopeQuarantine = "quarantine"
+
+	IntelQuarantineQuarantined = "quarantined"
+	IntelQuarantineRestored    = "restored"
 )
 
 type Upstream struct {
@@ -369,20 +379,18 @@ type ProbeLog struct {
 	CreatedAt     time.Time `gorm:"index" json:"created_at"`
 }
 
-// RateChangeNotice is a durable record of a key's rate_multiplier going up or
-// down, so operators can review price moves after the console toast is gone.
-type RateChangeNotice struct {
-	ID            uint       `gorm:"primaryKey" json:"id"`
-	PlatformKeyID uint       `gorm:"index;not null" json:"platform_key_id"`
-	UpstreamID    uint       `gorm:"index;not null" json:"upstream_id"`
-	KeyName       string     `gorm:"size:256;not null" json:"key_name"`
-	UpstreamName  string     `gorm:"size:128;not null" json:"upstream_name"`
-	OldRate       float64    `gorm:"type:decimal(12,6);not null" json:"old_rate"`
-	NewRate       float64    `gorm:"type:decimal(12,6);not null" json:"new_rate"`
-	Direction     string     `gorm:"size:8;not null" json:"direction"`
-	Source        string     `gorm:"size:16;not null;index" json:"source"`
-	ReadAt        *time.Time `json:"read_at"`
-	CreatedAt     time.Time  `gorm:"index" json:"created_at"`
+// Notice is the unified operator-inbox row. Kind discriminates the payload
+// shape ("rate_change", "model_change"); Summary is a pre-rendered one-line
+// description so lists render without parsing Payload. Payload is a JSON
+// object whose schema is fixed per kind — see RecordRateChange / SyncAllModels.
+type Notice struct {
+	ID        uint       `gorm:"primaryKey" json:"id"`
+	Kind      string     `gorm:"size:32;not null;index" json:"kind"`
+	Source    string     `gorm:"size:16;not null;default:''" json:"source"`
+	Summary   string     `gorm:"size:512;not null" json:"summary"`
+	Payload   string     `gorm:"type:text" json:"-"`
+	ReadAt    *time.Time `json:"read_at"`
+	CreatedAt time.Time  `gorm:"index" json:"created_at"`
 }
 
 type JSONStrings []string
@@ -400,15 +408,50 @@ type IntelTestPlan struct {
 	Prompt string `gorm:"type:text" json:"prompt"`
 	// Protocol pins openai / anthropic; empty picks per key (openai first).
 	Protocol string `gorm:"size:16" json:"protocol"`
-	// IntervalMinutes of 0 means manual-only; otherwise the minimum is 15.
+	// IntervalMinutes of 0 means manual-only; otherwise the minimum is 5.
 	IntervalMinutes int `gorm:"not null;default:0" json:"interval_minutes"`
 	// Parallel is the per-run worker count, clamped to 1-8.
-	Parallel  int        `gorm:"not null;default:4" json:"parallel"`
-	Enabled   bool       `gorm:"not null;default:true" json:"enabled"`
-	LastRunAt *time.Time `json:"last_run_at"`
-	NextRunAt *time.Time `gorm:"index" json:"next_run_at"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
+	Parallel int  `gorm:"not null;default:4" json:"parallel"`
+	Enabled  bool `gorm:"not null;default:true" json:"enabled"`
+	// QuarantineEnabled turns on automatic quarantine for candy plans: keys
+	// whose recent accuracy drops below the threshold leave the group and are
+	// retested with exponential backoff until they answer correctly twice in
+	// a row.
+	QuarantineEnabled bool `gorm:"not null;default:false" json:"quarantine_enabled"`
+	// QuarantineMinSamples is how many effective (judged) results in the last
+	// window must exist before the accuracy rule is evaluated. 0 = default 3.
+	QuarantineMinSamples int `gorm:"not null;default:0" json:"quarantine_min_samples"`
+	// QuarantineThreshold is the accuracy percent below which a key is
+	// quarantined. 0 = default 50.
+	QuarantineThreshold float64    `gorm:"not null;default:0" json:"quarantine_threshold"`
+	LastRunAt           *time.Time `json:"last_run_at"`
+	NextRunAt           *time.Time `gorm:"index" json:"next_run_at"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
+}
+
+const (
+	IntelQuarantineDefaultMinSamples = 3
+	IntelQuarantineDefaultThreshold  = 50.0
+	// IntelQuarantineMaxWindow caps both the accuracy look-back window and the
+	// configurable minimum-sample count.
+	IntelQuarantineMaxWindow = 10
+)
+
+// QuarantineRule returns the normalized trigger rule: evaluate once at least
+// minSamples effective results exist in the last window, and quarantine when
+// accuracy drops strictly below threshold percent. Zero / out-of-range plan
+// values fall back to the defaults so existing rows keep working.
+func (p *IntelTestPlan) QuarantineRule() (minSamples int, threshold float64) {
+	minSamples = p.QuarantineMinSamples
+	if minSamples < 1 || minSamples > IntelQuarantineMaxWindow {
+		minSamples = IntelQuarantineDefaultMinSamples
+	}
+	threshold = p.QuarantineThreshold
+	if threshold <= 0 || threshold > 100 {
+		threshold = IntelQuarantineDefaultThreshold
+	}
+	return minSamples, threshold
 }
 
 func ValidIntelQuestion(kind string) bool {
@@ -425,9 +468,12 @@ func IntelSuccessVerdict(kind string) string {
 
 // IntelTestRun tracks one execution of a plan for progress polling and history.
 type IntelTestRun struct {
-	ID         uint       `gorm:"primaryKey" json:"id"`
-	PlanID     uint       `gorm:"index;not null" json:"plan_id"`
-	Status     string     `gorm:"size:16;not null;default:running;index" json:"status"`
+	ID     uint   `gorm:"primaryKey" json:"id"`
+	PlanID uint   `gorm:"index;not null" json:"plan_id"`
+	Status string `gorm:"size:16;not null;default:running;index" json:"status"`
+	// Scope is full (all group members plus quarantined keys) or quarantine
+	// (only due quarantined keys, driven by their backoff schedule).
+	Scope      string     `gorm:"size:16;not null;default:full" json:"scope"`
 	Total      int        `gorm:"not null;default:0" json:"total"`
 	Done       int        `gorm:"not null;default:0" json:"done"`
 	Success    int        `gorm:"not null;default:0" json:"success"`
@@ -469,6 +515,32 @@ type IntelTestOutput struct {
 	ResultID   uint      `gorm:"uniqueIndex;not null" json:"result_id"`
 	OutputText string    `gorm:"type:text" json:"output_text"`
 	CreatedAt  time.Time `json:"created_at"`
+}
+
+// IntelQuarantineState tracks the quarantine / recovery lifecycle of one key
+// under one candy plan. The row persists across quarantine rounds so the
+// scoreboard keeps history and the runner can resume the backoff schedule.
+type IntelQuarantineState struct {
+	ID            uint   `gorm:"primaryKey" json:"id"`
+	PlanID        uint   `gorm:"uniqueIndex:idx_intel_quarantine;not null" json:"plan_id"`
+	PlatformKeyID uint   `gorm:"uniqueIndex:idx_intel_quarantine;not null" json:"platform_key_id"`
+	UpstreamID    uint   `gorm:"index" json:"upstream_id"`
+	KeyName       string `gorm:"size:256" json:"key_name"`
+	UpstreamName  string `gorm:"size:128" json:"upstream_name"`
+	Status        string `gorm:"size:16;not null;default:quarantined;index:idx_intel_quarantine_due,priority:1" json:"status"`
+	// BackoffSec is the current retest interval. It doubles on every failed
+	// retest and resets to the base when the key answers correctly.
+	BackoffSec      int        `gorm:"not null;default:60" json:"backoff_sec"`
+	NextTestAt      *time.Time `gorm:"index:idx_intel_quarantine_due,priority:2" json:"next_test_at"`
+	PassStreak      int        `json:"pass_streak"`
+	QuarantineCount int        `gorm:"not null;default:1" json:"quarantine_count"`
+	// Reason records why the key was quarantined, e.g. the accuracy window.
+	Reason        string     `gorm:"size:256" json:"reason"`
+	QuarantinedAt time.Time  `json:"quarantined_at"`
+	RestoredAt    *time.Time `json:"restored_at"`
+	LastTestedAt  *time.Time `json:"last_tested_at"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
 func (j JSONStrings) Value() (driver.Value, error) {

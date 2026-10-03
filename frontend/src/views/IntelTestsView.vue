@@ -158,6 +158,9 @@ function toggleEnabled(row: IntelPlanItem, value: boolean) {
     interval_minutes: row.interval_minutes,
     parallel: row.parallel,
     enabled: value,
+    quarantine_enabled: row.quarantine_enabled,
+    quarantine_min_samples: row.quarantine_min_samples,
+    quarantine_threshold: row.quarantine_threshold,
   }).then(() => {
     message.success(value ? '已启用自动测试' : '已停用自动测试')
   }).catch((e: unknown) => {
@@ -307,17 +310,18 @@ watch(selectedId, () => {
         <span v-if="selected.stats.samples" class="meta-chip">
           正确率 {{ selected.stats.accuracy.toFixed(1) }}% · 平均 {{ selected.stats.avg_latency_ms ? formatDurationMs(Math.round(selected.stats.avg_latency_ms)) : '—' }}
         </span>
+        <span v-if="selected.quarantined_count > 0" class="meta-chip quarantined-chip">隔离中 {{ selected.quarantined_count }}（已移出分组，退避复测中）</span>
         <span v-if="selected.next_run_at" class="meta-chip">下次自动 {{ formatTime(selected.next_run_at) }}</span>
       </div>
       <div v-if="recentRuns.length" class="runs-strip">
         <ui-tooltip v-for="run in recentRuns" :key="run.id" trigger="hover" placement="top">
           <template #trigger>
-            <span class="run-chip" :class="run.status === 'running' ? 'running' : run.success === run.total ? 'ok' : run.success === 0 ? 'bad' : 'mid'">
-              {{ run.status === 'running' ? `${run.done}/${run.total}` : `${run.success}/${run.total}` }}
+            <span class="run-chip" :class="[run.scope === 'quarantine' ? 'retest' : '', run.status === 'running' ? 'running' : run.success === run.total ? 'ok' : run.success === 0 ? 'bad' : 'mid']">
+              {{ run.scope === 'quarantine' ? '复测 ' : '' }}{{ run.status === 'running' ? `${run.done}/${run.total}` : `${run.success}/${run.total}` }}
             </span>
           </template>
           <div class="tip">
-            <div class="title">{{ formatTime(run.started_at) }}</div>
+            <div class="title">{{ formatTime(run.started_at) }}{{ run.scope === 'quarantine' ? ' · 隔离复测' : '' }}</div>
             <div>完成 {{ run.done }} / {{ run.total }}，通过 {{ run.success }}</div>
           </div>
         </ui-tooltip>
@@ -352,6 +356,10 @@ watch(selectedId, () => {
   border-radius: 6px;
   padding: 4px 10px;
 }
+.meta-chip.quarantined-chip {
+  background: #f7ece4;
+  color: #a16d50;
+}
 .runs-strip {
   display: flex;
   align-items: center;
@@ -373,6 +381,7 @@ watch(selectedId, () => {
 .run-chip.mid { background: #c4a35a; }
 .run-chip.bad { background: #c28d70; }
 .run-chip.running { background: #8ba394; animation: pulse 1.2s ease-in-out infinite; }
+.run-chip.retest:not(.running) { background: #8ba394; }
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.55; }

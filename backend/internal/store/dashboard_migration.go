@@ -76,6 +76,9 @@ func seedDashboardSettings(db *gorm.DB) error {
 	if err := db.Where("id = ?", 1).FirstOrCreate(&cfg).Error; err != nil {
 		return err
 	}
+	if err := upgradeUntouchedSettings(db, cfg); err != nil {
+		return err
+	}
 	var meta dashboard.Meta
 	if err := db.First(&meta, 1).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -85,4 +88,19 @@ func seedDashboardSettings(db *gorm.DB) error {
 		return err
 	}
 	return nil
+}
+
+// upgradeUntouchedSettings relaxes rows still holding the legacy seed
+// thresholds exactly; a row the user edited no longer matches and stays.
+func upgradeUntouchedSettings(db *gorm.DB, row dashboard.Settings) error {
+	if row.MinQualitySamples != dashboard.LegacySeedMinQualitySamples ||
+		row.MinTTFTSamples != dashboard.LegacySeedMinTTFTSamples ||
+		row.MinSuccessRate != dashboard.LegacySeedMinSuccessRate {
+		return nil
+	}
+	return db.Model(&dashboard.Settings{}).Where("id = ?", 1).Updates(map[string]any{
+		"min_quality_samples": dashboard.DefaultMinQualitySamples,
+		"min_ttft_samples":    dashboard.DefaultMinTTFTSamples,
+		"min_success_rate":    dashboard.DefaultMinSuccessRate,
+	}).Error
 }

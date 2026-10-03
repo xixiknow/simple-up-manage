@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -275,19 +276,44 @@ func TestShutdownDrainsDependencyRetriesAfterClosingStreams(t *testing.T) {
 	}
 }
 
-func TestUrgentRequiresActualCoverage(t *testing.T) {
-	for _, mode := range []string{"new", "gap", "complete"} {
+func TestUrgentPredictsFromObservedWindow(t *testing.T) {
+	for _, mode := range []string{"steady", "fresh", "gap", "unknown", "stale", "zero", "nobalanceat"} {
 		t.Run(mode, func(t *testing.T) {
 			db := dashboardTestDB(t)
-			now := time.Now().UTC()
+			now := time.Now().UTC().Truncate(time.Minute)
 			available := now.Add(-48 * time.Hour)
-			if mode == "new" {
+			balanceAt := now
+			if mode == "fresh" {
 				available = now.Add(-time.Hour)
+			}
+			if mode == "stale" {
+				balanceAt = now.Add(-10 * time.Minute)
 			}
 			put(t, db, &Meta{ID: 1, AvailableFrom: available})
 			balance := 12.0
-			put(t, db, &domain.Upstream{ID: 1, Name: "p", Status: domain.StatusEnabled, LastBalance: &balance, LastBalanceAt: &now})
-			put(t, db, &MinuteAgg{Bucket: now.Add(-time.Minute).Truncate(time.Minute), Family: FamilyAttempt, Dim: DimProvider, DimID: 1, ConsumptionUSD: 24, ProviderSuccess: 1})
+			up := &domain.Upstream{ID: 1, Name: "p", Status: domain.StatusEnabled, LastBalance: &balance, LastBalanceAt: &balanceAt}
+			if mode == "nobalanceat" {
+				up.LastBalanceAt = nil
+			}
+			put(t, db, up)
+			buckets := []MinuteAgg{
+				{Bucket: now.Add(-24 * time.Hour), Family: FamilyAttempt, Dim: DimProvider, DimID: 1, ConsumptionUSD: 12, ProviderSuccess: 1},
+				{Bucket: now.Add(-time.Minute), Family: FamilyAttempt, Dim: DimProvider, DimID: 1, ConsumptionUSD: 12, ProviderSuccess: 1},
+			}
+			switch mode {
+			case "fresh":
+				buckets = []MinuteAgg{{Bucket: now.Add(-time.Hour), Family: FamilyAttempt, Dim: DimProvider, DimID: 1, ConsumptionUSD: 24, ProviderSuccess: 1}}
+			case "unknown":
+				buckets[1].UnknownConsumption = 7
+			case "zero":
+				buckets = []MinuteAgg{
+					{Bucket: now.Add(-24 * time.Hour), Family: FamilyAttempt, Dim: DimProvider, DimID: 1, ProviderFailure: 3},
+					{Bucket: now.Add(-time.Minute), Family: FamilyAttempt, Dim: DimProvider, DimID: 1, ProviderFailure: 3, UnknownConsumption: 5},
+				}
+			}
+			for i := range buckets {
+				put(t, db, &buckets[i])
+			}
 			if mode == "gap" {
 				put(t, db, &Gap{StartedAt: now.Add(-time.Hour), EndedAt: now.Add(-30 * time.Minute), Reason: "test"})
 			}
@@ -299,13 +325,35 @@ func TestUrgentRequiresActualCoverage(t *testing.T) {
 			if len(items) != 1 {
 				t.Fatalf("items=%+v", items)
 			}
-			if mode == "complete" {
-				if items[0].HoursLeft == nil {
-					t.Fatal("complete data rejected")
+			it := items[0]
+			switch mode {
+			case "steady", "gap":
+				if it.HoursLeft == nil {
+					t.Fatalf("no prediction: %+v", it)
 				}
-				closeAmount(t, *items[0].HoursLeft, 12)
-			} else if !items[0].Insufficient || items[0].HoursLeft != nil {
-				t.Fatalf("incomplete prediction: %+v", items[0])
+				closeAmount(t, *it.HoursLeft, 12)
+			case "fresh":
+				if it.HoursLeft == nil {
+					t.Fatalf("no prediction: %+v", it)
+				}
+				closeAmount(t, *it.HoursLeft, 0.5)
+			case "unknown":
+				if it.HoursLeft == nil || !strings.Contains(it.Reason, "7 次尝试消耗未知") {
+					t.Fatalf("unknown-consumption note missing: %+v", it)
+				}
+				closeAmount(t, *it.HoursLeft, 12)
+			case "stale":
+				if it.HoursLeft == nil || !strings.Contains(it.Reason, "余额刷新于") {
+					t.Fatalf("stale note missing: %+v", it)
+				}
+			case "zero":
+				if !it.ZeroConsumption || it.HoursLeft != nil || !strings.Contains(it.Reason, "5 次尝试消耗未知") {
+					t.Fatalf("zero consumption handling: %+v", it)
+				}
+			case "nobalanceat":
+				if !it.Insufficient || it.HoursLeft != nil {
+					t.Fatalf("expected insufficient: %+v", it)
+				}
 			}
 		})
 	}
@@ -384,5 +432,60 @@ func TestRecommendationsKeepRetryCostsAcrossWindowBoundary(t *testing.T) {
 	closeAmount(t, *item.ProfitPerCost, .13/.17)
 	if item.Samples != 1 || item.SuccessRate == nil || *item.SuccessRate != 1 {
 		t.Fatalf("quality included old attempt: %+v", item)
+	}
+}
+
+func TestInvestFallsBackWhenDemandsDisjoint(t *testing.T) {
+	db := dashboardTestDB(t)
+	now := time.Now().UTC().Truncate(time.Minute)
+	at := now.Add(-time.Minute)
+	g1, g2, p1, p2 := uint(1), uint(2), uint(1), uint(2)
+	base, revenue, cost := 1.0, .3, .05
+	put(t, db, &RequestFact{UUID: "a", RouteGroupID: &g1, Model: "ma", Protocol: domain.ProtocolOpenAI, Path: "/v1/chat/completions", Source: domain.SourceBusiness, CompletedAt: &at, Success: true, Covered: true, BaseCostUSD: &base, RevenueUSD: &revenue, FinalProviderID: &p1})
+	put(t, db, &RequestFact{UUID: "b", RouteGroupID: &g2, Model: "mb", Protocol: domain.ProtocolOpenAI, Path: "/v1/chat/completions", Source: domain.SourceBusiness, CompletedAt: &at, Success: true, Covered: true, BaseCostUSD: &base, RevenueUSD: &revenue, FinalProviderID: &p2})
+	put(t, db, &AttemptFact{UUID: "a1", RequestUUID: "a", ProviderID: p1, Protocol: domain.ProtocolOpenAI, Path: "/v1/chat/completions", Source: domain.SourceBusiness, HTTPSent: true, Result: "success", CompletedAt: at, EstimatedCostUSD: &cost})
+	put(t, db, &AttemptFact{UUID: "b1", RequestUUID: "b", ProviderID: p2, Protocol: domain.ProtocolOpenAI, Path: "/v1/chat/completions", Source: domain.SourceBusiness, HTTPSent: true, Result: "success", CompletedAt: at, EstimatedCostUSD: &cost})
+	cfg := DefaultSettings()
+	cfg.MinQualitySamples, cfg.MinSuccessRate = 1, .5
+	s := &Service{db: db}
+	invest, _, _, cov, err := s.invest(context.Background(), Range{From: now.Add(-time.Hour), To: now.Add(time.Hour)}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(invest) != 2 {
+		t.Fatalf("invest = %+v", invest)
+	}
+	if invest[0].ProviderID != p1 || invest[1].ProviderID != p2 {
+		t.Fatalf("order = %+v", invest)
+	}
+	closeAmount(t, *invest[0].ProfitPerCost, 5)
+	if !strings.Contains(invest[0].Reason, "无可比共同需求") {
+		t.Fatalf("reason = %q", invest[0].Reason)
+	}
+	if cov == nil || *cov != 0 {
+		t.Fatalf("cov = %v", cov)
+	}
+}
+
+func TestInvestQualifiesWithoutTTFTSamples(t *testing.T) {
+	db := dashboardTestDB(t)
+	now := time.Now().UTC().Truncate(time.Minute)
+	at := now.Add(-time.Minute)
+	group, provider := uint(1), uint(1)
+	base, revenue, cost := 1.0, .3, .05
+	put(t, db, &RequestFact{UUID: "r", RouteGroupID: &group, Model: "m", Protocol: domain.ProtocolOpenAI, Path: "/v1/chat/completions", Source: domain.SourceBusiness, CompletedAt: &at, Success: true, Covered: true, BaseCostUSD: &base, RevenueUSD: &revenue, FinalProviderID: &provider})
+	put(t, db, &AttemptFact{UUID: "r1", RequestUUID: "r", ProviderID: provider, Protocol: domain.ProtocolOpenAI, Path: "/v1/chat/completions", Source: domain.SourceBusiness, HTTPSent: true, Result: "success", CompletedAt: at, EstimatedCostUSD: &cost, TTFTStatus: "no_output"})
+	cfg := DefaultSettings()
+	cfg.MinQualitySamples, cfg.MinSuccessRate = 1, .5
+	s := &Service{db: db}
+	invest, watch, _, _, err := s.invest(context.Background(), Range{From: now.Add(-time.Hour), To: now.Add(time.Hour)}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(invest) != 1 || invest[0].ProviderID != provider {
+		t.Fatalf("invest=%+v watch=%+v", invest, watch)
+	}
+	if invest[0].TTFTp95MS != nil {
+		t.Fatalf("p95 = %v", *invest[0].TTFTp95MS)
 	}
 }

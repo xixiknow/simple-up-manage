@@ -2,6 +2,7 @@ package ops
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"math"
 	"time"
@@ -10,10 +11,6 @@ import (
 )
 
 const rateChangeEpsilon = 1e-6
-
-// RateChangeNoticeRetention is how long price-change rows are kept. The
-// log-retention job deletes older notices on the same cadence as request logs.
-const RateChangeNoticeRetention = 90 * 24 * time.Hour
 
 func rateChanged(oldRate, newRate float64) bool {
 	return math.Abs(oldRate-newRate) > rateChangeEpsilon
@@ -24,6 +21,12 @@ func skipFirstBillingSync(key *domain.PlatformKey, oldRate float64) bool {
 		return false
 	}
 	return key.RateSyncedAt == nil && math.Abs(oldRate-1) <= rateChangeEpsilon
+}
+
+// rateChangeSummary renders the one-line inbox description. Payload carries
+// the structured fields; Summary is what the list shows at a glance.
+func rateChangeSummary(keyName string, oldRate, newRate float64) string {
+	return fmt.Sprintf("账号 %s 倍率 ×%s → ×%s", keyName, domain.FormatRate(oldRate), domain.FormatRate(newRate))
 }
 
 // RecordRateChange inserts a notice when the multiplier actually moved.
@@ -47,17 +50,16 @@ func (s *Service) RecordRateChange(ctx context.Context, key *domain.PlatformKey,
 	if key.Upstream != nil {
 		upstreamName = key.Upstream.Name
 	}
-	n := domain.RateChangeNotice{
-		PlatformKeyID: key.ID,
-		UpstreamID:    key.UpstreamID,
-		KeyName:       key.Name,
-		UpstreamName:  upstreamName,
-		OldRate:       oldRate,
-		NewRate:       newRate,
-		Direction:     direction,
-		Source:        source,
+	payload := map[string]any{
+		"platform_key_id": key.ID,
+		"upstream_id":     key.UpstreamID,
+		"key_name":        key.Name,
+		"upstream_name":   upstreamName,
+		"old_rate":        oldRate,
+		"new_rate":        newRate,
+		"direction":       direction,
 	}
-	return s.DB.WithContext(ctx).Create(&n).Error
+	return s.RecordNotice(ctx, domain.NoticeKindRateChange, source, rateChangeSummary(key.Name, oldRate, newRate), payload)
 }
 
 func (s *Service) applyBillingRate(ctx context.Context, key *domain.PlatformKey, rate float64, now time.Time) error {
@@ -77,11 +79,4 @@ func (s *Service) applyBillingRate(ctx context.Context, key *domain.PlatformKey,
 	ts := now
 	key.RateSyncedAt = &ts
 	return nil
-}
-
-// PurgeRateChangeNotices deletes notices older than 90 days.
-func (s *Service) PurgeRateChangeNotices(ctx context.Context) (int64, error) {
-	cut := time.Now().Add(-RateChangeNoticeRetention)
-	res := s.DB.WithContext(ctx).Where("created_at < ?", cut).Delete(&domain.RateChangeNotice{})
-	return res.RowsAffected, res.Error
 }

@@ -81,7 +81,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&domain.RoutingMigration{},
 		&domain.KeyModelCooldown{},
 		&domain.ProbeLog{},
-		&domain.RateChangeNotice{},
+		&domain.Notice{},
 		&domain.SchedulerSettings{},
 		&domain.CatalogModel{},
 		&domain.CatalogMeta{},
@@ -89,10 +89,14 @@ func AutoMigrate(db *gorm.DB) error {
 		&domain.IntelTestRun{},
 		&domain.IntelTestResult{},
 		&domain.IntelTestOutput{},
+		&domain.IntelQuarantineState{},
 	); err != nil {
 		return err
 	}
 	if err := migrateRoutingHealth(db); err != nil {
+		return err
+	}
+	if err := migrateRateChangeNoticesToNotices(db); err != nil {
 		return err
 	}
 	if err := migrateRequestLogState(db); err != nil {

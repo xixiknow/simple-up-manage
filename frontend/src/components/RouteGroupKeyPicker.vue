@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import { useMessage } from '@/components/ui'
+import { useDialog, useMessage } from '@/components/ui'
 import { listRouteCandidates, setRouteGroupKeys } from '@/api/admin'
 import {
   KIND_LABEL,
@@ -22,6 +22,7 @@ const emit = defineEmits<{ saved: [] }>()
 const show = defineModel<boolean>('show', { default: false })
 
 const message = useMessage()
+const dialog = useDialog()
 const loading = ref(false)
 const saving = ref(false)
 const candidates = ref<RouteCandidate[]>([])
@@ -234,9 +235,15 @@ function requestClose(next: boolean) {
     show.value = false
     return
   }
-  if (window.confirm('有未保存的修改，关闭将丢弃。确认关闭？')) {
-    show.value = false
-  }
+  dialog.warning({
+    title: '放弃未保存的修改？',
+    content: '有未保存的修改，关闭将丢弃。',
+    positiveText: '丢弃并关闭',
+    negativeText: '继续编辑',
+    onPositiveClick: () => {
+      show.value = false
+    },
+  })
 }
 </script>
 

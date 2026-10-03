@@ -23,10 +23,11 @@ type intelPlanStats struct {
 
 type intelPlanDTO struct {
 	domain.IntelTestPlan
-	GroupName string               `json:"group_name"`
-	LastRun   *domain.IntelTestRun `json:"last_run"`
-	Running   bool                 `json:"running"`
-	Stats     intelPlanStats       `json:"stats"`
+	GroupName        string               `json:"group_name"`
+	LastRun          *domain.IntelTestRun `json:"last_run"`
+	Running          bool                 `json:"running"`
+	Stats            intelPlanStats       `json:"stats"`
+	QuarantinedCount int64                `json:"quarantined_count"`
 }
 
 type intelPlanBody struct {
@@ -39,6 +40,14 @@ type intelPlanBody struct {
 	IntervalMinutes int    `json:"interval_minutes"`
 	Parallel        int    `json:"parallel"`
 	Enabled         *bool  `json:"enabled"`
+	// QuarantineEnabled opts a candy plan into automatic quarantine: keys
+	// below the accuracy threshold leave the group and retest on exponential
+	// backoff until they answer correctly twice in a row.
+	QuarantineEnabled bool `json:"quarantine_enabled"`
+	// QuarantineMinSamples / QuarantineThreshold tune the trigger rule; 0
+	// values fall back to the defaults (3 samples, 50%).
+	QuarantineMinSamples int     `json:"quarantine_min_samples"`
+	QuarantineThreshold  float64 `json:"quarantine_threshold"`
 }
 
 func (b *intelPlanBody) validate() (string, bool) {
@@ -56,14 +65,23 @@ func (b *intelPlanBody) validate() (string, bool) {
 	default:
 		return "protocol 必须为空、openai 或 anthropic", false
 	}
-	if b.IntervalMinutes != 0 && b.IntervalMinutes < 15 {
-		return "interval_minutes 为 0（仅手动）或至少 15", false
+	if b.IntervalMinutes != 0 && b.IntervalMinutes < 5 {
+		return "interval_minutes 为 0（仅手动）或至少 5", false
 	}
 	if b.Parallel == 0 {
 		b.Parallel = 4
 	}
 	if b.Parallel < 1 || b.Parallel > 8 {
 		return "parallel 取值 1-8", false
+	}
+	if b.QuarantineEnabled && b.QuestionKind != domain.IntelQuestionCandy {
+		return "自动隔离仅支持糖果题任务", false
+	}
+	if b.QuarantineMinSamples != 0 && (b.QuarantineMinSamples < 1 || b.QuarantineMinSamples > domain.IntelQuarantineMaxWindow) {
+		return "quarantine_min_samples 取值 1-10（0 为默认 3）", false
+	}
+	if b.QuarantineThreshold != 0 && (b.QuarantineThreshold <= 0 || b.QuarantineThreshold > 100) {
+		return "quarantine_threshold 取值 1-100（0 为默认 50）", false
 	}
 	return "", true
 }
@@ -78,6 +96,18 @@ func (b *intelPlanBody) apply(plan *domain.IntelTestPlan, now time.Time) {
 	plan.IntervalMinutes = b.IntervalMinutes
 	plan.Parallel = b.Parallel
 	plan.Enabled = b.Enabled == nil || *b.Enabled
+	plan.QuarantineEnabled = b.QuarantineEnabled && b.QuestionKind == domain.IntelQuestionCandy
+	if plan.QuarantineEnabled {
+		plan.QuarantineMinSamples, plan.QuarantineThreshold = b.QuarantineMinSamples, b.QuarantineThreshold
+		if plan.QuarantineMinSamples == 0 {
+			plan.QuarantineMinSamples = domain.IntelQuarantineDefaultMinSamples
+		}
+		if plan.QuarantineThreshold == 0 {
+			plan.QuarantineThreshold = domain.IntelQuarantineDefaultThreshold
+		}
+	} else {
+		plan.QuarantineMinSamples, plan.QuarantineThreshold = 0, 0
+	}
 	if plan.Enabled && plan.IntervalMinutes >= 15 {
 		next := now.Add(time.Duration(plan.IntervalMinutes) * time.Minute)
 		plan.NextRunAt = &next
@@ -156,9 +186,26 @@ func (h *Admin) ListIntelPlans(c *gin.Context) {
 			stats[id] = st
 		}
 	}
+	quarantined := map[uint]int64{}
+	if len(planIDs) > 0 {
+		var qrows []struct {
+			PlanID uint
+			Count  int64
+		}
+		if err := h.DB.Model(&domain.IntelQuarantineState{}).
+			Select("plan_id, COUNT(*) AS count").
+			Where("plan_id IN ? AND status = ?", planIDs, domain.IntelQuarantineQuarantined).
+			Group("plan_id").Scan(&qrows).Error; err != nil {
+			httpx.Internal(c, err.Error())
+			return
+		}
+		for _, row := range qrows {
+			quarantined[row.PlanID] = row.Count
+		}
+	}
 	out := make([]intelPlanDTO, 0, len(plans))
 	for _, p := range plans {
-		dto := intelPlanDTO{IntelTestPlan: p, GroupName: groupNames[p.RouteGroupID], Stats: stats[p.ID]}
+		dto := intelPlanDTO{IntelTestPlan: p, GroupName: groupNames[p.RouteGroupID], Stats: stats[p.ID], QuarantinedCount: quarantined[p.ID]}
 		if run, ok := lastRuns[p.ID]; ok {
 			dto.LastRun = run
 			dto.Running = run.Status == domain.IntelRunRunning
@@ -351,19 +398,32 @@ type intelVerdictPoint struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
+type intelQuarantineInfo struct {
+	Status          string     `json:"status"`
+	PassStreak      int        `json:"pass_streak"`
+	BackoffSec      int        `json:"backoff_sec"`
+	NextTestAt      *time.Time `json:"next_test_at"`
+	QuarantineCount int        `json:"quarantine_count"`
+	Reason          string     `json:"reason"`
+	QuarantinedAt   *time.Time `json:"quarantined_at"`
+	RestoredAt      *time.Time `json:"restored_at"`
+	LastTestedAt    *time.Time `json:"last_tested_at"`
+}
+
 type intelKeyStat struct {
-	PlatformKeyID uint                `json:"platform_key_id"`
-	UpstreamID    uint                `json:"upstream_id"`
-	KeyName       string              `json:"key_name"`
-	UpstreamName  string              `json:"upstream_name"`
-	Samples       int64               `json:"samples"`
-	Success       int64               `json:"success"`
-	Accuracy      float64             `json:"accuracy"`
-	AvgLatencyMs  float64             `json:"avg_latency_ms"`
-	LastVerdict   string              `json:"last_verdict"`
-	LastAnswer    string              `json:"last_answer"`
-	LastAt        *time.Time          `json:"last_at"`
-	History       []intelVerdictPoint `gorm:"-" json:"history"`
+	PlatformKeyID uint                 `json:"platform_key_id"`
+	UpstreamID    uint                 `json:"upstream_id"`
+	KeyName       string               `json:"key_name"`
+	UpstreamName  string               `json:"upstream_name"`
+	Samples       int64                `json:"samples"`
+	Success       int64                `json:"success"`
+	Accuracy      float64              `json:"accuracy"`
+	AvgLatencyMs  float64              `json:"avg_latency_ms"`
+	LastVerdict   string               `json:"last_verdict"`
+	LastAnswer    string               `json:"last_answer"`
+	LastAt        *time.Time           `json:"last_at"`
+	History       []intelVerdictPoint  `gorm:"-" json:"history"`
+	Quarantine    *intelQuarantineInfo `gorm:"-" json:"quarantine,omitempty"`
 }
 
 // IntelPlanSummary aggregates a plan's results per key: the candy scoreboard /
@@ -413,6 +473,19 @@ func (h *Admin) IntelPlanSummary(c *gin.Context) {
 			latest[r.PlatformKeyID] = r
 		}
 	}
+	var states []domain.IntelQuarantineState
+	if err := h.DB.Where("plan_id = ?", id).Find(&states).Error; err != nil {
+		httpx.Internal(c, err.Error())
+		return
+	}
+	quarantinedCount := int64(0)
+	stateByKey := make(map[uint]*domain.IntelQuarantineState, len(states))
+	for i := range states {
+		stateByKey[states[i].PlatformKeyID] = &states[i]
+		if states[i].Status == domain.IntelQuarantineQuarantined {
+			quarantinedCount++
+		}
+	}
 	for i := range stats {
 		st := &stats[i]
 		if st.Samples > 0 {
@@ -425,6 +498,19 @@ func (h *Admin) IntelPlanSummary(c *gin.Context) {
 			st.LastAt = &v
 		}
 		st.History = byKey[st.PlatformKeyID]
+		if qs, ok := stateByKey[st.PlatformKeyID]; ok {
+			st.Quarantine = &intelQuarantineInfo{
+				Status:          qs.Status,
+				PassStreak:      qs.PassStreak,
+				BackoffSec:      qs.BackoffSec,
+				NextTestAt:      qs.NextTestAt,
+				QuarantineCount: qs.QuarantineCount,
+				Reason:          qs.Reason,
+				QuarantinedAt:   &qs.QuarantinedAt,
+				RestoredAt:      qs.RestoredAt,
+				LastTestedAt:    qs.LastTestedAt,
+			}
+		}
 	}
 	sort.Slice(stats, func(i, j int) bool {
 		if stats[i].Accuracy != stats[j].Accuracy {
@@ -432,5 +518,5 @@ func (h *Admin) IntelPlanSummary(c *gin.Context) {
 		}
 		return stats[i].Samples > stats[j].Samples
 	})
-	httpx.OK(c, gin.H{"items": stats, "success_verdict": successVerdict, "question_kind": plan.QuestionKind})
+	httpx.OK(c, gin.H{"items": stats, "success_verdict": successVerdict, "question_kind": plan.QuestionKind, "quarantined_count": quarantinedCount})
 }

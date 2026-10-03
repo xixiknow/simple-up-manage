@@ -267,24 +267,42 @@ export type LogBody = {
 }
 
 export type RateChangeDirection = 'up' | 'down'
-export type RateChangeSource = 'billing' | 'manual'
+export type RateChangeSource = 'billing' | 'manual' | 'models_sync'
 
-export type RateChangeNotice = {
+export type NoticeKind = 'rate_change' | 'model_change'
+
+// Payload schemas are fixed per kind — rate_change carries the key/rate move,
+// model_change carries the route group's added/removed model ids.
+export type RateChangePayload = {
+  platform_key_id?: number
+  upstream_id?: number
+  key_name?: string
+  upstream_name?: string
+  old_rate?: number
+  new_rate?: number
+  direction?: RateChangeDirection
+}
+
+export type ModelChangePayload = {
+  route_group_id?: number
+  group_name?: string
+  added?: string[]
+  removed?: string[]
+}
+
+export type Notice = {
   id: number
-  platform_key_id: number
-  upstream_id: number
-  key_name: string
-  upstream_name: string
-  old_rate: number
-  new_rate: number
-  direction: RateChangeDirection
-  source: RateChangeSource
+  kind: NoticeKind
+  source: string
+  summary: string
+  payload: Record<string, unknown>
   read_at?: string | null
   created_at: string
 }
 
-export type RateNoticeUnreadCount = {
+export type NoticeUnreadCount = {
   unread: number
+  by_kind?: Record<string, number>
 }
 
 export type ListResult<T> = {
@@ -553,9 +571,15 @@ export const STATUS_OPTIONS = (Object.keys(STATUS_LABEL) as EnableStatus[]).map(
   value,
 }))
 
-export const RATE_CHANGE_SOURCE_LABEL: Record<RateChangeSource, string> = {
+export const NOTICE_SOURCE_LABEL: Record<string, string> = {
   billing: '同步',
   manual: '手动',
+  models_sync: '模型同步',
+}
+
+export const NOTICE_KIND_LABEL: Record<NoticeKind, string> = {
+  rate_change: '价格变动',
+  model_change: '模型变化',
 }
 
 export type DashRange = { from: string; to: string }

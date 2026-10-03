@@ -29,6 +29,7 @@ type Jobs struct {
 	BillingInterval      time.Duration `yaml:"billing_interval"`
 	ProbeInterval        time.Duration `yaml:"probe_interval"`
 	CatalogInterval      time.Duration `yaml:"catalog_interval"`
+	ModelsInterval       time.Duration `yaml:"models_interval"`
 	LogRetention         time.Duration `yaml:"log_retention"`
 	LogRetentionInterval time.Duration `yaml:"log_retention_interval"`
 }
@@ -45,6 +46,7 @@ func defaults() Config {
 			BillingInterval:      time.Minute,
 			ProbeInterval:        time.Minute,
 			CatalogInterval:      24 * time.Hour,
+			ModelsInterval:       time.Hour,
 			LogRetention:         24 * time.Hour,
 			LogRetentionInterval: time.Hour,
 		},
@@ -122,6 +124,9 @@ func Load() (*Config, error) {
 	}
 	if cfg.Jobs.CatalogInterval <= 0 {
 		cfg.Jobs.CatalogInterval = 24 * time.Hour
+	}
+	if cfg.Jobs.ModelsInterval <= 0 {
+		cfg.Jobs.ModelsInterval = time.Hour
 	}
 	if cfg.Jobs.LogRetention <= 0 {
 		cfg.Jobs.LogRetention = 24 * time.Hour

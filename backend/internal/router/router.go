@@ -76,10 +76,10 @@ func New(cfg *config.Config, db *gorm.DB, enc *crypto.AESGCM, opsSvc *ops.Servic
 		a.GET("/request-logs/:id", admin.GetRequestLog)
 		a.GET("/request-logs/:id/bodies/:body_id", admin.GetLogBody)
 
-		a.GET("/rate-notices", admin.ListRateNotices)
-		a.GET("/rate-notices/unread-count", admin.RateNoticeUnreadCount)
-		a.POST("/rate-notices/read-all", admin.MarkAllRateNoticesRead)
-		a.POST("/rate-notices/:id/read", admin.MarkRateNoticeRead)
+		a.GET("/notices", admin.ListNotices)
+		a.GET("/notices/unread-count", admin.NoticeUnreadCount)
+		a.POST("/notices/read-all", admin.MarkAllNoticesRead)
+		a.POST("/notices/:id/read", admin.MarkNoticeRead)
 
 		a.GET("/scheduler", admin.GetScheduler)
 		a.PUT("/scheduler", admin.UpdateScheduler)

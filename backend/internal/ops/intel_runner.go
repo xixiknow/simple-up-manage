@@ -62,13 +62,59 @@ func (s *Service) RunIntelPlan(planID uint) (*domain.IntelTestRun, error) {
 		intelRunning.Delete(planID)
 		return nil, err
 	}
+	// Full runs always carry the plan's quarantined keys so manual triggers
+	// advance their recovery evaluation too.
+	if states, err := s.intelQuarantinedStates(planID, false); err == nil {
+		keys = appendIntelQuarantineKeys(keys, s.intelQuarantineKeys(&plan, states))
+	}
 	now := time.Now()
-	run := domain.IntelTestRun{PlanID: planID, Status: domain.IntelRunRunning, Total: len(keys), StartedAt: now}
+	run := domain.IntelTestRun{PlanID: planID, Status: domain.IntelRunRunning, Scope: domain.IntelRunScopeFull, Total: len(keys), StartedAt: now}
 	if err := s.DB.Create(&run).Error; err != nil {
 		intelRunning.Delete(planID)
 		return nil, err
 	}
-	go s.runIntelSamples(plan, run.ID, keys)
+	go s.runIntelSamples(plan, run.ID, keys, domain.IntelRunScopeFull)
+	return &run, nil
+}
+
+// RunIntelQuarantine retests the quarantined keys of a plan whose backoff
+// timer is due. It creates no run when nothing is due and returns (nil, nil).
+func (s *Service) RunIntelQuarantine(planID uint) (*domain.IntelTestRun, error) {
+	var plan domain.IntelTestPlan
+	if err := s.DB.First(&plan, planID).Error; err != nil {
+		return nil, err
+	}
+	if !plan.QuarantineEnabled || plan.QuestionKind != domain.IntelQuestionCandy {
+		return nil, nil
+	}
+	s.finalizeStaleIntelRuns()
+	if _, busy := intelRunning.LoadOrStore(planID, struct{}{}); busy {
+		return nil, ErrIntelRunInProgress
+	}
+	states, err := s.intelQuarantinedStates(planID, true)
+	if err != nil {
+		intelRunning.Delete(planID)
+		return nil, err
+	}
+	keys := s.intelQuarantineKeys(&plan, states)
+	if len(keys) == 0 {
+		// Nothing testable is due (key deleted / disabled): push the due
+		// schedule out so the scanner stops re-firing every tick.
+		next := time.Now().Add(time.Duration(intelQuarantineBaseSec) * time.Second)
+		_ = s.DB.Model(&domain.IntelQuarantineState{}).
+			Where("plan_id = ? AND status = ?", planID, domain.IntelQuarantineQuarantined).
+			Where("next_test_at IS NULL OR next_test_at <= ?", time.Now()).
+			Update("next_test_at", next).Error
+		intelRunning.Delete(planID)
+		return nil, nil
+	}
+	now := time.Now()
+	run := domain.IntelTestRun{PlanID: planID, Status: domain.IntelRunRunning, Scope: domain.IntelRunScopeQuarantine, Total: len(keys), StartedAt: now}
+	if err := s.DB.Create(&run).Error; err != nil {
+		intelRunning.Delete(planID)
+		return nil, err
+	}
+	go s.runIntelSamples(plan, run.ID, keys, domain.IntelRunScopeQuarantine)
 	return &run, nil
 }
 
@@ -98,7 +144,7 @@ func (s *Service) intelPlanKeys(plan *domain.IntelTestPlan) ([]domain.PlatformKe
 	return out, nil
 }
 
-func (s *Service) runIntelSamples(plan domain.IntelTestPlan, runID uint, keys []domain.PlatformKey) {
+func (s *Service) runIntelSamples(plan domain.IntelTestPlan, runID uint, keys []domain.PlatformKey, scope string) {
 	defer intelRunning.Delete(plan.ID)
 	ctx := context.Background()
 	prompt := IntelQuestionText(plan.QuestionKind, plan.Prompt)
@@ -125,6 +171,7 @@ func (s *Service) runIntelSamples(plan domain.IntelTestPlan, runID uint, keys []
 			defer wg.Done()
 			for key := range queue {
 				res := s.intelSample(ctx, plan, runID, key, prompt)
+				s.applyIntelOutcome(&plan, key, &res)
 				mu.Lock()
 				done++
 				if res.Verdict == successVerdict {
@@ -146,12 +193,16 @@ func (s *Service) runIntelSamples(plan domain.IntelTestPlan, runID uint, keys []
 	}).Error; err != nil {
 		log.Printf("intel run %d finalize: %v", runID, err)
 	}
-	updates := map[string]any{"last_run_at": now, "next_run_at": nil}
-	if plan.Enabled && plan.IntervalMinutes >= 15 {
-		updates["next_run_at"] = now.Add(time.Duration(plan.IntervalMinutes) * time.Minute)
-	}
-	if err := s.DB.Model(&domain.IntelTestPlan{}).Where("id = ?", plan.ID).Updates(updates).Error; err != nil {
-		log.Printf("intel plan %d schedule: %v", plan.ID, err)
+	// Quarantine retests run on their own per-key backoff schedule and must
+	// not advance the plan's full-run cadence.
+	if scope == domain.IntelRunScopeFull {
+		updates := map[string]any{"last_run_at": now, "next_run_at": nil}
+		if plan.Enabled && plan.IntervalMinutes >= 15 {
+			updates["next_run_at"] = now.Add(time.Duration(plan.IntervalMinutes) * time.Minute)
+		}
+		if err := s.DB.Model(&domain.IntelTestPlan{}).Where("id = ?", plan.ID).Updates(updates).Error; err != nil {
+			log.Printf("intel plan %d schedule: %v", plan.ID, err)
+		}
 	}
 	s.pruneIntelPlan(plan.ID)
 }
@@ -372,6 +423,16 @@ func (s *Service) RunDueIntelPlans() {
 			log.Printf("intel plan %d (%s %s) scheduled run started", plan.ID, plan.QuestionKind, plan.Model)
 		}
 	}
+	// Quarantine retests: plans with a due quarantined key, regardless of the
+	// plan's own full-run cadence.
+	for _, planID := range s.runIntelQuarantineDue() {
+		if _, busy := intelRunning.Load(planID); busy {
+			continue
+		}
+		if _, err := s.RunIntelQuarantine(planID); err != nil && !errors.Is(err, ErrIntelRunInProgress) {
+			log.Printf("intel plan %d quarantine run: %v", planID, err)
+		}
+	}
 }
 
 // finalizeStaleIntelRuns closes run rows left "running" by a crash or restart.
@@ -405,9 +466,15 @@ func (s *Service) pruneIntelPlan(planID uint) {
 	}
 }
 
-// DeleteIntelPlanData removes every run / result / output of a plan.
+// DeleteIntelPlanData removes every run / result / output of a plan. Any key
+// still quarantined by the plan is re-added to its group first so deletion
+// never strands keys outside their group.
 func (s *Service) DeleteIntelPlanData(planID uint) error {
+	s.RestoreIntelPlanQuarantined(planID)
 	return s.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("plan_id = ?", planID).Delete(&domain.IntelQuarantineState{}).Error; err != nil {
+			return err
+		}
 		if err := tx.Where("result_id IN (SELECT id FROM intel_test_results WHERE plan_id = ?)", planID).
 			Delete(&domain.IntelTestOutput{}).Error; err != nil {
 			return err

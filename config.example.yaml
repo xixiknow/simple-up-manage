@@ -10,5 +10,7 @@ jobs:
   billing_interval: 1m
   probe_interval: 1m
   catalog_interval: 24h
+  # 每小时拉取一次全部启用 Key 的上游 /v1/models，并按分组产出模型增减通知
+  models_interval: 1h
   log_retention: 24h
   log_retention_interval: 1h

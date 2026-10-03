@@ -24,12 +24,19 @@ const (
 	CostSourceNone      = "none"
 
 	DefaultRenewalHorizonHours     = 48
-	DefaultMinQualitySamples       = 100
-	DefaultMinSuccessRate          = 0.98
-	DefaultMinTTFTSamples          = 100
+	DefaultMinQualitySamples       = 30
+	DefaultMinSuccessRate          = 0.95
+	DefaultMinTTFTSamples          = 30
 	DefaultMaxTTFTP95Ms            = 10000
 	DefaultMinFinanceCoverage      = 0.90
 	DefaultMinCommonDemandCoverage = 0.50
+
+	// LegacySeed* are the seed thresholds from before they were relaxed;
+	// dash_settings rows still holding exactly these values are upgraded
+	// during migration, rows the user edited are left alone.
+	LegacySeedMinQualitySamples = 100
+	LegacySeedMinSuccessRate    = 0.98
+	LegacySeedMinTTFTSamples    = 100
 
 	FactRetention   = 30 * 24 * time.Hour
 	MinuteRetention = 30 * 24 * time.Hour

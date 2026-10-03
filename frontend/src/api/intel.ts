@@ -21,6 +21,9 @@ export type IntelPlanIntervalOption = { label: string; value: number }
 
 export const INTEL_INTERVAL_OPTIONS: IntelPlanIntervalOption[] = [
   { label: '仅手动测试', value: 0 },
+  { label: '每 5 分钟', value: 5 },
+  { label: '每 10 分钟', value: 10 },
+  { label: '每 15 分钟', value: 15 },
   { label: '每 30 分钟', value: 30 },
   { label: '每 1 小时', value: 60 },
   { label: '每 3 小时', value: 180 },
@@ -40,6 +43,11 @@ export type IntelTestPlan = {
   interval_minutes: number
   parallel: number
   enabled: boolean
+  quarantine_enabled: boolean
+  /** 触发隔离所需最少有效样本数（0 = 默认 3） */
+  quarantine_min_samples: number
+  /** 正确率阈值百分比，低于该值移出分组（0 = 默认 50） */
+  quarantine_threshold: number
   last_run_at?: string | null
   next_run_at?: string | null
   created_at: string
@@ -57,6 +65,8 @@ export type IntelTestRun = {
   id: number
   plan_id: number
   status: 'running' | 'finished'
+  /** full = 全量（含隔离中的 Key）；quarantine = 仅到期的隔离复测 */
+  scope: 'full' | 'quarantine'
   total: number
   done: number
   success: number
@@ -70,6 +80,7 @@ export type IntelPlanItem = IntelTestPlan & {
   last_run?: IntelTestRun | null
   running: boolean
   stats: IntelPlanStats
+  quarantined_count: number
 }
 
 export type IntelTestResult = {
@@ -105,6 +116,18 @@ export type IntelVerdictPoint = {
   created_at: string
 }
 
+export type IntelQuarantineInfo = {
+  status: 'quarantined' | 'restored'
+  pass_streak: number
+  backoff_sec: number
+  next_test_at?: string | null
+  quarantine_count: number
+  reason: string
+  quarantined_at?: string | null
+  restored_at?: string | null
+  last_tested_at?: string | null
+}
+
 export type IntelKeyStat = {
   platform_key_id: number
   upstream_id: number
@@ -118,6 +141,7 @@ export type IntelKeyStat = {
   last_answer: string
   last_at?: string | null
   history: IntelVerdictPoint[]
+  quarantine?: IntelQuarantineInfo | null
 }
 
 export type IntelPlanPayload = {
@@ -130,6 +154,9 @@ export type IntelPlanPayload = {
   interval_minutes?: number
   parallel?: number
   enabled?: boolean
+  quarantine_enabled?: boolean
+  quarantine_min_samples?: number
+  quarantine_threshold?: number
 }
 
 export const INTEL_KIND_LABEL: Record<IntelQuestionKind, string> = {

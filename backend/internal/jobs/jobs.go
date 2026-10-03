@@ -40,6 +40,20 @@ func Start(cfg *config.Config, opsSvc *ops.Service, afterCatalog func(), stop <-
 	go runTicker("intel", time.Minute, stop, func(ctx context.Context) {
 		opsSvc.RunDueIntelPlans()
 	})
+	syncModels := func(ctx context.Context) {
+		res, err := opsSvc.SyncAllModels(ctx)
+		if err != nil {
+			log.Printf("job models: %v", err)
+			return
+		}
+		log.Printf("job models: ok=%d failed=%d added=%d removed=%d groups=%d", res.OK, res.Failed, res.Added, res.Removed, res.GroupsNotified)
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		syncModels(ctx)
+	}()
+	go runTicker("models", cfg.Jobs.ModelsInterval, stop, syncModels)
 	syncCatalog := func(ctx context.Context) {
 		res, err := opsSvc.SyncModelCatalog(ctx)
 		if err != nil {
@@ -75,12 +89,12 @@ func Start(cfg *config.Config, opsSvc *ops.Service, afterCatalog func(), stop <-
 		} else {
 			log.Printf("job log-retention: deleted=%d older_than=%s", n, cfg.Jobs.LogRetention)
 		}
-		n2, err := opsSvc.PurgeRateChangeNotices(ctx)
+		n2, err := opsSvc.PurgeNotices(ctx, ops.NoticeRetention)
 		if err != nil {
-			log.Printf("job rate-notice-retention: %v", err)
+			log.Printf("job notice-retention: %v", err)
 			return
 		}
-		log.Printf("job rate-notice-retention: deleted=%d older_than=%s", n2, ops.RateChangeNoticeRetention)
+		log.Printf("job notice-retention: deleted=%d older_than=%s", n2, ops.NoticeRetention)
 	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

@@ -48,7 +48,13 @@ const form = reactive({
   interval_minutes: 0,
   parallel: 4,
   enabled: true,
+  quarantine_enabled: false,
+  quarantine_min_samples: 3,
+  quarantine_threshold: 50,
 })
+
+const INTEL_MIN_SAMPLE_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => ({ label: `${n} 次`, value: n }))
+const INTEL_THRESHOLD_OPTIONS = [30, 40, 50, 60, 70, 80].map(n => ({ label: `${n}%`, value: n }))
 
 const rules: FormRules = {
   route_group_id: { required: true, type: 'number', message: '请选择分组', trigger: 'change' },
@@ -95,6 +101,9 @@ watch(() => props.show, show => {
     form.interval_minutes = editing.interval_minutes || 0
     form.parallel = editing.parallel || 4
     form.enabled = editing.enabled
+    form.quarantine_enabled = editing.quarantine_enabled
+    form.quarantine_min_samples = editing.quarantine_min_samples || 3
+    form.quarantine_threshold = editing.quarantine_threshold || 50
     void loadGroupModels(editing.route_group_id)
   } else {
     form.name = ''
@@ -106,6 +115,9 @@ watch(() => props.show, show => {
     form.interval_minutes = 0
     form.parallel = 4
     form.enabled = true
+    form.quarantine_enabled = false
+    form.quarantine_min_samples = 3
+    form.quarantine_threshold = 50
     modelOptions.value = []
     void loadGroupModels(form.route_group_id)
   }
@@ -113,6 +125,7 @@ watch(() => props.show, show => {
 
 watch(() => form.question_kind, kind => {
   form.prompt = defaultPrompt(kind)
+  if (kind !== 'candy') form.quarantine_enabled = false
 })
 
 function onGroupChange(groupId: number | null) {
@@ -140,6 +153,9 @@ async function submit() {
     interval_minutes: form.interval_minutes,
     parallel: form.parallel,
     enabled: form.enabled,
+    quarantine_enabled: form.quarantine_enabled && form.question_kind === 'candy',
+    quarantine_min_samples: form.quarantine_min_samples,
+    quarantine_threshold: form.quarantine_threshold,
   }
   try {
     const saved = props.editing
@@ -202,6 +218,22 @@ async function submit() {
         <ui-switch v-model:value="form.enabled" />
         <span class="muted" style="margin-left: 8px">停用后保留历史结果，不再自动执行</span>
       </ui-form-item>
+      <ui-form-item v-if="form.question_kind === 'candy'" label="自动隔离（答错自动移出分组）">
+        <ui-switch v-model:value="form.quarantine_enabled" />
+        <p class="muted quarantine-rules">
+          开启后：分组内 Key 最近 10 次有效测试中，累计至少
+          <b>{{ form.quarantine_min_samples }}</b> 次且正确率低于
+          <b>{{ form.quarantine_threshold }}%</b> 即自动移出分组（按本轮测试周期累计）；
+          隔离后约 1 分钟内开始复测，未通过则间隔逐次翻倍（最长 30 分钟），答对一次立即回到快速确认，
+          连续两次答对自动加回分组。传输错误不计入正确率。关闭开关不会自动放行已隔离的 Key。
+        </p>
+        <div class="quarantine-rule-row">
+          <span class="rule-label">最少样本数</span>
+          <ui-select v-model:value="form.quarantine_min_samples" :options="INTEL_MIN_SAMPLE_OPTIONS" style="width: 110px" />
+          <span class="rule-label">正确率阈值</span>
+          <ui-select v-model:value="form.quarantine_threshold" :options="INTEL_THRESHOLD_OPTIONS" style="width: 110px" />
+        </div>
+      </ui-form-item>
     </ui-form>
     <template #footer>
       <ui-space justify="end">
@@ -211,3 +243,21 @@ async function submit() {
     </template>
   </ui-modal>
 </template>
+
+<style scoped>
+.quarantine-rules {
+  margin-top: 6px;
+  line-height: 1.7;
+}
+.quarantine-rule-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.rule-label {
+  font-size: 12px;
+  color: #546c58;
+}
+</style>

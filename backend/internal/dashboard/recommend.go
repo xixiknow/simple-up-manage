@@ -60,6 +60,14 @@ type DemandBoard struct {
 	Items  []InvestItem `json:"items"`
 }
 
+// demandKey identifies one service demand: a route group asking for one
+// model over one protocol/path/stream shape.
+type demandKey struct {
+	Group                 uint
+	Model, Protocol, Path string
+	Stream                bool
+}
+
 func (s *Service) Recommendations(ctx context.Context, staleAfter time.Duration) (RecommendationsDTO, error) {
 	now := time.Now().UTC()
 	r24 := Range{From: now.Add(-24 * time.Hour), To: now}
@@ -86,7 +94,7 @@ func (s *Service) Recommendations(ctx context.Context, staleAfter time.Duration)
 
 func (s *Service) urgent(ctx context.Context, r Range, cfg Settings, staleAfter time.Duration) ([]UrgentItem, error) {
 	bal := s.currentBalance(ctx, staleAfter)
-	coverage := s.meta(r).DataQuality.Complete
+	avail := s.availableFrom()
 	var items []UrgentItem
 	for _, p := range bal.Providers {
 		if !p.Enabled || p.Unlimited || p.Unknown || p.BalanceUSD == nil {
@@ -100,14 +108,13 @@ func (s *Service) urgent(ctx context.Context, r Range, cfg Settings, staleAfter 
 		if att.ConsumptionUSD != 0 {
 			it.Consumed24hUSD = ptrFloat(round8(att.ConsumptionUSD))
 		}
-		complete := coverage && r.To.Sub(r.From) >= 24*time.Hour && att.UnknownConsumption == 0 && !p.Stale && p.BalanceAt != nil
 		if att.RequestsCompleted+att.ProviderSuccess+att.ProviderFailure > 0 {
 			den := att.ProviderSuccess + att.ProviderFailure + att.UnknownConsumption
 			if den > 0 {
 				it.Coverage = ratio(att.ProviderSuccess+att.ProviderFailure, den)
 			}
 		}
-		if !complete || p.Stale || att.UnknownConsumption > 0 {
+		if p.BalanceAt == nil {
 			it.Insufficient = true
 			it.Reason = "预测依据不足"
 			items = append(items, it)
@@ -115,17 +122,19 @@ func (s *Service) urgent(ctx context.Context, r Range, cfg Settings, staleAfter 
 		}
 		if att.ConsumptionUSD <= 0 {
 			it.ZeroConsumption = true
-			it.Reason = "暂无消耗"
+			if att.UnknownConsumption > 0 {
+				it.Reason = fmt.Sprintf("暂无已知消耗，另 %d 次尝试消耗未知", att.UnknownConsumption)
+			} else {
+				it.Reason = "暂无消耗"
+			}
 			items = append(items, it)
 			continue
 		}
-		hourly := att.ConsumptionUSD / 24
-		if hourly <= 0 {
-			it.ZeroConsumption = true
-			it.Reason = "暂无消耗"
-			items = append(items, it)
-			continue
-		}
+		// Failed attempts carry no measurable consumption and must not veto the
+		// estimate; they are noted in the reason instead. Stale balances still
+		// predict, with the refresh time called out.
+		observed := s.observedHours(ctx, r, avail, p.ID)
+		hourly := att.ConsumptionUSD / observed
 		hours := *p.BalanceUSD / hourly
 		if hours < 0 {
 			hours = 0
@@ -134,7 +143,13 @@ func (s *Service) urgent(ctx context.Context, r Range, cfg Settings, staleAfter 
 		if hours <= 0 {
 			it.Reason = "余额已耗尽"
 		} else {
-			it.Reason = fmt.Sprintf("预计可支撑 %.1f 小时（阈值 %d 小时）", hours, cfg.RenewalHorizonHours)
+			it.Reason = fmt.Sprintf("预计可支撑 %.1f 小时（按近 %.1f 小时已知消耗 $%.4f 估算）", hours, observed, att.ConsumptionUSD)
+		}
+		if p.Stale {
+			it.Reason += "，余额刷新于 " + p.BalanceAt.In(shanghaiLoc()).Format("01-02 15:04")
+		}
+		if att.UnknownConsumption > 0 {
+			it.Reason += fmt.Sprintf("，另 %d 次尝试消耗未知", att.UnknownConsumption)
 		}
 		items = append(items, it)
 	}
@@ -166,6 +181,31 @@ func (s *Service) urgent(ctx context.Context, r Range, cfg Settings, staleAfter 
 	return filtered, nil
 }
 
+// observedHours normalizes the burn-rate window: traffic that started later
+// than the range (fresh deployment, newly added provider) must not be spread
+// over the whole range, or the projected hours would be inflated.
+func (s *Service) observedHours(ctx context.Context, r Range, avail time.Time, providerID uint) float64 {
+	start := r.From
+	if avail.After(start) {
+		start = avail
+	}
+	var first MinuteAgg
+	err := s.db.WithContext(ctx).
+		Select("bucket").
+		Where("family = ? AND dim = ? AND dim_id = ? AND bucket >= ? AND bucket < ?", FamilyAttempt, DimProvider, providerID, r.From, r.To).
+		Order("bucket ASC").
+		First(&first).Error
+	if err == nil && first.Bucket.After(start) {
+		start = first.Bucket
+	}
+	hours := r.To.Sub(start).Hours()
+	const minObserved = 5 * time.Minute
+	if hours < minObserved.Hours() {
+		hours = minObserved.Hours()
+	}
+	return hours
+}
+
 func (s *Service) invest(ctx context.Context, r Range, cfg Settings) ([]InvestItem, []WatchItem, []DemandBoard, *float64, error) {
 	requestWindow := s.db.WithContext(ctx).Model(&RequestFact{}).
 		Where("completed_at >= ? AND completed_at < ? AND source = ?", r.From, r.To, domain.SourceBusiness)
@@ -182,11 +222,6 @@ func (s *Service) invest(ctx context.Context, r Range, cfg Settings) ([]InvestIt
 	reqBy := map[string]RequestFact{}
 	for _, f := range reqs {
 		reqBy[f.UUID] = f
-	}
-	type demandKey struct {
-		Group                 uint
-		Model, Protocol, Path string
-		Stream                bool
 	}
 	type cell struct {
 		provider              uint
@@ -266,18 +301,15 @@ func (s *Service) invest(ctx context.Context, r Range, cfg Settings) ([]InvestIt
 		for _, c := range m {
 			samples := c.success + c.fail
 			sr := ratio(c.success, samples)
-			p95, _, _ := quantileMS(c.ttftHist, 0.95)
-			ok := samples >= int64(cfg.MinQualitySamples) && sr != nil && *sr >= cfg.MinSuccessRate && c.ttftN >= int64(cfg.MinTTFTSamples) && p95 != nil && *p95 <= float64(cfg.MaxTTFTP95Ms)
+			// TTFT is only measurable on streaming responses, so it never gates
+			// qualification; an out-of-threshold p95 is annotated instead.
+			ok := samples >= int64(cfg.MinQualitySamples) && sr != nil && *sr >= cfg.MinSuccessRate
 			reason := ""
 			if !ok {
-				if c.ttftN < int64(cfg.MinTTFTSamples) {
-					reason = "缺少首字证据，待观察"
-				} else if samples < int64(cfg.MinQualitySamples) {
+				if samples < int64(cfg.MinQualitySamples) {
 					reason = "有效质量样本不足"
-				} else if sr == nil || *sr < cfg.MinSuccessRate {
-					reason = "成功率未达标"
 				} else {
-					reason = "P95 超过门槛"
+					reason = "成功率未达标"
 				}
 				watch = append(watch, WatchItem{ProviderID: c.provider, Name: c.name, Reason: reason, DemandKey: fmt.Sprintf("g%d/%s/%s", dk.Group, dk.Protocol, dk.Model)})
 			}
@@ -304,13 +336,17 @@ func (s *Service) invest(ctx context.Context, r Range, cfg Settings) ([]InvestIt
 		}
 		p95, _, _ := quantileMS(q.c.ttftHist, 0.95)
 		item.TTFTp95MS = p95
+		item.Reason = "质量达标，按单位预估成本毛利排序"
+		if p95 != nil && *p95 > float64(cfg.MaxTTFTP95Ms) {
+			item.Reason += "，首字 P95 超门槛"
+		}
 		if q.c.rateN > 0 {
 			v := q.c.rateSum / float64(q.c.rateN)
 			item.CostMultiplier = &v
 		}
-		item.Reason = "质量达标，按单位预估成本毛利排序"
 		byDemand[q.dk] = append(byDemand[q.dk], item)
 	}
+
 	for k := range byDemand {
 		sort.Slice(byDemand[k], func(i, j int) bool {
 			a, b := byDemand[k][i], byDemand[k][j]
@@ -324,10 +360,8 @@ func (s *Service) invest(ctx context.Context, r Range, cfg Settings) ([]InvestIt
 		})
 	}
 
-	// common demand = intersection of demands that have at least one qualified candidate
-	var common []demandKey
-	first := true
-	var set map[demandKey]struct{}
+	// Common demand = demands served by at least two qualified providers, the
+	// only comparable basis for a cross-provider ranking.
 	providersOK := map[uint]map[demandKey]struct{}{}
 	for dk, items := range byDemand {
 		for _, it := range items {
@@ -337,24 +371,17 @@ func (s *Service) invest(ctx context.Context, r Range, cfg Settings) ([]InvestIt
 			providersOK[it.ProviderID][dk] = struct{}{}
 		}
 	}
-	for pid, ds := range providersOK {
-		_ = pid
-		if first {
-			set = map[demandKey]struct{}{}
-			for d := range ds {
-				set[d] = struct{}{}
-			}
-			first = false
-			continue
-		}
-		for d := range set {
-			if _, ok := ds[d]; !ok {
-				delete(set, d)
-			}
+	demandProviders := map[demandKey]int{}
+	for _, ds := range providersOK {
+		for d := range ds {
+			demandProviders[d]++
 		}
 	}
-	for d := range set {
-		common = append(common, d)
+	var common []demandKey
+	for d, n := range demandProviders {
+		if n >= 2 {
+			common = append(common, d)
+		}
 	}
 
 	var totalBase, commonBase float64
@@ -385,14 +412,11 @@ func (s *Service) invest(ctx context.Context, r Range, cfg Settings) ([]InvestIt
 	sort.Slice(boards, func(i, j int) bool { return boards[i].Key < boards[j].Key })
 
 	var invest []InvestItem
-	if cov != nil && *cov >= cfg.MinCommonDemandCoverage && len(common) > 0 {
+	if len(common) > 0 && cov != nil && *cov >= cfg.MinCommonDemandCoverage && commonBase > 0 {
 		score := map[uint]float64{}
 		metaP := map[uint]InvestItem{}
 		for _, dk := range common {
-			w := 0.0
-			if commonBase > 0 {
-				w = demandBase[dk] / commonBase
-			}
+			w := demandBase[dk] / commonBase
 			for _, it := range byDemand[dk] {
 				if it.ProfitPerCost == nil {
 					continue
@@ -413,6 +437,9 @@ func (s *Service) invest(ctx context.Context, r Range, cfg Settings) ([]InvestIt
 			}
 			return invest[i].ProviderID < invest[j].ProviderID
 		})
+	}
+	if len(invest) == 0 {
+		invest = fallbackInvest(byDemand, providersOK, demandBase)
 	}
 
 	bal := s.currentBalance(ctx, 2*time.Minute)
@@ -442,4 +469,70 @@ func (s *Service) invest(ctx context.Context, r Range, cfg Settings) ([]InvestIt
 		}
 	}
 	return invest, watch, boards, cov, nil
+}
+
+// fallbackInvest ranks each provider on its own qualified demands when no
+// comparable common demand exists, so a single qualifying provider still
+// produces a recommendation. Weighting follows each demand's request volume;
+// representative fields come from the provider's largest demand.
+func fallbackInvest(byDemand map[demandKey][]InvestItem, providersOK map[uint]map[demandKey]struct{}, demandBase map[demandKey]float64) []InvestItem {
+	type acc struct {
+		score   float64
+		samples int64
+		rep     InvestItem
+		repBase float64
+		hasRep  bool
+	}
+	accBy := map[uint]*acc{}
+	for pid, ds := range providersOK {
+		total := 0.0
+		for d := range ds {
+			if demandBase[d] > 0 {
+				total += demandBase[d]
+			}
+		}
+		a := &acc{}
+		for d := range ds {
+			var item *InvestItem
+			for i := range byDemand[d] {
+				if byDemand[d][i].ProviderID == pid {
+					item = &byDemand[d][i]
+					break
+				}
+			}
+			if item == nil || item.ProfitPerCost == nil {
+				continue
+			}
+			w := 0.0
+			if total > 0 && demandBase[d] > 0 {
+				w = demandBase[d] / total
+			} else {
+				w = 1 / float64(len(ds))
+			}
+			a.score += w * *item.ProfitPerCost
+			a.samples += item.Samples
+			if !a.hasRep || demandBase[d] > a.repBase {
+				a.rep, a.repBase, a.hasRep = *item, demandBase[d], true
+			}
+		}
+		if a.hasRep {
+			accBy[pid] = a
+		}
+	}
+	out := make([]InvestItem, 0, len(accBy))
+	for _, a := range accBy {
+		it := a.rep
+		sc := a.score
+		it.ProfitPerCost = &sc
+		it.Samples = a.samples
+		it.Reason = "按各自可服务需求加权预估性价比（无可比共同需求）"
+		out = append(out, it)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ProfitPerCost != nil && out[j].ProfitPerCost != nil && *out[i].ProfitPerCost != *out[j].ProfitPerCost {
+			return *out[i].ProfitPerCost > *out[j].ProfitPerCost
+		}
+		return out[i].ProviderID < out[j].ProviderID
+	})
+	return out
 }

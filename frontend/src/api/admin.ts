@@ -9,8 +9,9 @@ import type {
   PlatformKey,
   Protocol,
   PlatformKeyPayload,
-  RateChangeNotice,
-  RateNoticeUnreadCount,
+  Notice,
+  NoticeKind,
+  NoticeUnreadCount,
   RequestLog,
   RequestLogDetail,
   RequestLogQuery,
@@ -271,20 +272,20 @@ export function explainScheduler(params: {
   return get<SchedulerExplain>('/scheduler/explain', params)
 }
 
-export function listRateNotices(params?: ListParams & { unread?: number }) {
-  return getList<RateChangeNotice>('/rate-notices', params)
+export function listNotices(params?: ListParams & { unread?: number; kind?: NoticeKind }) {
+  return getList<Notice>('/notices', params)
 }
 
-export function getRateNoticeUnreadCount() {
-  return get<RateNoticeUnreadCount>('/rate-notices/unread-count')
+export function getNoticeUnreadCount() {
+  return get<NoticeUnreadCount>('/notices/unread-count')
 }
 
-export function markRateNoticeRead(id: number) {
-  return post<RateChangeNotice>(`/rate-notices/${id}/read`)
+export function markNoticeRead(id: number) {
+  return post<Notice>(`/notices/${id}/read`)
 }
 
-export function markAllRateNoticesRead() {
-  return post<RateNoticeUnreadCount>('/rate-notices/read-all')
+export function markAllNoticesRead(kind?: NoticeKind) {
+  return post<NoticeUnreadCount>('/notices/read-all', {}, kind ? { kind } : undefined)
 }
 
 export function getModelCatalog() {

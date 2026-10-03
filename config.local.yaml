@@ -10,5 +10,6 @@ jobs:
   billing_interval: 1m
   probe_interval: 1m
   catalog_interval: 24h
+  models_interval: 1h
   log_retention: 24h
   log_retention_interval: 1h

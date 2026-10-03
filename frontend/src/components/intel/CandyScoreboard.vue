@@ -31,6 +31,7 @@ const sorted = computed(() => {
 const totals = computed(() => {
   const samples = stats.value.reduce((n, s) => n + s.samples, 0)
   const success = stats.value.reduce((n, s) => n + s.success, 0)
+  const quarantined = stats.value.filter(s => s.quarantine?.status === 'quarantined').length
   const latencyRows = stats.value.filter(s => s.success > 0 && s.avg_latency_ms > 0)
   const avgLatency = latencyRows.length
     ? latencyRows.reduce((n, s) => n + s.avg_latency_ms * s.success, 0) / latencyRows.reduce((n, s) => n + s.success, 0)
@@ -39,6 +40,7 @@ const totals = computed(() => {
     keys: stats.value.length,
     samples,
     success,
+    quarantined,
     accuracy: samples ? (success / samples) * 100 : 0,
     avgLatency,
   }
@@ -56,6 +58,30 @@ const VERDICT_LABEL: Record<string, string> = {
   incorrect: '答错',
   invalid: '非 HTML',
   error: '出错',
+}
+
+function quarantineCell(row: IntelKeyStat) {
+  const q = row.quarantine
+  if (!q) return '—'
+  if (q.status === 'restored') {
+    return h('div', { class: 'quarantine-cell' }, [
+      h(UiTag, { type: 'success', size: 'small', bordered: false }, { default: () => '已恢复' }),
+      q.restored_at ? h('span', { class: 'quarantine-sub' }, formatTime(q.restored_at)) : null,
+    ])
+  }
+  const sub: string[] = [`连续正确 ${q.pass_streak}/2`]
+  if (q.next_test_at) {
+    const waitSec = Math.max(0, Math.round((new Date(q.next_test_at).getTime() - Date.now()) / 1000))
+    sub.push(waitSec >= 60 ? `约 ${Math.ceil(waitSec / 60)} 分钟后复测` : '即将复测')
+  }
+  if (q.quarantine_count > 1) sub.push(`第 ${q.quarantine_count} 次隔离`)
+  return h('div', {
+    class: 'quarantine-cell quarantined',
+    title: q.reason || '最近 10 次有效测试正确率低于 50%',
+  }, [
+    h(UiTag, { type: 'error', size: 'small', bordered: false }, { default: () => '隔离中' }),
+    h('span', { class: 'quarantine-sub' }, sub.join(' · ')),
+  ])
 }
 
 const columns: DataTableColumns<IntelKeyStat> = [
@@ -84,6 +110,10 @@ const columns: DataTableColumns<IntelKeyStat> = [
           size: 'small', bordered: false,
         }, { default: () => VERDICT_LABEL[row.last_verdict] || row.last_verdict })
       : '—',
+  },
+  {
+    title: '隔离', key: 'quarantine', width: 190,
+    render: row => quarantineCell(row),
   },
   { title: '最近测试', key: 'last_at', width: 160, mobileHide: true, render: row => (row.last_at ? formatTime(row.last_at) : '—') },
   {
@@ -121,6 +151,10 @@ onBeforeUnmount(() => {
       <div class="summary-item"><span class="summary-value">{{ totals.success }} / {{ totals.samples }}</span><span class="summary-label">正确 / 测试</span></div>
       <div class="summary-item"><span class="summary-value" :class="accuracyType(totals.accuracy) === 'success' ? 'good' : accuracyType(totals.accuracy) === 'warning' ? 'mid' : 'poor'">{{ totals.accuracy.toFixed(1) }}%</span><span class="summary-label">总体正确率</span></div>
       <div class="summary-item"><span class="summary-value">{{ totals.avgLatency ? formatDurationMs(Math.round(totals.avgLatency)) : '—' }}</span><span class="summary-label">平均耗时</span></div>
+      <div v-if="totals.quarantined > 0" class="summary-item warn-item">
+        <span class="summary-value poor">{{ totals.quarantined }}</span>
+        <span class="summary-label">隔离中（已移出分组，按退避节奏复测）</span>
+      </div>
     </div>
     <ui-alert v-if="error" type="error" :bordered="false">{{ error }}</ui-alert>
     <ui-data-table
@@ -178,6 +212,23 @@ onBeforeUnmount(() => {
 .summary-label {
   font-size: 11px;
   color: #819087;
+}
+.warn-item {
+  background: #f7ece4;
+}
+.quarantine-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: flex-start;
+}
+.quarantine-cell.quarantined {
+  cursor: help;
+}
+.quarantine-sub {
+  font-size: 11px;
+  color: #819087;
+  line-height: 1.4;
 }
 .sort-row {
   display: flex;
