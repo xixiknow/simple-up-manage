@@ -116,9 +116,10 @@ function balanceStatus(r: DashProviderBalance) {
 }
 
 const balanceColumns: DataTableColumns<DashProviderBalance> = [
-  { title: '提供商', key: 'name', ellipsis: { tooltip: true }, minWidth: 110 },
-  { title: '余额', key: 'balance_usd', width: 110, render: balanceAmount },
-  { title: '状态', key: 'status', width: 90, render: (r) => balanceStatus(r) || '—' },
+  { title: '提供商', key: 'name', ellipsis: { tooltip: true }, minWidth: 100 },
+  { title: '消耗', key: 'consumption_usd', width: 90, render: (r) => (r.consumption_usd == null ? '—' : money(r.consumption_usd)) },
+  { title: '余额', key: 'balance_usd', width: 100, render: balanceAmount },
+  { title: '状态', key: 'status', width: 80, render: (r) => balanceStatus(r) || '—' },
   { title: '刷新时间', key: 'balance_at', width: 150, render: (r) => (r.balance_at ? formatTime(r.balance_at) : '—') },
 ]
 
@@ -141,7 +142,7 @@ const providerColumns: DataTableColumns<DashRankingRow> = [
 const urgentColumns: DataTableColumns<DashUrgentItem> = [
   { title: '提供商', key: 'name', ellipsis: { tooltip: true }, minWidth: 120 },
   { title: '余额', key: 'balance_usd', width: 100, render: (r) => money(r.balance_usd) },
-  { title: '预计小时', key: 'hours_left', width: 90, render: (r) => (r.zero_consumption ? '暂无消耗' : r.hours_left == null ? '—' : r.hours_left.toFixed(1)) },
+  { title: '预计小时', key: 'hours_left', width: 90, render: (r) => (r.hours_left == null ? '—' : r.hours_left.toFixed(1)) },
   { title: '24h 消耗', key: 'consumed_24h_usd', width: 100, render: (r) => money(r.consumed_24h_usd) },
   { title: '原因', key: 'reason', ellipsis: { tooltip: true }, minWidth: 160 },
   { title: '', key: 'go', width: 70, render: (r) => h(UiButton, { size: 'tiny', text: true, type: 'primary', onClick: () => goProvider(r.provider_id) }, { default: () => '查看' }) },
@@ -242,9 +243,9 @@ onUnmounted(() => {
         <ui-card size="small" title="当前余额" embedded>
           <div class="metric-v">{{ money(overview?.balance.total_known_usd) }}</div>
           <div class="muted">启用提供商 {{ money(overview?.balance.enabled_known_usd) }} · 不限额 {{ overview?.balance.unlimited_count ?? 0 }} · 未知 {{ overview?.balance.unknown_count ?? 0 }} · 过期 {{ overview?.balance.stale_count ?? 0 }}</div>
-          <div class="muted">余额刷新时间 {{ formatTime(overview?.balance.refreshed_at) }}，与本页查询时间无关</div>
+          <div class="muted">明细按所选周期消耗、余额降序排列；余额刷新时间 {{ formatTime(overview?.balance.refreshed_at) }}，与本页查询时间无关</div>
           <div v-if="balanceRows.length" class="bal-list">
-            <ui-data-table size="small" :columns="balanceColumns" :data="balanceRows" :scroll-x="480" :pagination="false" />
+            <ui-data-table size="small" :columns="balanceColumns" :data="balanceRows" :scroll-x="540" :pagination="false" />
           </div>
           <ui-empty v-else description="暂无提供商余额数据" />
         </ui-card>
@@ -275,7 +276,7 @@ onUnmounted(() => {
     <div class="chart-grid">
       <ui-card size="small" title="急需充值（近 24 小时）" :bordered="false">
         <ui-data-table size="small" :columns="urgentColumns" :data="recs?.urgent ?? []" :scroll-x="720" />
-        <div class="muted" style="margin-top: 8px">仅按本网关流量估算，不把其他渠道用量当作已知。</div>
+        <div class="muted" style="margin-top: 8px">仅按本网关流量估算，不把其他渠道用量当作已知；近 24 小时无消耗的提供商不会出现在这里。</div>
       </ui-card>
       <ui-card size="small" title="值得投入 · 预估性价比（近 7 天）" :bordered="false">
         <ui-data-table size="small" :columns="investColumns" :data="recs?.invest ?? []" :scroll-x="860" />

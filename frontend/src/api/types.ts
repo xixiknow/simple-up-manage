@@ -628,6 +628,7 @@ export type DashProviderBalance = {
   unlimited: boolean
   unknown: boolean
   stale: boolean
+  consumption_usd?: number | null
 }
 
 export type DashBalance = {
@@ -719,7 +720,6 @@ export type DashUrgentItem = {
   coverage?: number | null
   reason: string
   insufficient: boolean
-  zero_consumption: boolean
   health_note?: string
 }
 

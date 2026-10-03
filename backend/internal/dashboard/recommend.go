@@ -20,16 +20,15 @@ type RecommendationsDTO struct {
 }
 
 type UrgentItem struct {
-	ProviderID      uint     `json:"provider_id"`
-	Name            string   `json:"name"`
-	BalanceUSD      *float64 `json:"balance_usd"`
-	HoursLeft       *float64 `json:"hours_left"`
-	Consumed24hUSD  *float64 `json:"consumed_24h_usd"`
-	Coverage        *float64 `json:"coverage"`
-	Reason          string   `json:"reason"`
-	Insufficient    bool     `json:"insufficient"`
-	ZeroConsumption bool     `json:"zero_consumption"`
-	HealthNote      string   `json:"health_note,omitempty"`
+	ProviderID     uint     `json:"provider_id"`
+	Name           string   `json:"name"`
+	BalanceUSD     *float64 `json:"balance_usd"`
+	HoursLeft      *float64 `json:"hours_left"`
+	Consumed24hUSD *float64 `json:"consumed_24h_usd"`
+	Coverage       *float64 `json:"coverage"`
+	Reason         string   `json:"reason"`
+	Insufficient   bool     `json:"insufficient"`
+	HealthNote     string   `json:"health_note,omitempty"`
 }
 
 type InvestItem struct {
@@ -121,13 +120,15 @@ func (s *Service) urgent(ctx context.Context, r Range, cfg Settings, staleAfter 
 			continue
 		}
 		if att.ConsumptionUSD <= 0 {
-			it.ZeroConsumption = true
-			if att.UnknownConsumption > 0 {
-				it.Reason = fmt.Sprintf("暂无已知消耗，另 %d 次尝试消耗未知", att.UnknownConsumption)
-			} else {
-				it.Reason = "暂无消耗"
+			// No measurable burn: recharge is only urgent while usage drains the
+			// balance, so idle providers drop out entirely. A depleted provider
+			// that is still being attempted stays as the top-priority case.
+			if att.ProviderSuccess+att.ProviderFailure > 0 && *p.BalanceUSD <= 0 {
+				hours := 0.0
+				it.HoursLeft = &hours
+				it.Reason = "余额已耗尽，近 24 小时无已知消耗但仍被调度"
+				items = append(items, it)
 			}
-			items = append(items, it)
 			continue
 		}
 		// Failed attempts carry no measurable consumption and must not veto the

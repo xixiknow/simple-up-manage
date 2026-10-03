@@ -277,7 +277,7 @@ func TestShutdownDrainsDependencyRetriesAfterClosingStreams(t *testing.T) {
 }
 
 func TestUrgentPredictsFromObservedWindow(t *testing.T) {
-	for _, mode := range []string{"steady", "fresh", "gap", "unknown", "stale", "zero", "nobalanceat"} {
+	for _, mode := range []string{"steady", "fresh", "gap", "unknown", "stale", "noburn", "depleted", "idle", "idledepleted", "nobalanceat"} {
 		t.Run(mode, func(t *testing.T) {
 			db := dashboardTestDB(t)
 			now := time.Now().UTC().Truncate(time.Minute)
@@ -291,6 +291,12 @@ func TestUrgentPredictsFromObservedWindow(t *testing.T) {
 			}
 			put(t, db, &Meta{ID: 1, AvailableFrom: available})
 			balance := 12.0
+			switch mode {
+			case "depleted":
+				balance = 0
+			case "idledepleted":
+				balance = -2
+			}
 			up := &domain.Upstream{ID: 1, Name: "p", Status: domain.StatusEnabled, LastBalance: &balance, LastBalanceAt: &balanceAt}
 			if mode == "nobalanceat" {
 				up.LastBalanceAt = nil
@@ -305,11 +311,13 @@ func TestUrgentPredictsFromObservedWindow(t *testing.T) {
 				buckets = []MinuteAgg{{Bucket: now.Add(-time.Hour), Family: FamilyAttempt, Dim: DimProvider, DimID: 1, ConsumptionUSD: 24, ProviderSuccess: 1}}
 			case "unknown":
 				buckets[1].UnknownConsumption = 7
-			case "zero":
+			case "noburn", "depleted":
 				buckets = []MinuteAgg{
 					{Bucket: now.Add(-24 * time.Hour), Family: FamilyAttempt, Dim: DimProvider, DimID: 1, ProviderFailure: 3},
 					{Bucket: now.Add(-time.Minute), Family: FamilyAttempt, Dim: DimProvider, DimID: 1, ProviderFailure: 3, UnknownConsumption: 5},
 				}
+			case "idle", "idledepleted":
+				buckets = nil
 			}
 			for i := range buckets {
 				put(t, db, &buckets[i])
@@ -321,6 +329,12 @@ func TestUrgentPredictsFromObservedWindow(t *testing.T) {
 			items, err := s.urgent(context.Background(), Range{From: now.Add(-24 * time.Hour), To: now}, DefaultSettings(), 2*time.Minute)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if mode == "noburn" || mode == "idle" || mode == "idledepleted" {
+				if len(items) != 0 {
+					t.Fatalf("expected idle provider to be excluded: %+v", items)
+				}
+				return
 			}
 			if len(items) != 1 {
 				t.Fatalf("items=%+v", items)
@@ -346,9 +360,9 @@ func TestUrgentPredictsFromObservedWindow(t *testing.T) {
 				if it.HoursLeft == nil || !strings.Contains(it.Reason, "余额刷新于") {
 					t.Fatalf("stale note missing: %+v", it)
 				}
-			case "zero":
-				if !it.ZeroConsumption || it.HoursLeft != nil || !strings.Contains(it.Reason, "5 次尝试消耗未知") {
-					t.Fatalf("zero consumption handling: %+v", it)
+			case "depleted":
+				if it.HoursLeft == nil || *it.HoursLeft != 0 || !strings.Contains(it.Reason, "余额已耗尽") {
+					t.Fatalf("depleted handling: %+v", it)
 				}
 			case "nobalanceat":
 				if !it.Insufficient || it.HoursLeft != nil {
@@ -356,6 +370,40 @@ func TestUrgentPredictsFromObservedWindow(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestOverviewBalanceOrderByUsageThenBalance(t *testing.T) {
+	db := dashboardTestDB(t)
+	now := time.Now().UTC().Truncate(time.Minute)
+	put(t, db, &Meta{ID: 1, AvailableFrom: now.Add(-48 * time.Hour)})
+	small, big, idle := 40.0, 100.0, 60.0
+	put(t, db, &domain.Upstream{ID: 1, Name: "used-low", Status: domain.StatusEnabled, LastBalance: &small, LastBalanceAt: &now})
+	put(t, db, &domain.Upstream{ID: 2, Name: "used-high", Status: domain.StatusEnabled, LastBalance: &big, LastBalanceAt: &now})
+	put(t, db, &domain.Upstream{ID: 3, Name: "idle", Status: domain.StatusEnabled, LastBalance: &idle, LastBalanceAt: &now})
+	put(t, db, &domain.Upstream{ID: 4, Name: "unlimited", Status: domain.StatusEnabled, LastBalanceAt: &now})
+	for _, id := range []uint{1, 2, 4} {
+		put(t, db, &MinuteAgg{Bucket: now.Add(-time.Hour), Family: FamilyAttempt, Dim: DimProvider, DimID: id, ConsumptionUSD: 3, ProviderSuccess: 1})
+	}
+	s := &Service{db: db}
+	out, err := s.Overview(context.Background(), Range{From: now.Add(-24 * time.Hour), To: now}, 2*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []uint{4, 2, 1, 3}
+	if len(out.Balance.Providers) != len(want) {
+		t.Fatalf("providers=%+v", out.Balance.Providers)
+	}
+	for i, p := range out.Balance.Providers {
+		if p.ID != want[i] {
+			t.Fatalf("order = %+v", out.Balance.Providers)
+		}
+	}
+	if out.Balance.Providers[2].ConsumptionUSD == nil || *out.Balance.Providers[2].ConsumptionUSD != 3 {
+		t.Fatalf("consumption missing: %+v", out.Balance.Providers[2])
+	}
+	if out.Balance.Providers[3].ConsumptionUSD != nil {
+		t.Fatalf("idle consumption should stay nil: %+v", out.Balance.Providers[3])
 	}
 }
 

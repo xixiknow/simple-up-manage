@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -71,15 +72,16 @@ type BalanceDTO struct {
 }
 
 type ProviderBalance struct {
-	ID         uint       `json:"id"`
-	Name       string     `json:"name"`
-	Enabled    bool       `json:"enabled"`
-	BalanceUSD *float64   `json:"balance_usd"`
-	BalanceAt  *time.Time `json:"balance_at"`
-	Kind       string     `json:"kind"`
-	Unlimited  bool       `json:"unlimited"`
-	Unknown    bool       `json:"unknown"`
-	Stale      bool       `json:"stale"`
+	ID             uint       `json:"id"`
+	Name           string     `json:"name"`
+	Enabled        bool       `json:"enabled"`
+	BalanceUSD     *float64   `json:"balance_usd"`
+	BalanceAt      *time.Time `json:"balance_at"`
+	Kind           string     `json:"kind"`
+	Unlimited      bool       `json:"unlimited"`
+	Unknown        bool       `json:"unknown"`
+	Stale          bool       `json:"stale"`
+	ConsumptionUSD *float64   `json:"consumption_usd"`
 }
 
 type OverviewDTO struct {
@@ -269,7 +271,54 @@ func (s *Service) Overview(ctx context.Context, r Range, balanceStale time.Durat
 		ReasonInterrupted:  req.InterruptedCount,
 	}
 	out.Balance = s.currentBalance(ctx, balanceStale)
+	if err := s.fillBalanceConsumption(ctx, r, &out.Balance); err != nil {
+		return OverviewDTO{}, err
+	}
 	return out, nil
+}
+
+// fillBalanceConsumption attaches each provider's consumption over the queried
+// range and reorders the list by usage then balance, so actively burning
+// providers surface first and idle ones sink.
+func (s *Service) fillBalanceConsumption(ctx context.Context, r Range, bal *BalanceDTO) error {
+	attRows, err := s.listDim(ctx, r, FamilyAttempt, DimProvider)
+	if err != nil {
+		return err
+	}
+	consumed := map[uint]float64{}
+	for _, row := range attRows {
+		consumed[row.DimID] = row.ConsumptionUSD
+	}
+	for i := range bal.Providers {
+		if c, ok := consumed[bal.Providers[i].ID]; ok && c != 0 {
+			bal.Providers[i].ConsumptionUSD = ptrFloat(round8(c))
+		}
+	}
+	sort.SliceStable(bal.Providers, func(i, j int) bool {
+		ca, cb := balanceConsumed(bal.Providers[i]), balanceConsumed(bal.Providers[j])
+		if ca != cb {
+			return ca > cb
+		}
+		return balanceSortKey(bal.Providers[i]) > balanceSortKey(bal.Providers[j])
+	})
+	return nil
+}
+
+func balanceConsumed(p ProviderBalance) float64 {
+	if p.ConsumptionUSD == nil {
+		return 0
+	}
+	return *p.ConsumptionUSD
+}
+
+func balanceSortKey(p ProviderBalance) float64 {
+	if p.Unlimited {
+		return math.Inf(1)
+	}
+	if p.BalanceUSD == nil {
+		return 0
+	}
+	return *p.BalanceUSD
 }
 
 func (s *Service) Trends(ctx context.Context, r Range, gran string) (TrendsDTO, error) {
