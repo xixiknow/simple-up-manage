@@ -108,7 +108,7 @@ func (b *intelPlanBody) apply(plan *domain.IntelTestPlan, now time.Time) {
 	} else {
 		plan.QuarantineMinSamples, plan.QuarantineThreshold = 0, 0
 	}
-	if plan.Enabled && plan.IntervalMinutes >= 15 {
+	if plan.Enabled && plan.IntervalMinutes >= domain.IntelMinIntervalMinutes {
 		next := now.Add(time.Duration(plan.IntervalMinutes) * time.Minute)
 		plan.NextRunAt = &next
 	} else {

@@ -197,7 +197,7 @@ func (s *Service) runIntelSamples(plan domain.IntelTestPlan, runID uint, keys []
 	// not advance the plan's full-run cadence.
 	if scope == domain.IntelRunScopeFull {
 		updates := map[string]any{"last_run_at": now, "next_run_at": nil}
-		if plan.Enabled && plan.IntervalMinutes >= 15 {
+		if plan.Enabled && plan.IntervalMinutes >= domain.IntelMinIntervalMinutes {
 			updates["next_run_at"] = now.Add(time.Duration(plan.IntervalMinutes) * time.Minute)
 		}
 		if err := s.DB.Model(&domain.IntelTestPlan{}).Where("id = ?", plan.ID).Updates(updates).Error; err != nil {
@@ -407,7 +407,7 @@ func (s *Service) RunDueIntelPlans() {
 	s.finalizeStaleIntelRuns()
 	var plans []domain.IntelTestPlan
 	now := time.Now()
-	if err := s.DB.Where("enabled = ? AND interval_minutes >= ? AND (next_run_at IS NULL OR next_run_at <= ?)", true, 15, now).Find(&plans).Error; err != nil {
+	if err := s.DB.Where("enabled = ? AND interval_minutes >= ? AND (next_run_at IS NULL OR next_run_at <= ?)", true, domain.IntelMinIntervalMinutes, now).Find(&plans).Error; err != nil {
 		return
 	}
 	for i := range plans {

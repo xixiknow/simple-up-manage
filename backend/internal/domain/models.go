@@ -431,6 +431,11 @@ type IntelTestPlan struct {
 }
 
 const (
+	// IntelMinIntervalMinutes is the smallest schedulable test round interval;
+	// the handler validation, next-run advancement and the due-plan scan all
+	// share it so a configurable cadence actually executes.
+	IntelMinIntervalMinutes = 5
+
 	IntelQuarantineDefaultMinSamples = 3
 	IntelQuarantineDefaultThreshold  = 50.0
 	// IntelQuarantineMaxWindow caps both the accuracy look-back window and the

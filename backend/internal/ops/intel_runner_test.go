@@ -258,6 +258,43 @@ func TestIntelRunAnthropicProtocol(t *testing.T) {
 	}
 }
 
+// Regression: the 5-minute cadence must actually be scheduled. The due-plan
+// scan and next-run advancement used to keep a stale 15-minute floor, so a
+// 5-minute plan never executed.
+func TestIntelRunDueFiveMinuteInterval(t *testing.T) {
+	s, group := newIntelEnv(t, "openai", "21", 0)
+	plan := s.intelPlan(t, group.ID, domain.IntelQuestionCandy, "gpt-fixture")
+	past := time.Now().Add(-time.Hour)
+	if err := s.DB.Model(plan).Updates(map[string]any{"enabled": true, "interval_minutes": 5, "next_run_at": past}).Error; err != nil {
+		t.Fatal(err)
+	}
+	s.RunDueIntelPlans()
+	deadline := time.Now().Add(5 * time.Second)
+	var run domain.IntelTestRun
+	for {
+		err := s.DB.Where("plan_id = ?", plan.ID).Order("id DESC").First(&run).Error
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("5-minute interval plan was never scheduled")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	finished := waitIntelRun(t, s, plan.ID, run.ID)
+	run = finished
+	var updated domain.IntelTestPlan
+	if err := s.DB.First(&updated, plan.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if updated.NextRunAt == nil {
+		t.Fatal("next_run_at not advanced after the run")
+	}
+	if diff := time.Until(*updated.NextRunAt); diff < 4*time.Minute || diff > 6*time.Minute {
+		t.Fatalf("next_run_at delta = %v, want ~5 minutes", diff)
+	}
+}
+
 func TestIntelRunInProgressGuard(t *testing.T) {
 	s, group := newIntelEnv(t, "openai", "21", 300*time.Millisecond)
 	plan := s.intelPlan(t, group.ID, domain.IntelQuestionCandy, "gpt-fixture")
