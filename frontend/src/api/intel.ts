@@ -54,6 +54,10 @@ export type IntelTestPlan = {
   updated_at: string
 }
 
+/**
+ * 滚动窗口统计：正确率/计数/平均耗时按最近 10 次有效测试（verdict ≠ error）
+ * 计算，传输错误不计入；历史时间线另取最近 20 次（含错误）。
+ */
 export type IntelPlanStats = {
   samples: number
   success: number

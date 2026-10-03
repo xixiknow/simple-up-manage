@@ -112,7 +112,7 @@ const planColumns: DataTableColumns<IntelPlanItem> = [
   { title: '模型', key: 'model', width: 200, ellipsis: { tooltip: true } },
   { title: '题型', key: 'question_kind', width: 90, mobileTag: true, render: row => kindTag(row.question_kind) },
   { title: '周期', key: 'interval_minutes', width: 105, render: row => describeInterval(row.interval_minutes) },
-  { title: '正确率', key: 'stats', width: 130, mobileTag: true, render: row => accuracyTag(row) },
+  { title: '近期正确率', key: 'stats', width: 130, mobileTag: true, render: row => accuracyTag(row) },
   { title: '最近运行', key: 'last_run', width: 210, render: row => runSummary(row) },
   {
     title: '自动', key: 'enabled', width: 80,
@@ -308,7 +308,7 @@ watch(selectedId, () => {
         <span class="meta-chip">{{ describeInterval(selected.interval_minutes) }}</span>
         <span class="meta-chip">并发 {{ selected.parallel }}</span>
         <span v-if="selected.stats.samples" class="meta-chip">
-          正确率 {{ selected.stats.accuracy.toFixed(1) }}% · 平均 {{ selected.stats.avg_latency_ms ? formatDurationMs(Math.round(selected.stats.avg_latency_ms)) : '—' }}
+          近10轮正确率 {{ selected.stats.accuracy.toFixed(1) }}% · 平均 {{ selected.stats.avg_latency_ms ? formatDurationMs(Math.round(selected.stats.avg_latency_ms)) : '—' }}
         </span>
         <span v-if="selected.quarantined_count > 0" class="meta-chip quarantined-chip">隔离中 {{ selected.quarantined_count }}（已移出分组，退避复测中）</span>
         <span v-if="selected.next_run_at" class="meta-chip">下次自动 {{ formatTime(selected.next_run_at) }}</span>

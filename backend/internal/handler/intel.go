@@ -124,11 +124,9 @@ func (h *Admin) ListIntelPlans(c *gin.Context) {
 	}
 	planIDs := make([]uint, 0, len(plans))
 	groupIDs := make([]uint, 0, len(plans))
-	byKind := map[uint]string{}
 	for _, p := range plans {
 		planIDs = append(planIDs, p.ID)
 		groupIDs = append(groupIDs, p.RouteGroupID)
-		byKind[p.ID] = p.QuestionKind
 	}
 	groupNames := map[uint]string{}
 	if len(groupIDs) > 0 {
@@ -152,39 +150,32 @@ func (h *Admin) ListIntelPlans(c *gin.Context) {
 			lastRuns[runs[i].PlanID] = &runs[i]
 		}
 	}
+	// Plan stats are a rolling view: the newest window of effective (judged)
+	// results, so old failures do not haunt a key's accuracy forever.
 	stats := map[uint]intelPlanStats{}
-	if len(planIDs) > 0 {
-		var rows []struct {
-			PlanID     uint
-			Verdict    string
-			Count      int64
-			AvgLatency float64
-		}
-		if err := h.DB.Model(&domain.IntelTestResult{}).
-			Select("plan_id, verdict, COUNT(*) AS count, AVG(latency_ms) AS avg_latency").
-			Where("plan_id IN ?", planIDs).
-			Group("plan_id, verdict").Scan(&rows).Error; err != nil {
+	for _, p := range plans {
+		var rows []domain.IntelTestResult
+		if err := h.DB.Where("plan_id = ? AND verdict <> ?", p.ID, domain.IntelVerdictError).
+			Order("id DESC").Limit(intelStatsWindow).Find(&rows).Error; err != nil {
 			httpx.Internal(c, err.Error())
 			return
 		}
-		for _, row := range rows {
-			st := stats[row.PlanID]
-			st.Samples += row.Count
-			if row.Verdict == domain.IntelSuccessVerdict(byKind[row.PlanID]) {
-				st.Success += row.Count
-				st.AvgLatencyMs += row.AvgLatency * float64(row.Count)
+		st := intelPlanStats{Samples: int64(len(rows))}
+		var latencySum int64
+		successVerdict := domain.IntelSuccessVerdict(p.QuestionKind)
+		for _, r := range rows {
+			if r.Verdict == successVerdict {
+				st.Success++
+				latencySum += int64(r.LatencyMs)
 			}
-			stats[row.PlanID] = st
 		}
-		for id, st := range stats {
-			if st.Success > 0 {
-				st.AvgLatencyMs /= float64(st.Success)
-			}
-			if st.Samples > 0 {
-				st.Accuracy = float64(st.Success) / float64(st.Samples) * 100
-			}
-			stats[id] = st
+		if st.Samples > 0 {
+			st.Accuracy = float64(st.Success) / float64(st.Samples) * 100
 		}
+		if st.Success > 0 {
+			st.AvgLatencyMs = float64(latencySum) / float64(st.Success)
+		}
+		stats[p.ID] = st
 	}
 	quarantined := map[uint]int64{}
 	if len(planIDs) > 0 {
@@ -398,6 +389,11 @@ type intelVerdictPoint struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
+// intelStatsWindow is the rolling window for displayed accuracy / counts:
+// the newest effective (judged) results per plan or key. Transport errors are
+// excluded, matching the quarantine trigger's notion of evidence.
+const intelStatsWindow = 10
+
 type intelQuarantineInfo struct {
 	Status          string     `json:"status"`
 	PassStreak      int        `json:"pass_streak"`
@@ -440,37 +436,46 @@ func (h *Admin) IntelPlanSummary(c *gin.Context) {
 	}
 	successVerdict := domain.IntelSuccessVerdict(plan.QuestionKind)
 
-	var stats []intelKeyStat
-	if err := h.DB.Model(&domain.IntelTestResult{}).
-		Select("platform_key_id, MAX(upstream_id) AS upstream_id, MAX(key_name) AS key_name, MAX(upstream_name) AS upstream_name, "+
-			"COUNT(*) AS samples, SUM(CASE WHEN verdict = ? THEN 1 ELSE 0 END) AS success, "+
-			"AVG(CASE WHEN verdict = ? THEN latency_ms END) AS avg_latency_ms, MAX(id) AS last_result_id", successVerdict, successVerdict).
-		Where("plan_id = ?", id).
-		Group("platform_key_id").Scan(&stats).Error; err != nil {
-		httpx.Internal(c, err.Error())
-		return
-	}
-
-	// Per-key verdict strips come from the newest window of results.
-	const historyWindow = 1000
+	// One pass over the newest results feeds both the per-key history strips
+	// (newest 20, errors included) and the rolling accuracy stats (newest 10
+	// effective results, transport errors excluded).
+	const historyWindow = 2000
 	const historyPerKey = 20
+	const statsWindow = intelStatsWindow
+
 	var recent []domain.IntelTestResult
 	if err := h.DB.Where("plan_id = ?", id).Order("id DESC").Limit(historyWindow).Find(&recent).Error; err != nil {
 		httpx.Internal(c, err.Error())
 		return
 	}
+	type keyAgg struct {
+		UpstreamID   uint
+		KeyName      string
+		UpstreamName string
+		Samples      int64
+		Success      int64
+		LatencySum   int64
+	}
+	aggs := map[uint]*keyAgg{}
 	byKey := map[uint][]intelVerdictPoint{}
-	latest := map[uint]domain.IntelTestResult{}
 	for _, r := range recent {
-		if len(byKey[r.PlatformKeyID]) >= historyPerKey {
-			continue
+		agg := aggs[r.PlatformKeyID]
+		if agg == nil {
+			agg = &keyAgg{UpstreamID: r.UpstreamID, KeyName: r.KeyName, UpstreamName: r.UpstreamName}
+			aggs[r.PlatformKeyID] = agg
 		}
-		byKey[r.PlatformKeyID] = append(byKey[r.PlatformKeyID], intelVerdictPoint{
-			ID: r.ID, RunID: r.RunID, Verdict: r.Verdict, LatencyMs: r.LatencyMs,
-			AnswerPreview: r.AnswerPreview, ErrorMessage: r.ErrorMessage, CreatedAt: r.CreatedAt,
-		})
-		if _, ok := latest[r.PlatformKeyID]; !ok {
-			latest[r.PlatformKeyID] = r
+		if len(byKey[r.PlatformKeyID]) < historyPerKey {
+			byKey[r.PlatformKeyID] = append(byKey[r.PlatformKeyID], intelVerdictPoint{
+				ID: r.ID, RunID: r.RunID, Verdict: r.Verdict, LatencyMs: r.LatencyMs,
+				AnswerPreview: r.AnswerPreview, ErrorMessage: r.ErrorMessage, CreatedAt: r.CreatedAt,
+			})
+		}
+		if r.Verdict != domain.IntelVerdictError && int(agg.Samples) < statsWindow {
+			agg.Samples++
+			if r.Verdict == successVerdict {
+				agg.Success++
+				agg.LatencySum += int64(r.LatencyMs)
+			}
 		}
 	}
 	var states []domain.IntelQuarantineState
@@ -486,19 +491,30 @@ func (h *Admin) IntelPlanSummary(c *gin.Context) {
 			quarantinedCount++
 		}
 	}
-	for i := range stats {
-		st := &stats[i]
+	stats := make([]intelKeyStat, 0, len(aggs))
+	for keyID, agg := range aggs {
+		st := intelKeyStat{
+			PlatformKeyID: keyID,
+			UpstreamID:    agg.UpstreamID,
+			KeyName:       agg.KeyName,
+			UpstreamName:  agg.UpstreamName,
+			Samples:       agg.Samples,
+			Success:       agg.Success,
+			History:       byKey[keyID],
+		}
 		if st.Samples > 0 {
 			st.Accuracy = float64(st.Success) / float64(st.Samples) * 100
 		}
-		if last, ok := latest[st.PlatformKeyID]; ok {
-			v := last.CreatedAt
-			st.LastVerdict = last.Verdict
-			st.LastAnswer = last.AnswerPreview
+		if st.Success > 0 {
+			st.AvgLatencyMs = float64(agg.LatencySum) / float64(st.Success)
+		}
+		if len(st.History) > 0 {
+			st.LastVerdict = st.History[0].Verdict
+			st.LastAnswer = st.History[0].AnswerPreview
+			v := st.History[0].CreatedAt
 			st.LastAt = &v
 		}
-		st.History = byKey[st.PlatformKeyID]
-		if qs, ok := stateByKey[st.PlatformKeyID]; ok {
+		if qs, ok := stateByKey[keyID]; ok {
 			st.Quarantine = &intelQuarantineInfo{
 				Status:          qs.Status,
 				PassStreak:      qs.PassStreak,
@@ -511,6 +527,7 @@ func (h *Admin) IntelPlanSummary(c *gin.Context) {
 				LastTestedAt:    qs.LastTestedAt,
 			}
 		}
+		stats = append(stats, st)
 	}
 	sort.Slice(stats, func(i, j int) bool {
 		if stats[i].Accuracy != stats[j].Accuracy {

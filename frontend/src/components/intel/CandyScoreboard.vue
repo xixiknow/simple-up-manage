@@ -95,7 +95,7 @@ const columns: DataTableColumns<IntelKeyStat> = [
     render: row => h(UiTag, { type: accuracyType(row.accuracy), size: 'small', bordered: false },
       { default: () => (row.samples ? `${row.accuracy.toFixed(1)}%` : '—') }),
   },
-  { title: '测试 / 正确', key: 'samples', width: 105, render: row => `${row.success} / ${row.samples}` },
+  { title: '正确 / 测试', key: 'samples', width: 105, render: row => `${row.success} / ${row.samples}` },
   { title: '平均耗时', key: 'avg_latency_ms', width: 95, mobileHide: true, render: row => (row.avg_latency_ms ? formatDurationMs(Math.round(row.avg_latency_ms)) : '—') },
   {
     title: '最近答案', key: 'last_answer', width: 200, mobileHide: true, ellipsis: { tooltip: true },
@@ -146,10 +146,11 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="scoreboard">
+    <div class="muted scope-note">正确率与计数按最近 10 次有效测试滚动计算（传输错误不计入），时间线展示最近 20 次。</div>
     <div class="summary-row">
       <div class="summary-item"><span class="summary-value">{{ totals.keys }}</span><span class="summary-label">参与 Key</span></div>
-      <div class="summary-item"><span class="summary-value">{{ totals.success }} / {{ totals.samples }}</span><span class="summary-label">正确 / 测试</span></div>
-      <div class="summary-item"><span class="summary-value" :class="accuracyType(totals.accuracy) === 'success' ? 'good' : accuracyType(totals.accuracy) === 'warning' ? 'mid' : 'poor'">{{ totals.accuracy.toFixed(1) }}%</span><span class="summary-label">总体正确率</span></div>
+      <div class="summary-item"><span class="summary-value">{{ totals.success }} / {{ totals.samples }}</span><span class="summary-label">近10轮正确 / 测试</span></div>
+      <div class="summary-item"><span class="summary-value" :class="accuracyType(totals.accuracy) === 'success' ? 'good' : accuracyType(totals.accuracy) === 'warning' ? 'mid' : 'poor'">{{ totals.accuracy.toFixed(1) }}%</span><span class="summary-label">近10轮正确率</span></div>
       <div class="summary-item"><span class="summary-value">{{ totals.avgLatency ? formatDurationMs(Math.round(totals.avgLatency)) : '—' }}</span><span class="summary-label">平均耗时</span></div>
       <div v-if="totals.quarantined > 0" class="summary-item warn-item">
         <span class="summary-value poor">{{ totals.quarantined }}</span>
@@ -212,6 +213,10 @@ onBeforeUnmount(() => {
 .summary-label {
   font-size: 11px;
   color: #819087;
+}
+.scope-note {
+  font-size: 11px;
+  margin-bottom: 10px;
 }
 .warn-item {
   background: #f7ece4;
