@@ -76,8 +76,21 @@ async function refreshDetail(silent = true) {
   await Promise.all([loadPlans(silent), loadRuns()])
 }
 
+const refreshing = ref(false)
+async function refreshAll() {
+  if (refreshing.value) return
+  refreshing.value = true
+  try {
+    await Promise.all([loadPlans(), loadRuns()])
+    tick.value++
+  } finally {
+    refreshing.value = false
+  }
+}
+
 function describeInterval(minutes: number) {
-  if (!minutes || minutes < 15) return '仅手动'
+  // 须与后端 domain.IntelMinIntervalMinutes（5）一致：5/10 分钟周期曾在这里被误显示为仅手动
+  if (!minutes || minutes < 5) return '仅手动'
   if (minutes % 1440 === 0) return `每 ${minutes / 1440} 天`
   if (minutes % 60 === 0) return `每 ${minutes / 60} 小时`
   return `每 ${minutes} 分钟`
@@ -266,6 +279,7 @@ watch(selectedId, () => {
         <p>按分组与模型自动发起智力测试，每条结果绑定 分组 · 提供商 · Key。</p>
       </div>
       <div class="toolbar">
+        <ui-button secondary :loading="refreshing" @click="refreshAll">刷新</ui-button>
         <ui-button type="primary" @click="openCreate">新建任务</ui-button>
       </div>
     </div>
