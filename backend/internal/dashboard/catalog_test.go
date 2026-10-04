@@ -44,6 +44,10 @@ func TestComputeCostOpenAIUncachedSubtraction(t *testing.T) {
 	if *res.TotalUSD != round8(want) {
 		t.Fatalf("total = %v want %v", *res.TotalUSD, want)
 	}
+	// The receipt records the uncached input so the item rows stay self-consistent.
+	if res.Detail.InputUncachedTokens != 5000 || res.Detail.InputTokens != 10000 {
+		t.Fatalf("receipt tokens = uncached %d raw %d", res.Detail.InputUncachedTokens, res.Detail.InputTokens)
+	}
 }
 
 func TestComputeCostCacheBreakdown(t *testing.T) {

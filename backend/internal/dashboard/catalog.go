@@ -98,12 +98,16 @@ type CostDetail struct {
 	Matched  string `json:"matched,omitempty"`
 	Protocol string `json:"protocol,omitempty"`
 
-	InputTokens        int64 `json:"input_tokens"`
-	OutputTokens       int64 `json:"output_tokens"`
-	CacheReadTokens    int64 `json:"cache_read_tokens"`
-	CacheWriteTokens   int64 `json:"cache_write_tokens"`
-	CacheWrite5mTokens int64 `json:"cache_write_5m_tokens"`
-	CacheWrite1hTokens int64 `json:"cache_write_1h_tokens"`
+	InputTokens int64 `json:"input_tokens"`
+	// InputUncachedTokens is the prompt part actually billed at the input
+	// price (OpenAI protocol subtracts cached tokens); present when it
+	// differs from InputTokens, so the receipt's math stays self-consistent.
+	InputUncachedTokens int64 `json:"input_uncached_tokens,omitempty"`
+	OutputTokens        int64 `json:"output_tokens"`
+	CacheReadTokens     int64 `json:"cache_read_tokens"`
+	CacheWriteTokens    int64 `json:"cache_write_tokens"`
+	CacheWrite5mTokens  int64 `json:"cache_write_5m_tokens"`
+	CacheWrite1hTokens  int64 `json:"cache_write_1h_tokens"`
 
 	InputPrice        float64 `json:"input_price"`
 	OutputPrice       float64 `json:"output_price"`
@@ -461,6 +465,9 @@ func ComputeCost(price ModelPrice, opt CostOptions, u UsageTokens) *CostResult {
 		InputCost: inputCost, OutputCost: outputCost, CacheReadCost: readCost, CacheWriteCost: writeCost,
 		ServiceTier: strings.TrimSpace(u.ServiceTier), LongCtx: longCtx,
 	}
+	if opt.Protocol == domain.ProtocolOpenAI && uncached != u.Input {
+		detail.InputUncachedTokens = uncached
+	}
 	if tierMult != 1 {
 		detail.TierMultiplier = tierMult
 		inputCost *= tierMult
@@ -490,6 +497,15 @@ func ComputeCost(price ModelPrice, opt CostOptions, u UsageTokens) *CostResult {
 		detail.InputCost, detail.OutputCost = inputCost, outputCost
 		detail.CacheReadCost, detail.CacheWriteCost = readCost, writeCost
 	}
+
+	// The receipt shows the effective per-token price (all multipliers folded
+	// in) so every item row multiplies out exactly; the multiplier chips are
+	// informational only.
+	detail.InputPrice *= tierMult * timeMult * effortMult
+	detail.OutputPrice *= tierMult * timeMult * effortMult
+	detail.CacheReadPrice *= tierMult * timeMult * effortMult
+	detail.CacheWrite5mPrice *= tierMult * effortMult
+	detail.CacheWrite1hPrice *= tierMult * effortMult
 
 	total := inputCost + outputCost + readCost + writeCost
 	if math.IsNaN(total) || math.IsInf(total, 0) {

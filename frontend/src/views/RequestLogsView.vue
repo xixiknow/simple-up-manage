@@ -41,56 +41,89 @@ function traceReasonLabel(event: TraceEvent) {
 // ---- 费用明细回执（cost_detail）----
 function multLabel(v?: number | null) {
   if (!v || v === 1) return ''
-  return `×${Number.isInteger(v) ? v : Math.round(v * 100) / 100}`
+  // 保留有效精度且不做两位四舍五入：0.045 必须显示 ×0.045 而不是 ×0.05
+  return `×${parseFloat(v.toFixed(6))}`
 }
 function perM(pricePerToken?: number | null) {
-  if (pricePerToken === null || pricePerToken === undefined) return '—'
-  return `$${formatMoney(pricePerToken * 1e6, 4)}/M`
+  if (pricePerToken === null || pricePerToken === undefined || pricePerToken === 0) return '—'
+  const perMValue = pricePerToken * 1e6
+  return `$${formatMoney(perMValue, perMValue < 1 ? 4 : 2)}/M`
 }
-function costLine(label: string, value: string, cost?: string, cls = '') {
-  return h('div', { class: ['cost-line', cls] }, [
-    h('span', { class: 'cost-k' }, label),
-    h('span', { class: 'cost-v' }, value),
-    cost != null ? h('span', { class: 'cost-c mono' }, cost) : null,
-  ])
+function costAmount(v: number) {
+  return `$${formatMoney(v, 6)}`
 }
 const CostPanel = defineComponent({
   props: { detail: { type: Object as () => CostDetail, required: true } },
   setup(props) {
     return () => {
       const d = props.detail
-      const lines: ReturnType<typeof h>[] = []
-      lines.push(h('div', { class: 'cost-head' }, [
-        h(UiTag, { type: d.source === 'reported' ? 'success' : 'info', size: 'small', bordered: false }, { default: () => (d.source === 'reported' ? '上游自报' : '价卡估算') }),
-        d.matched ? h('span', { class: 'cost-matched mono' }, `价卡 ${d.matched}`) : null,
-      ]))
-      lines.push(costLine('输入', `${formatNumber(d.input_tokens)} × ${perM(d.input_price)}`, formatMoney(d.input_cost, 6)))
-      lines.push(costLine('输出', `${formatNumber(d.output_tokens)} × ${perM(d.output_price)}`, formatMoney(d.output_cost, 6)))
-      lines.push(costLine('缓存读', `${formatNumber(d.cache_read_tokens)} × ${perM(d.cache_read_price)}`, formatMoney(d.cache_read_cost, 6)))
+      const inputBilled = d.input_uncached_tokens ?? d.input_tokens
+      const items: { label: string; tokens: number; price?: number | null; amount: number; note?: string }[] = [
+        { label: '输入', tokens: inputBilled, price: d.input_price, amount: d.input_cost, note: inputBilled !== d.input_tokens ? `总 ${formatNumber(d.input_tokens)}` : undefined },
+        { label: '输出', tokens: d.output_tokens, price: d.output_price, amount: d.output_cost },
+        { label: '缓存读', tokens: d.cache_read_tokens, price: d.cache_read_price, amount: d.cache_read_cost },
+      ]
       if (d.cache_write_mode === 'breakdown') {
         let n5 = d.cache_write_5m_tokens || 0
         const n1 = d.cache_write_1h_tokens || 0
         if (!n5 && !n1) n5 = d.cache_write_tokens
-        if (n5) lines.push(costLine('缓存写 5m', `${formatNumber(n5)} × ${perM(d.cache_write_5m_price)}`, formatMoney(n5 * (d.cache_write_5m_price || 0), 6)))
-        if (n1) lines.push(costLine('缓存写 1h', `${formatNumber(n1)} × ${perM(d.cache_write_1h_price)}`, formatMoney(n1 * (d.cache_write_1h_price || 0), 6)))
+        if (n5) items.push({ label: '缓存写 5m', tokens: n5, price: d.cache_write_5m_price, amount: n5 * (d.cache_write_5m_price || 0) })
+        if (n1) items.push({ label: '缓存写 1h', tokens: n1, price: d.cache_write_1h_price, amount: n1 * (d.cache_write_1h_price || 0) })
       } else if (d.cache_write_tokens) {
-        lines.push(costLine('缓存写', `${formatNumber(d.cache_write_tokens)} × ${perM(d.cache_write_5m_price)}`, formatMoney(d.cache_write_cost, 6)))
+        items.push({ label: '缓存写', tokens: d.cache_write_tokens, price: d.cache_write_5m_price, amount: d.cache_write_cost })
       }
+
+      const head = h('div', { class: 'cost-head' }, [
+        h(UiTag, { type: d.source === 'reported' ? 'success' : 'info', size: 'small', bordered: false }, { default: () => (d.source === 'reported' ? '上游自报' : '价卡估算') }),
+        d.matched ? h('span', { class: 'cost-matched mono' }, d.matched) : null,
+      ])
+
+      const rows = items
+        .filter((it) => it.tokens > 0 || it.amount > 0)
+        .map((it) => h('div', { class: 'cost-tr' }, [
+          h('span', { class: 'cost-td-label' }, [it.label, it.note ? h('span', { class: 'cost-note' }, ` ${it.note}`) : null]),
+          h('span', { class: 'cost-td mono' }, formatNumber(it.tokens)),
+          h('span', { class: 'cost-td mono cost-td-price' }, perM(it.price)),
+          h('span', { class: 'cost-td mono cost-td-amount' }, costAmount(it.amount)),
+        ]))
+      const table = [
+        h('div', { class: 'cost-tr cost-thead' }, [
+          h('span', { class: 'cost-td-label' }, '分项'),
+          h('span', { class: 'cost-td' }, 'Tokens'),
+          h('span', { class: 'cost-td cost-td-price' }, '单价'),
+          h('span', { class: 'cost-td cost-td-amount' }, '费用'),
+        ]),
+        ...rows,
+      ]
+      const tableWrap = h('div', { class: 'cost-table' }, table)
+
+      const notes: ReturnType<typeof h>[] = []
       if (d.long_ctx?.applied) {
-        lines.push(costLine('长上下文', `${formatNumber(d.long_ctx.total_tokens)} > ${formatNumber(d.long_ctx.threshold)} · 输入${multLabel(d.long_ctx.input_multiplier)} 输出${multLabel(d.long_ctx.output_multiplier)}`, undefined, 'cost-note'))
+        notes.push(h('span', { class: 'cost-chip mono' }, `长上下文 ${formatNumber(d.long_ctx.total_tokens)}>${formatNumber(d.long_ctx.threshold)} 输入${multLabel(d.long_ctx.input_multiplier)} 输出${multLabel(d.long_ctx.output_multiplier)}`))
       }
       if (d.service_tier) {
-        lines.push(costLine('服务档位', `${d.service_tier} ${multLabel(d.tier_multiplier)}`.trim(), undefined, 'cost-note'))
+        notes.push(h('span', { class: 'cost-chip mono' }, `档位 ${d.service_tier} ${multLabel(d.tier_multiplier)}`.replace(/\s+$/, '')))
       }
       if (d.time_multiplier && d.time_multiplier !== 1) {
-        lines.push(costLine('峰谷倍率', multLabel(d.time_multiplier), undefined, 'cost-note'))
+        notes.push(h('span', { class: 'cost-chip mono' }, `峰谷 ${multLabel(d.time_multiplier)}`))
       }
       if (d.effort) {
-        lines.push(costLine('推理力度', `${d.effort} ${multLabel(d.effort_multiplier)}`.trim(), undefined, 'cost-note'))
+        notes.push(h('span', { class: 'cost-chip mono' }, `力度 ${d.effort} ${multLabel(d.effort_multiplier)}`.replace(/\s+$/, '')))
       }
-      const rate = multLabel(d.rate_multiplier)
-      lines.push(costLine('合计', rate ? `$${formatMoney(d.total, 6)} ${rate} 上游倍率` : `$${formatMoney(d.total, 6)}`, `$${formatMoney(d.final, 6)}`, 'cost-total'))
-      return h('div', { class: 'cost-detail-panel' }, lines)
+      const notesWrap = notes.length ? h('div', { class: 'cost-chips' }, notes) : null
+
+      const rate = d.rate_multiplier !== 1 ? multLabel(d.rate_multiplier) : ''
+      const subtotal = h('div', { class: 'cost-tr cost-subtotal' }, [
+        h('span', { class: 'cost-td-label' }, '小计'),
+        h('span', { class: 'cost-sub-note' }, rate ? `上游倍率 ${rate}` : ''),
+        h('span', { class: 'cost-td mono cost-td-amount' }, costAmount(d.total)),
+      ])
+      const grand = h('div', { class: 'cost-grand' }, [
+        h('span', { class: 'cost-grand-k' }, d.source === 'reported' ? '上游扣费' : '实计成本'),
+        h('span', { class: 'cost-grand-v mono' }, costAmount(d.final)),
+      ])
+
+      return h('div', { class: 'cost-detail-panel' }, [head, tableWrap, notesWrap, subtotal, grand].filter(Boolean))
     }
   },
 })
@@ -1025,17 +1058,6 @@ onUnmounted(() => {
   white-space: pre-wrap;
   word-break: break-word;
 }
-.cost-detail-panel { display: flex; flex-direction: column; gap: 4px; min-width: 360px; font-size: 12px; }
-.cost-detail-panel .cost-head { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
-.cost-detail-panel .cost-matched { opacity: 0.65; }
-.cost-detail-panel .cost-line { display: flex; align-items: baseline; gap: 8px; }
-.cost-detail-panel .cost-k { flex: 0 0 60px; opacity: 0.65; }
-.cost-detail-panel .cost-v { flex: 1; }
-.cost-detail-panel .cost-c { font-variant-numeric: tabular-nums; white-space: nowrap; }
-.cost-detail-panel .cost-note .cost-v { opacity: 0.75; }
-.cost-detail-panel .cost-total { border-top: 1px dashed var(--border-color, rgba(128, 128, 128, 0.35)); padding-top: 4px; font-weight: 600; }
-.page :deep(.drawer-cost-panel) { margin-top: 6px; }
-.page :deep(.cost-cell) { border-bottom: 1px dashed var(--border-color, rgba(128, 128, 128, 0.4)); cursor: help; }
 .tok-cell {
   line-height: 1.35;
 }
@@ -1161,4 +1183,28 @@ onUnmounted(() => {
   .io-tabs { grid-template-columns: 1fr; }
   .live-ctl { flex-wrap: wrap; }
 }
+</style>
+
+<style>
+/* 费用回执面板：由子组件渲染，父页 scoped 样式够不到，走全局命名空间 cost-* */
+.cost-detail-panel { display: flex; flex-direction: column; gap: 8px; min-width: 400px; font-size: 12px; }
+.cost-detail-panel .cost-head { display: flex; align-items: center; gap: 8px; }
+.cost-detail-panel .cost-matched { opacity: 0.7; font-size: 11px; }
+.cost-detail-panel .cost-table { display: flex; flex-direction: column; gap: 2px; }
+.cost-detail-panel .cost-tr { display: grid; grid-template-columns: 108px 1fr 88px 92px; gap: 8px; align-items: baseline; padding: 1px 0; }
+.cost-detail-panel .cost-thead { opacity: 0.55; font-size: 11px; border-bottom: 1px solid var(--line); padding-bottom: 3px; }
+.cost-detail-panel .cost-td { text-align: right; white-space: nowrap; }
+.cost-detail-panel .cost-td-label { text-align: left; }
+.cost-detail-panel .cost-note { opacity: 0.6; font-size: 11px; white-space: nowrap; }
+.cost-detail-panel .cost-td-amount { font-variant-numeric: tabular-nums; font-weight: 600; }
+.cost-detail-panel .cost-td-price { opacity: 0.7; }
+.cost-detail-panel .cost-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.cost-detail-panel .cost-chip { border: 1px solid var(--line); background: var(--row); border-radius: 4px; padding: 1px 6px; font-size: 11px; opacity: 0.85; }
+.cost-detail-panel .cost-subtotal { border-top: 1px solid var(--line); padding-top: 5px; }
+.cost-detail-panel .cost-sub-note { font-size: 11px; opacity: 0.65; }
+.cost-detail-panel .cost-grand { display: flex; align-items: baseline; justify-content: space-between; background: var(--row); border-radius: 6px; padding: 6px 10px; }
+.cost-detail-panel .cost-grand-k { opacity: 0.75; }
+.cost-detail-panel .cost-grand-v { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.cost-cell { border-bottom: 1px dashed var(--line); cursor: help; }
+.drawer-cost-panel { margin-top: 6px; }
 </style>

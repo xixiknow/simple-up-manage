@@ -249,6 +249,8 @@ export type CostDetail = {
   matched?: string
   protocol?: string
   input_tokens: number
+  /** OpenAI 协议扣掉缓存命中后真正按输入价计费的部分，与 input_tokens 不同时存在 */
+  input_uncached_tokens?: number
   output_tokens: number
   cache_read_tokens: number
   cache_write_tokens: number
