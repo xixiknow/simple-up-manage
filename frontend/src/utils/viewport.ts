@@ -21,11 +21,19 @@ export function useViewport() {
   onMounted(() => {
     phoneMedia.addEventListener('change', read)
     narrowMedia.addEventListener('change', read)
+    // Some webviews / embedded browsers miss matchMedia change events (the
+    // flag then goes stale and phone layouts keep desktop tables with a
+    // horizontal scrollbar). Resize/orientation events are more reliable,
+    // so re-read the flags on them as a self-healing fallback.
+    window.addEventListener('resize', read)
+    window.addEventListener('orientationchange', read)
   })
 
   onUnmounted(() => {
     phoneMedia.removeEventListener('change', read)
     narrowMedia.removeEventListener('change', read)
+    window.removeEventListener('resize', read)
+    window.removeEventListener('orientationchange', read)
   })
 
   return { phone, pad, desktop }
