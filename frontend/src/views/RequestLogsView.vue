@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, defineComponent, h, onMounted, onUnmounted, reactive, ref, watch, type VNodeChild } from 'vue'
 import { UiDatePicker, UiInput, UiPopover, UiSelect, UiTag, UiTimeline, UiTimelineItem, useMessage } from '@/components/ui'
-import { ArrowBackOutline, ArrowForwardOutline, ArrowLeftRightOutline, CheckOutline, ClockOutline, CloseOutline, CopyOutline, DownloadOutline, FilterOutline, RefreshOutline, RepeatOutline } from '@/components/ui/icons'
+import { ArrowBackOutline, ArrowDownOutline, ArrowForwardOutline, ArrowLeftRightOutline, ArrowUpOutline, CacheReadOutline, CacheWriteOutline, CheckOutline, ClockOutline, CloseOutline, CopyOutline, DownloadOutline, FilterOutline, RefreshOutline, RepeatOutline } from '@/components/ui/icons'
 import type { DataTableColumns, SelectOption } from '@/components/ui'
 import { allPages, downloadLogBody, getLogBody, getRequestLog, listConsumerKeys, listKeyOptions, listRequestLogs, listRouteGroups, listUpstreams } from '@/api/admin'
 import type { CostDetail, RequestLog, RequestLogDetail, RequestLogQuery, SchedulerDecision, SchedulerCandidate, RequestAttempt } from '@/api/types'
 import { EXTERNAL_PROBE_LABEL } from '@/api/types'
-import { copyText, errText, formatMoney, formatNumber, formatSeconds, formatTime, formatTokenCount, formatTps } from '@/utils/format'
+import { copyText, errText, formatMoney, formatNumber, formatSeconds, formatTime, formatTps } from '@/utils/format'
 import { useRoute } from 'vue-router'
 
 const LIVE_MS = 4000
@@ -38,6 +38,12 @@ function traceReasonLabel(event: TraceEvent) {
   return r
 }
 
+// 缓存 token 压缩格式（sub2api 同款：1 位小数 K/M）
+function formatCacheTokens(tokens: number) {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
+  if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}K`
+  return formatNumber(tokens)
+}
 // 计费输入口径 (sub2api convention): OpenAI prompt_tokens includes cached tokens;
 function billedInputTokens(row: Pick<RequestLog, 'protocol' | 'input_tokens' | 'cache_read_tokens' | 'cache_creation_tokens'>) {
   if (row.protocol === 'openai') {
@@ -672,23 +678,51 @@ const columns = computed<DataTableColumns<RequestLog>>(() => {
   {
     title: 'Tokens / Cache',
     key: 'tokens',
-    width: 148,
+    width: 218,
     render(row) {
       const billedIn = billedInputTokens(row)
-      const tooltip = `输入 ${formatNumber(billedIn)} / 输出 ${formatNumber(row.output_tokens)}\n读 ${formatNumber(row.cache_read_tokens)} / 写 ${formatNumber(row.cache_creation_tokens)}${billedIn !== row.input_tokens ? `\n输入已扣除缓存：总 ${formatNumber(row.input_tokens)}` : ''}`
+      const d = row.cost_detail
+      const tipLines = [
+        `输入 ${formatNumber(billedIn)} / 输出 ${formatNumber(row.output_tokens)}`,
+        `读 ${formatNumber(row.cache_read_tokens)} / 写 ${formatNumber(row.cache_creation_tokens)}`,
+      ]
+      if (billedIn !== row.input_tokens) tipLines.push(`输入已扣除缓存：总 ${formatNumber(row.input_tokens)}`)
+      // 缓存写时长档：1h 优先，其次 5m；无明细的旧记录不标
+      const dur = !d ? '' : d.cache_write_1h_tokens ? '1h' : (d.cache_write_5m_tokens || (d.cache_write_tokens > 0 && d.cache_write_mode === 'breakdown')) ? '5m' : ''
+      if (dur) tipLines.push(`缓存写时长：${dur}`)
+      const ladder = d?.long_ctx?.applied
+        ? `阶梯${d.long_ctx.input_multiplier && d.long_ctx.input_multiplier !== 1 ? ` ×${parseFloat(d.long_ctx.input_multiplier.toFixed(4))}` : ''}`
+        : ''
+      if (d?.long_ctx?.applied) {
+        tipLines.push(`长上下文阶梯：${formatNumber(d.long_ctx.total_tokens)} > ${formatNumber(d.long_ctx.threshold)}，输入${multLabel(d.long_ctx.input_multiplier) || ' ×1'} 输出${multLabel(d.long_ctx.output_multiplier) || ' ×1'}`)
+      }
+      const showCache = row.cache_read_tokens > 0 || row.cache_creation_tokens > 0
       return h(
         'div',
         {
           class: 'tok-cell',
-          title: tooltip,
+          title: tipLines.join('\n'),
         },
         [
-          h('div', { class: 'tok-line' }, `${formatTokenCount(billedIn)} / ${formatTokenCount(row.output_tokens)}`),
-          h(
-            'div',
-            { class: 'tok-line tok-cache' },
-            `读 ${formatTokenCount(row.cache_read_tokens)} / 写 ${formatTokenCount(row.cache_creation_tokens)}`,
-          ),
+          h('div', { class: 'tok-line' }, [
+            h('span', { class: 'tok-io' }, [h(ArrowDownOutline, { class: 'tok-svg c-in' }), formatNumber(billedIn)]),
+            h('span', { class: 'tok-io' }, [h(ArrowUpOutline, { class: 'tok-svg c-out' }), formatNumber(row.output_tokens)]),
+          ]),
+          showCache
+            ? h('div', { class: 'tok-line tok-cache' }, [
+                row.cache_read_tokens > 0
+                  ? h('span', { class: 'tok-io' }, [h(CacheReadOutline, { class: 'tok-svg c-cr' }), h('span', { class: 'tok-num c-cr' }, formatCacheTokens(row.cache_read_tokens))])
+                  : null,
+                row.cache_creation_tokens > 0
+                  ? h('span', { class: 'tok-io' }, [
+                      h(CacheWriteOutline, { class: 'tok-svg c-cw' }),
+                      h('span', { class: 'tok-num c-cw' }, formatCacheTokens(row.cache_creation_tokens)),
+                      dur ? h('span', { class: 'tok-badge dur' }, dur) : null,
+                    ])
+                  : null,
+                ladder ? h('span', { class: 'tok-badge ladder' }, ladder) : null,
+              ])
+            : null,
         ],
       )
     },
@@ -1217,6 +1251,35 @@ onUnmounted(() => {
 .cost-detail-panel .cost-grand-v { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .cost-cell { border-bottom: 1px dashed var(--line); cursor: help; }
 .drawer-cost-panel { margin-top: 6px; grid-column: 1 / -1; width: 100%; min-width: 0; }
+/* token 分项配色与图标尺寸对齐 sub2api（单元格由 UiDataTable 渲染，需全局样式穿透） */
+.tok-io {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: 10px;
+  font-weight: 500;
+}
+.tok-io:last-child { margin-right: 0; }
+.tok-svg { width: 13px; height: 13px; flex: none; }
+.tok-svg.c-in { color: #10b981; }
+.tok-svg.c-out { color: #8b5cf6; }
+.tok-svg.c-cr { color: #0ea5e9; }
+.tok-svg.c-cw { color: #f59e0b; }
+.tok-num.c-cr { color: #0284c7; }
+.tok-num.c-cw { color: #d97706; }
+.tok-badge {
+  font-size: 10px;
+  font-weight: 500;
+  border-radius: 4px;
+  padding: 0 4px;
+  line-height: 14px;
+  margin-left: 2px;
+  display: inline-block;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.tok-badge.dur { background: #ffedd5; color: #ea580c; border-color: #fed7aa; }
+.tok-badge.ladder { background: #e0e7ff; color: #4338ca; border-color: #c7d2fe; }
 @media (max-width: 430px) {
   .cost-detail-panel { font-size: 11px; }
   .cost-detail-panel .cost-tr { grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 6px; }
