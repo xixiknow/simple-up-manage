@@ -1197,7 +1197,7 @@ onUnmounted(() => {
 
 <style>
 /* 费用回执面板：由子组件渲染，父页 scoped 样式够不到，走全局命名空间 cost-* */
-.cost-detail-panel { display: flex; flex-direction: column; gap: 8px; min-width: 400px; font-size: 12px; }
+.cost-detail-panel { display: flex; flex-direction: column; gap: 8px; max-width: calc(100vw - 32px); font-size: 12px; }
 .cost-detail-panel .cost-head { display: flex; align-items: center; gap: 8px; }
 .cost-detail-panel .cost-matched { opacity: 0.7; font-size: 11px; }
 .cost-detail-panel .cost-table { display: flex; flex-direction: column; gap: 2px; }
@@ -1211,10 +1211,15 @@ onUnmounted(() => {
 .cost-detail-panel .cost-chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .cost-detail-panel .cost-chip { border: 1px solid var(--line); background: var(--row); border-radius: 4px; padding: 1px 6px; font-size: 11px; opacity: 0.85; }
 .cost-detail-panel .cost-subtotal { border-top: 1px solid var(--line); padding-top: 5px; }
-.cost-detail-panel .cost-sub-note { font-size: 11px; opacity: 0.65; }
+.cost-detail-panel .cost-sub-note { font-size: 11px; opacity: 0.65; white-space: nowrap; }
 .cost-detail-panel .cost-grand { display: flex; align-items: baseline; justify-content: space-between; background: var(--row); border-radius: 6px; padding: 6px 10px; }
 .cost-detail-panel .cost-grand-k { opacity: 0.75; }
 .cost-detail-panel .cost-grand-v { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .cost-cell { border-bottom: 1px dashed var(--line); cursor: help; }
-.drawer-cost-panel { margin-top: 6px; grid-column: 1 / -1; }
+.drawer-cost-panel { margin-top: 6px; grid-column: 1 / -1; width: 100%; min-width: 0; }
+@media (max-width: 430px) {
+  .cost-detail-panel { font-size: 11px; }
+  .cost-detail-panel .cost-tr { grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 6px; }
+  .cost-detail-panel .cost-note { white-space: nowrap; }
+}
 </style>
