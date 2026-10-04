@@ -5,8 +5,6 @@ import (
 
 	"simple-up-manage/internal/domain"
 	"simple-up-manage/internal/upstream"
-
-	"gorm.io/gorm"
 )
 
 func catalogModelID(model string) string {
@@ -17,37 +15,10 @@ func catalogModelID(model string) string {
 	return id
 }
 
-func lookupCatalogPrice(db *gorm.DB, model string) (input, output float64, ok bool) {
-	if db == nil {
-		return 0, 0, false
-	}
-	id := catalogModelID(model)
-	if id == "" {
-		return 0, 0, false
-	}
-	var row domain.CatalogModel
-	err := db.Where("LOWER(model_id) = ? AND (input_cost > 0 OR output_cost > 0)", id).First(&row).Error
-	if err != nil {
-		return 0, 0, false
-	}
-	return row.InputCost, row.OutputCost, true
-}
-
-func estimateRequestCost(db *gorm.DB, model string, pk *domain.PlatformKey, usage upstream.TokenUsage) *float64 {
-	if usage.CostUSD != nil {
-		return usage.CostUSD
-	}
-	in, out, ok := lookupCatalogPrice(db, model)
-	if !ok {
-		return nil
-	}
-	rate := 1.0
-	if pk != nil && pk.RateMultiplier > 0 {
-		rate = pk.RateMultiplier
-	}
-	return upstream.EstimateCostUSD(in, out, rate, usage)
-}
-
+// attachLogCosts backfills the list amount for legacy rows that never settled
+// a cost. New logs carry their own estimate (itemized billing × upstream
+// rate), so this only ever touches pre-billing-upgrade history with the old
+// simple formula.
 func (h *Admin) attachLogCosts(out []logDTO) {
 	if len(out) == 0 {
 		return

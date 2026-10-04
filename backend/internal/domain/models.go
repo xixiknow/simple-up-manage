@@ -336,17 +336,21 @@ type RequestLog struct {
 	LogRevision         uint64     `gorm:"not null;default:0" json:"-"`
 	CompletedAt         *time.Time `gorm:"index" json:"completed_at"`
 	CostUSD             *float64   `gorm:"type:decimal(20,8)" json:"cost_usd"`
-	ErrorMessage        string     `gorm:"type:text" json:"error_message"`
-	FailureScope        string     `gorm:"size:32;index" json:"failure_scope"`
-	FailureAction       string     `gorm:"size:32" json:"failure_action"`
-	SelectionTrace      string     `gorm:"type:text" json:"selection_trace"`
-	RequestHeaders      string     `gorm:"type:text" json:"request_headers"`
-	RequestBody         string     `gorm:"type:text" json:"request_body"`
-	RequestBodyTrunc    bool       `json:"request_body_truncated"`
-	ResponseHeaders     string     `gorm:"type:text" json:"response_headers"`
-	ResponseBody        string     `gorm:"type:text" json:"response_body"`
-	ResponseBodyTrunc   bool       `json:"response_body_truncated"`
-	CreatedAt           time.Time  `gorm:"index" json:"created_at"`
+	// CostDetail is the billing receipt (dashboard.CostDetail JSON): itemized
+	// unit prices/costs, the applied long-context ladder, tier, peak-hour and
+	// effort multipliers, and the upstream rate multiplier.
+	CostDetail        string    `gorm:"type:text" json:"cost_detail,omitempty"`
+	ErrorMessage      string    `gorm:"type:text" json:"error_message"`
+	FailureScope      string    `gorm:"size:32;index" json:"failure_scope"`
+	FailureAction     string    `gorm:"size:32" json:"failure_action"`
+	SelectionTrace    string    `gorm:"type:text" json:"selection_trace"`
+	RequestHeaders    string    `gorm:"type:text" json:"request_headers"`
+	RequestBody       string    `gorm:"type:text" json:"request_body"`
+	RequestBodyTrunc  bool      `json:"request_body_truncated"`
+	ResponseHeaders   string    `gorm:"type:text" json:"response_headers"`
+	ResponseBody      string    `gorm:"type:text" json:"response_body"`
+	ResponseBodyTrunc bool      `json:"response_body_truncated"`
+	CreatedAt         time.Time `gorm:"index" json:"created_at"`
 }
 
 // KeyModelCooldown isolates model-specific throttling without disabling the

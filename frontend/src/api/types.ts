@@ -232,6 +232,7 @@ export type RequestLog = {
   stream?: boolean
   stream_known?: boolean
   cost_usd?: number
+  cost_detail?: CostDetail | null
   error_message?: string
   failure_scope?: string
   failure_action?: string
@@ -239,6 +240,45 @@ export type RequestLog = {
   created_at: string
   upstream_name?: string
   consumer_name?: string
+}
+
+/** 计费回执（dashboard.CostDetail）：分项单价为 USD/token，展示层换算为 /M。 */
+export type CostDetail = {
+  source: 'estimated' | 'reported'
+  model?: string
+  matched?: string
+  protocol?: string
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
+  cache_write_5m_tokens?: number
+  cache_write_1h_tokens?: number
+  input_price: number
+  output_price: number
+  cache_read_price: number
+  cache_write_5m_price: number
+  cache_write_1h_price: number
+  cache_write_mode?: 'breakdown' | 'coefficient'
+  input_cost: number
+  output_cost: number
+  cache_read_cost: number
+  cache_write_cost: number
+  service_tier?: string
+  tier_multiplier?: number
+  long_ctx?: {
+    threshold: number
+    total_tokens: number
+    applied: boolean
+    input_multiplier: number
+    output_multiplier: number
+  } | null
+  time_multiplier?: number
+  effort?: string
+  effort_multiplier?: number
+  total: number
+  rate_multiplier: number
+  final: number
 }
 
 export type RequestLogDetail = RequestLog & {

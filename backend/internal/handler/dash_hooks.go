@@ -78,6 +78,58 @@ func (h *Gateway) restrictProbeEnabled(ctx context.Context, allow map[uint]struc
 	return out, len(keys) > 0 && len(out) == 0, nil
 }
 
+// usageTokensOf converts upstream usage into the dashboard's protocol-native
+// billing shape.
+func usageTokensOf(usage upstream.TokenUsage) dashboard.UsageTokens {
+	return dashboard.UsageTokens{
+		Input: usage.InputTokens, Output: usage.OutputTokens,
+		CacheRead: usage.CacheReadTokens, CacheWrite: usage.CacheCreationTokens,
+		CacheWrite5m: usage.CacheCreation5mTokens, CacheWrite1h: usage.CacheCreation1hTokens,
+		ServiceTier: usage.ServiceTier, UsageKnown: usage.UsageKnown,
+	}
+}
+
+func (h *Gateway) costOptions(lg *liveLog, protocol, model string) dashboard.CostOptions {
+	var effort string
+	if lg != nil {
+		effort = lg.effort
+	}
+	return dashboard.CostOptions{Protocol: protocol, Model: model, At: time.Now().UTC(), Effort: effort}
+}
+
+func (h *Gateway) priceCard(lg *liveLog) dashboard.ModelPrice {
+	if lg == nil {
+		return dashboard.ModelPrice{}
+	}
+	return lg.price
+}
+
+// settleCost computes a request's real cost: the upstream-reported amount when
+// present, otherwise the itemized price-card billing scaled by the key's
+// upstream rate multiplier. The receipt records both paths.
+func (h *Gateway) settleCost(lg *liveLog, pk *domain.PlatformKey, protocol, model string, usage upstream.TokenUsage) (*float64, *dashboard.CostDetail) {
+	rate := 1.0
+	if pk != nil && pk.RateMultiplier > 0 {
+		rate = pk.RateMultiplier
+	}
+	opts := h.costOptions(lg, protocol, model)
+	ut := usageTokensOf(usage)
+	res := dashboard.ComputeCost(h.priceCard(lg), opts, ut)
+	if usage.CostUSD != nil {
+		cost := round8(*usage.CostUSD)
+		return &cost, dashboard.ReportedCostDetail(res, rate, cost)
+	}
+	if res.TotalUSD == nil {
+		return nil, nil
+	}
+	detail := *res.Detail
+	detail.Source = dashboard.CostSourceEstimated
+	detail.RateMultiplier = rate
+	detail.Final = round8(*res.TotalUSD * rate)
+	v := detail.Final
+	return &v, &detail
+}
+
 func (h *Gateway) emitDashAttempt(pk *domain.PlatformKey, up *domain.Upstream, a *domain.RequestAttempt, usage upstream.TokenUsage, lg *liveLog, httpSent bool) {
 	if h.Dash == nil || lg == nil || lg.dashUUID == "" || lg.source == "" {
 		return
@@ -92,9 +144,8 @@ func (h *Gateway) emitDashAttempt(pk *domain.PlatformKey, up *domain.Upstream, a
 	} else if pk != nil {
 		providerID = pk.UpstreamID
 	}
-	price := lg.price
-	// BaseCostUSD accepts protocol-native usage, before log token normalization.
-	base := dashboard.BaseCostUSD(price, a.Protocol, usage.InputTokens, usage.CacheReadTokens, usage.CacheCreationTokens, usage.OutputTokens, usage.UsageKnown)
+	// ComputeCost accepts protocol-native usage, before log token normalization.
+	base := dashboard.ComputeCost(h.priceCard(lg), h.costOptions(lg, a.Protocol, a.Model), usageTokensOf(usage)).TotalUSD
 	var estimated, reported, consumption *float64
 	src := dashboard.CostSourceNone
 	if usage.CostUSD != nil {
@@ -151,6 +202,7 @@ func (h *Gateway) emitDashEnd(lg *liveLog, pk *domain.PlatformKey, up *domain.Up
 	if ttft > 0 {
 		ttftStatus = "measured"
 	}
+	base := dashboard.ComputeCost(price, h.costOptions(lg, protocol, model), usageTokensOf(usage)).TotalUSD
 	h.Dash.EnqueueEnd(dashboard.RequestEnd{
 		UUID: lg.dashUUID, Model: model, Protocol: protocol, Success: success, Interrupted: interrupted,
 		CompletedAt: time.Now().UTC(), HTTPAttempts: httpN,
@@ -158,7 +210,8 @@ func (h *Gateway) emitDashEnd(lg *liveLog, pk *domain.PlatformKey, up *domain.Up
 		CacheReadTokens: usage.CacheReadTokens, CacheWriteTokens: usage.CacheCreationTokens,
 		UsageKnown: usage.UsageKnown, InputPrice: floatOrNil(price.OK, price.Input), OutputPrice: floatOrNil(price.OK, price.Output),
 		CacheReadCoeff: price.CacheReadCoeff, CacheWriteCoeff: price.CacheWriteCoeff,
-		TTFTMs: ttft, TTFTStatus: ttftStatus, FinalProviderID: pid, FinalProviderName: pname,
+		BaseCostUSD: base,
+		TTFTMs:      ttft, TTFTStatus: ttftStatus, FinalProviderID: pid, FinalProviderName: pname,
 	})
 	_ = sale
 }

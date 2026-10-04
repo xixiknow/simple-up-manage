@@ -172,7 +172,7 @@ func TestLogKeepsOriginalStreamAndStart(t *testing.T) {
 	if !row.Stream || !row.StreamKnown || !row.RequestBodyTrunc || !row.CreatedAt.Equal(snap.StartedAt) {
 		t.Fatalf("initial stream=%v known=%v truncated=%v start=%s", row.Stream, row.StreamKnown, row.RequestBodyTrunc, row.CreatedAt)
 	}
-	h.finishLog(lg, nil, nil, nil, "anthropic", "model", req.URL.Path, "test", "", 400, false, upstream.TokenUsage{}, 0, 1000, "bad request", snap)
+	h.finishLog(lg, nil, nil, nil, "anthropic", "model", req.URL.Path, "test", "", 400, false, upstream.TokenUsage{}, 0, 1000, "bad request", snap, nil)
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		if err := db.First(&row, lg.id).Error; err != nil {
@@ -197,7 +197,7 @@ func TestSuccessfulFailoverLogClearsPreviousFailure(t *testing.T) {
 		t.Fatal("missing log")
 	}
 	lg.markFailure(h, failureScopeProvider, "cooldown_provider")
-	h.finishLog(lg, nil, nil, nil, domain.ProtocolOpenAI, "model", "/v1/chat/completions", "failover-success", "", http.StatusOK, true, upstream.TokenUsage{}, 0, 10, "", snap)
+	h.finishLog(lg, nil, nil, nil, domain.ProtocolOpenAI, "model", "/v1/chat/completions", "failover-success", "", http.StatusOK, true, upstream.TokenUsage{}, 0, 10, "", snap, nil)
 
 	var row domain.RequestLog
 	deadline := time.Now().Add(time.Second)

@@ -5,6 +5,7 @@ import (
 	"log"
 	"time"
 
+	"simple-up-manage/internal/catalog"
 	"simple-up-manage/internal/config"
 	"simple-up-manage/internal/dashboard"
 	"simple-up-manage/internal/ops"
@@ -71,6 +72,32 @@ func Start(cfg *config.Config, opsSvc *ops.Service, afterCatalog func(), stop <-
 		syncCatalog(ctx)
 	}()
 	go runTicker("catalog", cfg.Jobs.CatalogInterval, stop, syncCatalog)
+
+	// LiteLLM price mirror: probe for changes on the hash cadence, force a
+	// full download+publish on the full-sync cadence. Failures keep the
+	// previous snapshot in force.
+	billingSrc := catalog.LiteLLMSource{RemoteURL: cfg.Billing.RemoteURL, HashURL: cfg.Billing.HashURL}
+	syncBillingPrices := func(ctx context.Context, force bool) {
+		res, err := opsSvc.SyncLiteLLMPrices(ctx, billingSrc, force)
+		if err != nil {
+			log.Printf("job billing-prices: %v", err)
+			return
+		}
+		if res.Published {
+			log.Printf("job billing-prices: published models=%d hash=%.8s", res.Models, res.Hash)
+		}
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		syncBillingPrices(ctx, false)
+	}()
+	go runTicker("billing-prices", cfg.Billing.HashCheckInterval, stop, func(ctx context.Context) {
+		syncBillingPrices(ctx, false)
+	})
+	go runTicker("billing-prices-full", cfg.Billing.FullSyncInterval, stop, func(ctx context.Context) {
+		syncBillingPrices(ctx, true)
+	})
 
 	finalizeStale := func(ctx context.Context) {
 		n, err := opsSvc.FinalizeStaleInFlightLogs(ctx)

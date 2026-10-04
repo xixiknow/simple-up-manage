@@ -14,3 +14,27 @@ jobs:
   models_interval: 1h
   log_retention: 24h
   log_retention_interval: 1h
+# 计费价格源（仪表盘成本/消耗/请求记录金额的估算口径）
+# remote_url 置空可关闭 LiteLLM 价表镜像，仅保留 models.dev 目录价格。
+billing:
+  # LiteLLM model_prices 价表（含 cache_read / cache_write 5m+1h / above_XXXk 长上下文 / priority 档）
+  remote_url: "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
+  # 变更探针：GitHub commits API 按文件路径取最新 commit sha（数百字节请求）；
+  # 与上次一致则跳过全量下载。置空则每次下载全文并按内容 sha256 判重。
+  hash_url: "https://api.github.com/repos/BerriAI/litellm/commits?path=model_prices_and_context_window.json&per_page=1"
+  full_sync_interval: 24h    # 强制全量同步+发布周期
+  hash_check_interval: 10m   # 变更探针周期（失败保留旧价表）
+  # 分时倍率规则（乘在 input/output/cache-read 上）。未配置时内置 DeepSeek
+  # 峰谷规则：工作日（按北京时间判定周末）UTC 01:00-04:00 与 06:00-10:00 ×2。
+  # time_rules:
+  #   - match: "deepseek"
+  #     tz: "UTC"                # 窗口时钟时区
+  #     weekend_tz: "Asia/Shanghai" # 周末判定时区
+  #     skip_weekend: true       # 周末全天低谷（倍率 1）
+  #     windows:
+  #       - { start: "01:00", end: "04:00", multiplier: 2.0 }
+  #       - { start: "06:00", end: "10:00", multiplier: 2.0 }
+  # 推理力度倍率规则（乘在总分项费用上；effort 取自请求体 reasoning_effort / reasoning.effort）
+  # effort_rules:
+  #   - match: "some-model"
+  #     multipliers: { max: 3.0 }

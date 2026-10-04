@@ -203,22 +203,25 @@ type AttemptEnd struct {
 }
 
 type RequestEnd struct {
-	UUID              string
-	Model             string
-	Protocol          string
-	Success           bool
-	Interrupted       bool
-	CompletedAt       time.Time
-	HTTPAttempts      int
-	InputTokens       int64
-	OutputTokens      int64
-	CacheReadTokens   int64
-	CacheWriteTokens  int64
-	UsageKnown        bool
-	InputPrice        *float64
-	OutputPrice       *float64
-	CacheReadCoeff    float64
-	CacheWriteCoeff   float64
+	UUID             string
+	Model            string
+	Protocol         string
+	Success          bool
+	Interrupted      bool
+	CompletedAt      time.Time
+	HTTPAttempts     int
+	InputTokens      int64
+	OutputTokens     int64
+	CacheReadTokens  int64
+	CacheWriteTokens int64
+	UsageKnown       bool
+	InputPrice       *float64
+	OutputPrice      *float64
+	CacheReadCoeff   float64
+	CacheWriteCoeff  float64
+	// BaseCostUSD is the itemized base cost computed handler-side with the
+	// same price card; nil falls back to the legacy coefficient recompute.
+	BaseCostUSD       *float64
 	TTFTMs            int
 	TTFTStatus        string
 	FinalProviderID   *uint
@@ -271,10 +274,10 @@ func (s *settler) process(e queuedEvent) error {
 			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&p).Error; err != nil {
 				return err
 			}
-			if p.Source != domain.SourceBusiness {
-				return nil
-			}
-			return applyAttemptAgg(tx, p)
+			// Probe / admin-test traffic really burns upstream tokens: aggregate
+			// its consumption everywhere, but keep quality metrics
+			// (provider success, TTFT, known-cost finance) business-only.
+			return applyAttemptAgg(tx, p, p.Source == domain.SourceBusiness)
 		case kindReqEnd:
 			var p RequestEnd
 			if err := json.Unmarshal(e.Payload, &p); err != nil {
@@ -350,9 +353,10 @@ func updateRequestFact(f *RequestFact, p RequestEnd, attempts []AttemptFact) {
 		f.CacheWriteCoeff = 1.25
 	}
 	priceOK := f.InputPrice != nil && f.OutputPrice != nil
-	if priceOK {
-		in, out := *f.InputPrice, *f.OutputPrice
-		f.BaseCostUSD = BaseCostUSD(ModelPrice{Input: in, Output: out, CacheReadCoeff: f.CacheReadCoeff, CacheWriteCoeff: f.CacheWriteCoeff, OK: true}, f.Protocol, f.InputTokens, f.CacheReadTokens, f.CacheWriteTokens, f.OutputTokens, f.UsageKnown)
+	if p.BaseCostUSD != nil {
+		f.BaseCostUSD = p.BaseCostUSD
+	} else if priceOK {
+		f.BaseCostUSD = BaseCostUSD(ModelPrice{Input: *f.InputPrice, Output: *f.OutputPrice, CacheReadCoeff: f.CacheReadCoeff, CacheWriteCoeff: f.CacheWriteCoeff, OK: true}, f.Protocol, f.InputTokens, f.CacheReadTokens, f.CacheWriteTokens, f.OutputTokens, f.UsageKnown)
 	}
 	reasons := []string{}
 	if f.RouteGroupID == nil {
@@ -520,13 +524,16 @@ func applyRequestAgg(tx *gorm.DB, f RequestFact, attempts []AttemptFact) error {
 	return nil
 }
 
-func applyAttemptAgg(tx *gorm.DB, a AttemptFact) error {
+// applyAttemptAgg folds one attempt into the attempt-family aggregates.
+// business=false (probe / admin-test traffic) counts only real consumption —
+// quality metrics and known-cost finance stay business-only.
+func applyAttemptAgg(tx *gorm.DB, a AttemptFact, business bool) error {
 	bucket := a.CompletedAt.UTC().Truncate(time.Minute)
 	dims := []struct {
 		dim string
 		id  uint
 	}{{DimGlobal, 0}, {DimProvider, a.ProviderID}}
-	quality := a.Result == "success" || a.Result == "upstream_failure"
+	quality := business && (a.Result == "success" || a.Result == "upstream_failure")
 	for _, d := range dims {
 		row, err := getMinute(tx, bucket, FamilyAttempt, d.dim, d.id)
 		if err != nil {
@@ -542,7 +549,7 @@ func applyAttemptAgg(tx *gorm.DB, a AttemptFact) error {
 				delta.ProviderFailure = 1
 			}
 		}
-		if a.TTFTStatus == "measured" && a.Result == "success" {
+		if business && a.TTFTStatus == "measured" && a.Result == "success" {
 			h := parseHist(row.TTFTHistJSON)
 			obs := observeTTFT(a.TTFTMs)
 			h = addHist(h, obs)
@@ -551,7 +558,7 @@ func applyAttemptAgg(tx *gorm.DB, a AttemptFact) error {
 			delta.TTFTHistJSON = histJSON(obs)
 			delta.TTFTSamples = 1
 		}
-		if a.EstimatedCostUSD != nil {
+		if business && a.EstimatedCostUSD != nil {
 			row.KnownCostUSD = round8(row.KnownCostUSD + *a.EstimatedCostUSD)
 			delta.KnownCostUSD = *a.EstimatedCostUSD
 		}

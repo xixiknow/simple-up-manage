@@ -169,6 +169,7 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 		return
 	}
 	model := peekModelFrom(c.GetHeader("Content-Type"), body)
+	effort := peekReasoningEffort(body)
 	session, sessionSource, previousResponse := picker.RequestSession(c.Request.Header, body)
 	reqID := strings.TrimSpace(c.GetHeader("X-Request-Id"))
 	if reqID == "" {
@@ -194,6 +195,7 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 		lg.sale = sale
 		lg.catalogVer = catalogVer
 		lg.price = dashboard.LookupVersionPrice(h.DB, catalogVer, model)
+		lg.effort = effort
 		h.archiveRequest(lg.id, c.Request, body)
 		h.writeLog(lg, map[string]any{
 			"dash_uuid":           dashUUID,
@@ -220,7 +222,7 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 		if msg == "" {
 			msg = "request ended"
 		}
-		h.finishLog(lg, ck, nil, nil, protocol, model, path, reqID, clientIP, c.Writer.Status(), false, upstream.TokenUsage{}, 0, int(time.Since(reqStart).Milliseconds()), msg, reqSnap)
+		h.finishLog(lg, ck, nil, nil, protocol, model, path, reqID, clientIP, c.Writer.Status(), false, upstream.TokenUsage{}, 0, int(time.Since(reqStart).Milliseconds()), msg, reqSnap, nil)
 	}()
 
 	attempts := 2
@@ -725,7 +727,7 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 			}
 			snap = reqSnap.withResponse(resp.Header, resp.Header.Get("Content-Type"), peek, int(total))
 			failure.ok = true
-			h.finishLog(lg, ck, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, int(time.Since(started).Milliseconds()), failure.msg, snap)
+			h.finishLog(lg, ck, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, int(time.Since(started).Milliseconds()), failure.msg, snap, nil)
 		}
 		return failure
 	}
@@ -873,18 +875,20 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 	snap := reqSnap.withResponse(resp.Header, resp.Header.Get("Content-Type"), respPrefix, respTotal)
 	snap.TTFTEvent = collector.firstEvent
 	snap.TTFTStatus = collector.ttftStatus(success)
-	// Preserve upstream evidence for attempt settlement; legacy logs and quota
-	// continue to use their existing fallback estimate.
+	// Preserve upstream evidence for attempt settlement; without a reported
+	// cost, quota and the log amount use the itemized price-card billing
+	// scaled by the key's upstream rate multiplier.
 	logUsage := collector.usage
-	if logUsage.CostUSD == nil {
-		logUsage.CostUSD = estimateRequestCost(h.DB, model, pk, logUsage)
+	cost, costDetail := h.settleCost(lg, pk, protocol, model, logUsage)
+	if cost != nil {
+		logUsage.CostUSD = cost
 	}
 	if success {
 		lg.traceEvent(h, pk, up, "selected", "success")
 	} else {
 		lg.traceEvent(h, pk, up, "failed", errMsg)
 	}
-	h.finishLog(lg, ck, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, success, logUsage, collector.ttftMs, dur, errMsg, snap)
+	h.finishLog(lg, ck, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, success, logUsage, collector.ttftMs, dur, errMsg, snap, costDetail)
 	if success {
 		if runtime, ok := h.Picker.(picker.RuntimeController); ok {
 			runtime.RecordProviderSuccess(c.Request.Context(), up.ID)
@@ -1073,6 +1077,7 @@ type liveLog struct {
 	sale         *float64
 	catalogVer   uint
 	price        dashboard.ModelPrice
+	effort       string
 	httpAttempts int
 	ended        bool
 }
@@ -1204,7 +1209,7 @@ type ckIDs struct {
 	up *domain.Upstream
 }
 
-func (h *Gateway) finishLog(lg *liveLog, ck *domain.ConsumerKey, pk *domain.PlatformKey, up *domain.Upstream, protocol, model, path, reqID, clientIP string, status int, success bool, usage upstream.TokenUsage, ttft, dur int, errMsg string, snap ioCapture) {
+func (h *Gateway) finishLog(lg *liveLog, ck *domain.ConsumerKey, pk *domain.PlatformKey, up *domain.Upstream, protocol, model, path, reqID, clientIP string, status int, success bool, usage upstream.TokenUsage, ttft, dur int, errMsg string, snap ioCapture, costDetail *dashboard.CostDetail) {
 	completedAt := time.Now().UTC()
 	updates := logUpdates(ckIDs{pk: pk, up: up}, protocol, model, path, reqID, clientIP, status, success, usage, ttft, dur, errMsg, snap, false)
 	updates["completed_at"] = completedAt
@@ -1213,6 +1218,15 @@ func (h *Gateway) finishLog(lg *liveLog, ck *domain.ConsumerKey, pk *domain.Plat
 	if success {
 		updates["failure_scope"] = ""
 		updates["failure_action"] = ""
+	}
+	if costDetail != nil {
+		if b, err := json.Marshal(costDetail); err == nil {
+			updates["cost_detail"] = string(b)
+		}
+	}
+	detailJSON := ""
+	if s, ok := updates["cost_detail"].(string); ok {
+		detailJSON = s
 	}
 	if lg == nil || lg.id == 0 {
 		row := domain.RequestLog{
@@ -1237,6 +1251,7 @@ func (h *Gateway) finishLog(lg *liveLog, ck *domain.ConsumerKey, pk *domain.Plat
 			CompletedAt:         &completedAt,
 			CreatedAt:           snap.StartedAt,
 			CostUSD:             usage.CostUSD,
+			CostDetail:          detailJSON,
 			ErrorMessage:        truncateErr(errMsg),
 			RequestHeaders:      snap.ReqHeaders,
 			RequestBody:         snap.ReqBody,
@@ -1464,6 +1479,25 @@ func peekModel(body []byte) string {
 func peekStream(body []byte) bool {
 	stream, _ := domain.RequestStream("application/json", body)
 	return stream
+}
+
+// peekReasoningEffort extracts the reasoning effort level from OpenAI-style
+// bodies (top-level reasoning_effort or reasoning.effort). Anthropic bodies
+// carry neither; an empty result simply disables effort rules.
+func peekReasoningEffort(body []byte) string {
+	var peek struct {
+		ReasoningEffort string `json:"reasoning_effort"`
+		Reasoning       struct {
+			Effort string `json:"effort"`
+		} `json:"reasoning"`
+	}
+	if err := json.Unmarshal(body, &peek); err != nil {
+		return ""
+	}
+	if v := strings.TrimSpace(peek.ReasoningEffort); v != "" {
+		return v
+	}
+	return strings.TrimSpace(peek.Reasoning.Effort)
 }
 
 func isSSEContentType(ct string) bool {

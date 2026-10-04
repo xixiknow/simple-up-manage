@@ -19,10 +19,6 @@ const (
 	ReasonInterrupted  = "interrupted"
 	ReasonLocalOnly    = "local_only"
 
-	CostSourceReported  = "reported"
-	CostSourceEstimated = "estimated"
-	CostSourceNone      = "none"
-
 	DefaultRenewalHorizonHours     = 48
 	DefaultMinQualitySamples       = 30
 	DefaultMinSuccessRate          = 0.95
@@ -65,6 +61,24 @@ type CatalogVersionPrice struct {
 	OutputCost      float64 `gorm:"type:decimal(16,8)" json:"output_cost"`
 	CacheReadCoeff  float64 `gorm:"type:decimal(8,4);not null;default:0.1" json:"cache_read_coeff"`
 	CacheWriteCoeff float64 `gorm:"type:decimal(8,4);not null;default:1.25" json:"cache_write_coeff"`
+
+	// LiteLLM-derived absolute prices, all USD per token. NULL keeps the legacy
+	// coefficient path (cache read = input × 0.1, cache write = input × 1.25).
+	// Per-token scale (not the per-million scale of InputCost) preserves cheap
+	// cache prices like DeepSeek's 7e-9.
+	CacheReadPrice            *float64 `gorm:"type:decimal(20,12)" json:"cache_read_price,omitempty"`
+	CacheWrite5mPrice         *float64 `gorm:"type:decimal(20,12)" json:"cache_write_5m_price,omitempty"`
+	CacheWrite1hPrice         *float64 `gorm:"type:decimal(20,12)" json:"cache_write_1h_price,omitempty"`
+	InputPriorityPrice        *float64 `gorm:"type:decimal(20,12)" json:"input_priority_price,omitempty"`
+	OutputPriorityPrice       *float64 `gorm:"type:decimal(20,12)" json:"output_priority_price,omitempty"`
+	CacheReadPriorityPrice    *float64 `gorm:"type:decimal(20,12)" json:"cache_read_priority_price,omitempty"`
+	CacheWrite5mPriorityPrice *float64 `gorm:"type:decimal(20,12)" json:"cache_write_5m_priority_price,omitempty"`
+
+	// Long-context ladder: total prompt tokens above the threshold scale input
+	// (and cache) prices by InputMult and output prices by OutputMult.
+	LongCtxThreshold  *int64   `json:"long_ctx_threshold,omitempty"`
+	LongCtxInputMult  *float64 `gorm:"type:decimal(8,4)" json:"long_ctx_input_mult,omitempty"`
+	LongCtxOutputMult *float64 `gorm:"type:decimal(8,4)" json:"long_ctx_output_mult,omitempty"`
 }
 
 func (CatalogVersionPrice) TableName() string { return "dash_catalog_prices" }

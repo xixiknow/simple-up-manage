@@ -1,9 +1,13 @@
 package handler
 
 import (
-	"simple-up-manage/internal/crypto"
-	"simple-up-manage/internal/domain"
+	"encoding/json"
+	"strings"
 	"time"
+
+	"simple-up-manage/internal/crypto"
+	"simple-up-manage/internal/dashboard"
+	"simple-up-manage/internal/domain"
 )
 
 type upstreamDTO struct {
@@ -224,39 +228,40 @@ func toConsumerDTO(k domain.ConsumerKey, includeRaw bool) consumerDTO {
 }
 
 type logDTO struct {
-	ExternalProbeRule   *string   `json:"external_probe_rule"`
-	ID                  uint      `json:"id"`
-	RequestID           string    `json:"request_id"`
-	ConsumerKeyID       *uint     `json:"consumer_key_id"`
-	UpstreamID          *uint     `json:"upstream_id"`
-	PlatformKeyID       *uint     `json:"platform_key_id"`
-	RouteGroupID        *uint     `json:"route_group_id"`
-	RouteGroupName      string    `json:"route_group_name,omitempty"`
-	Protocol            string    `json:"protocol"`
-	Model               string    `json:"model"`
-	Path                string    `json:"path"`
-	ClientIP            string    `json:"client_ip"`
-	StatusCode          int       `json:"status_code"`
-	Success             bool      `json:"success"`
-	InputTokens         int64     `json:"input_tokens"`
-	OutputTokens        int64     `json:"output_tokens"`
-	CacheReadTokens     int64     `json:"cache_read_tokens"`
-	CacheCreationTokens int64     `json:"cache_creation_tokens"`
-	TTFTMs              int       `json:"ttft_ms"`
-	TTFTStatus          string    `json:"ttft_status"`
-	TTFTEvent           string    `json:"ttft_event"`
-	DurationMs          int       `json:"duration_ms"`
-	InFlight            bool      `json:"in_flight"`
-	Stream              bool      `json:"stream"`
-	StreamKnown         bool      `json:"stream_known"`
-	CostUSD             *float64  `json:"cost_usd"`
-	ErrorMessage        string    `json:"error_message"`
-	FailureScope        string    `json:"failure_scope"`
-	FailureAction       string    `json:"failure_action"`
-	SelectionTrace      string    `json:"selection_trace"`
-	CreatedAt           time.Time `json:"created_at"`
-	UpstreamName        string    `json:"upstream_name,omitempty"`
-	ConsumerName        string    `json:"consumer_name,omitempty"`
+	ExternalProbeRule   *string               `json:"external_probe_rule"`
+	ID                  uint                  `json:"id"`
+	RequestID           string                `json:"request_id"`
+	ConsumerKeyID       *uint                 `json:"consumer_key_id"`
+	UpstreamID          *uint                 `json:"upstream_id"`
+	PlatformKeyID       *uint                 `json:"platform_key_id"`
+	RouteGroupID        *uint                 `json:"route_group_id"`
+	RouteGroupName      string                `json:"route_group_name,omitempty"`
+	Protocol            string                `json:"protocol"`
+	Model               string                `json:"model"`
+	Path                string                `json:"path"`
+	ClientIP            string                `json:"client_ip"`
+	StatusCode          int                   `json:"status_code"`
+	Success             bool                  `json:"success"`
+	InputTokens         int64                 `json:"input_tokens"`
+	OutputTokens        int64                 `json:"output_tokens"`
+	CacheReadTokens     int64                 `json:"cache_read_tokens"`
+	CacheCreationTokens int64                 `json:"cache_creation_tokens"`
+	TTFTMs              int                   `json:"ttft_ms"`
+	TTFTStatus          string                `json:"ttft_status"`
+	TTFTEvent           string                `json:"ttft_event"`
+	DurationMs          int                   `json:"duration_ms"`
+	InFlight            bool                  `json:"in_flight"`
+	Stream              bool                  `json:"stream"`
+	StreamKnown         bool                  `json:"stream_known"`
+	CostUSD             *float64              `json:"cost_usd"`
+	CostDetail          *dashboard.CostDetail `json:"cost_detail,omitempty"`
+	ErrorMessage        string                `json:"error_message"`
+	FailureScope        string                `json:"failure_scope"`
+	FailureAction       string                `json:"failure_action"`
+	SelectionTrace      string                `json:"selection_trace"`
+	CreatedAt           time.Time             `json:"created_at"`
+	UpstreamName        string                `json:"upstream_name,omitempty"`
+	ConsumerName        string                `json:"consumer_name,omitempty"`
 }
 
 type logDetailDTO struct {
@@ -299,6 +304,7 @@ func toLogDTO(l domain.RequestLog, upstreamName, consumerName string) logDTO {
 		Stream:              l.Stream,
 		StreamKnown:         l.StreamKnown,
 		CostUSD:             l.CostUSD,
+		CostDetail:          parseCostDetail(l.CostDetail),
 		ErrorMessage:        l.ErrorMessage,
 		FailureScope:        l.FailureScope,
 		FailureAction:       l.FailureAction,
@@ -319,4 +325,15 @@ func toLogDetailDTO(l domain.RequestLog, upstreamName, consumerName string) logD
 		ResponseBody:      l.ResponseBody,
 		ResponseBodyTrunc: l.ResponseBodyTrunc,
 	}
+}
+
+func parseCostDetail(s string) *dashboard.CostDetail {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	var detail dashboard.CostDetail
+	if err := json.Unmarshal([]byte(s), &detail); err != nil {
+		return nil
+	}
+	return &detail
 }

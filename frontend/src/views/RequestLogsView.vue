@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, h, onMounted, onUnmounted, reactive, ref, watch, type VNodeChild } from 'vue'
+import { computed, defineComponent, h, onMounted, onUnmounted, reactive, ref, watch, type VNodeChild } from 'vue'
 import { UiDatePicker, UiInput, UiPopover, UiSelect, UiTag, UiTimeline, UiTimelineItem, useMessage } from '@/components/ui'
 import { ArrowBackOutline, ArrowForwardOutline, ArrowLeftRightOutline, CheckOutline, ClockOutline, CloseOutline, CopyOutline, DownloadOutline, FilterOutline, RefreshOutline, RepeatOutline } from '@/components/ui/icons'
 import type { DataTableColumns, SelectOption } from '@/components/ui'
 import { allPages, downloadLogBody, getLogBody, getRequestLog, listConsumerKeys, listKeyOptions, listRequestLogs, listRouteGroups, listUpstreams } from '@/api/admin'
-import type { RequestLog, RequestLogDetail, RequestLogQuery, SchedulerDecision, SchedulerCandidate, RequestAttempt } from '@/api/types'
+import type { CostDetail, RequestLog, RequestLogDetail, RequestLogQuery, SchedulerDecision, SchedulerCandidate, RequestAttempt } from '@/api/types'
 import { EXTERNAL_PROBE_LABEL } from '@/api/types'
 import { copyText, errText, formatMoney, formatNumber, formatSeconds, formatTime, formatTokenCount, formatTps } from '@/utils/format'
 import { useRoute } from 'vue-router'
@@ -37,6 +37,63 @@ function traceReasonLabel(event: TraceEvent) {
   if (r === 'failover') return '故障转移'
   return r
 }
+
+// ---- 费用明细回执（cost_detail）----
+function multLabel(v?: number | null) {
+  if (!v || v === 1) return ''
+  return `×${Number.isInteger(v) ? v : Math.round(v * 100) / 100}`
+}
+function perM(pricePerToken?: number | null) {
+  if (pricePerToken === null || pricePerToken === undefined) return '—'
+  return `$${formatMoney(pricePerToken * 1e6, 4)}/M`
+}
+function costLine(label: string, value: string, cost?: string, cls = '') {
+  return h('div', { class: ['cost-line', cls] }, [
+    h('span', { class: 'cost-k' }, label),
+    h('span', { class: 'cost-v' }, value),
+    cost != null ? h('span', { class: 'cost-c mono' }, cost) : null,
+  ])
+}
+const CostPanel = defineComponent({
+  props: { detail: { type: Object as () => CostDetail, required: true } },
+  setup(props) {
+    return () => {
+      const d = props.detail
+      const lines: ReturnType<typeof h>[] = []
+      lines.push(h('div', { class: 'cost-head' }, [
+        h(UiTag, { type: d.source === 'reported' ? 'success' : 'info', size: 'small', bordered: false }, { default: () => (d.source === 'reported' ? '上游自报' : '价卡估算') }),
+        d.matched ? h('span', { class: 'cost-matched mono' }, `价卡 ${d.matched}`) : null,
+      ]))
+      lines.push(costLine('输入', `${formatNumber(d.input_tokens)} × ${perM(d.input_price)}`, formatMoney(d.input_cost, 6)))
+      lines.push(costLine('输出', `${formatNumber(d.output_tokens)} × ${perM(d.output_price)}`, formatMoney(d.output_cost, 6)))
+      lines.push(costLine('缓存读', `${formatNumber(d.cache_read_tokens)} × ${perM(d.cache_read_price)}`, formatMoney(d.cache_read_cost, 6)))
+      if (d.cache_write_mode === 'breakdown') {
+        let n5 = d.cache_write_5m_tokens || 0
+        const n1 = d.cache_write_1h_tokens || 0
+        if (!n5 && !n1) n5 = d.cache_write_tokens
+        if (n5) lines.push(costLine('缓存写 5m', `${formatNumber(n5)} × ${perM(d.cache_write_5m_price)}`, formatMoney(n5 * (d.cache_write_5m_price || 0), 6)))
+        if (n1) lines.push(costLine('缓存写 1h', `${formatNumber(n1)} × ${perM(d.cache_write_1h_price)}`, formatMoney(n1 * (d.cache_write_1h_price || 0), 6)))
+      } else if (d.cache_write_tokens) {
+        lines.push(costLine('缓存写', `${formatNumber(d.cache_write_tokens)} × ${perM(d.cache_write_5m_price)}`, formatMoney(d.cache_write_cost, 6)))
+      }
+      if (d.long_ctx?.applied) {
+        lines.push(costLine('长上下文', `${formatNumber(d.long_ctx.total_tokens)} > ${formatNumber(d.long_ctx.threshold)} · 输入${multLabel(d.long_ctx.input_multiplier)} 输出${multLabel(d.long_ctx.output_multiplier)}`, undefined, 'cost-note'))
+      }
+      if (d.service_tier) {
+        lines.push(costLine('服务档位', `${d.service_tier} ${multLabel(d.tier_multiplier)}`.trim(), undefined, 'cost-note'))
+      }
+      if (d.time_multiplier && d.time_multiplier !== 1) {
+        lines.push(costLine('峰谷倍率', multLabel(d.time_multiplier), undefined, 'cost-note'))
+      }
+      if (d.effort) {
+        lines.push(costLine('推理力度', `${d.effort} ${multLabel(d.effort_multiplier)}`.trim(), undefined, 'cost-note'))
+      }
+      const rate = multLabel(d.rate_multiplier)
+      lines.push(costLine('合计', rate ? `$${formatMoney(d.total, 6)} ${rate} 上游倍率` : `$${formatMoney(d.total, 6)}`, `$${formatMoney(d.final, 6)}`, 'cost-total'))
+      return h('div', { class: 'cost-detail-panel' }, lines)
+    }
+  },
+})
 
 // 列表行的切换标志：按行缓存解析结果，4s 轮询替换行对象后重新解析
 const traceFlagsCache = new WeakMap<RequestLog, { retryCount: number; switched: boolean; switchReason?: string }>()
@@ -612,7 +669,12 @@ const columns = computed<DataTableColumns<RequestLog>>(() => {
     key: 'cost_usd',
     width: 100,
     render(row) {
-      return formatMoney(row.cost_usd, 6)
+      const text = formatMoney(row.cost_usd, 6)
+      if (!row.cost_detail) return text
+      return h(UiPopover, { placement: 'bottom-end' }, {
+        trigger: () => h('span', { class: 'cost-cell' }, text),
+        default: () => h(CostPanel, { detail: row.cost_detail! }),
+      })
     },
   },
   {
@@ -822,6 +884,7 @@ onUnmounted(() => {
                 {{ formatNumber(detail.cache_creation_tokens) }}
               </div>
               <div><span class="meta-k">费用</span>{{ formatMoney(detail.cost_usd, 6) }}</div>
+              <CostPanel v-if="detail.cost_detail" :detail="detail.cost_detail" class="drawer-cost-panel" />
               <div v-if="detail.failure_scope">
                 <span class="meta-k">故障范围</span>{{ failureScopeLabel[detail.failure_scope] || detail.failure_scope }}
               </div>
@@ -962,6 +1025,17 @@ onUnmounted(() => {
   white-space: pre-wrap;
   word-break: break-word;
 }
+.cost-detail-panel { display: flex; flex-direction: column; gap: 4px; min-width: 360px; font-size: 12px; }
+.cost-detail-panel .cost-head { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+.cost-detail-panel .cost-matched { opacity: 0.65; }
+.cost-detail-panel .cost-line { display: flex; align-items: baseline; gap: 8px; }
+.cost-detail-panel .cost-k { flex: 0 0 60px; opacity: 0.65; }
+.cost-detail-panel .cost-v { flex: 1; }
+.cost-detail-panel .cost-c { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cost-detail-panel .cost-note .cost-v { opacity: 0.75; }
+.cost-detail-panel .cost-total { border-top: 1px dashed var(--border-color, rgba(128, 128, 128, 0.35)); padding-top: 4px; font-weight: 600; }
+.page :deep(.drawer-cost-panel) { margin-top: 6px; }
+.page :deep(.cost-cell) { border-bottom: 1px dashed var(--border-color, rgba(128, 128, 128, 0.4)); cursor: help; }
 .tok-cell {
   line-height: 1.35;
 }

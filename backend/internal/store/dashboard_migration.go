@@ -23,6 +23,8 @@ func migrateDashboard(db *gorm.DB) error {
 		&dashboard.Gap{},
 		&dashboard.Settings{},
 		&dashboard.Meta{},
+		&domain.LiteLLMPrice{},
+		&domain.LiteLLMMeta{},
 	); err != nil {
 		return err
 	}

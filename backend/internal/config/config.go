@@ -11,16 +11,54 @@ import (
 )
 
 type Config struct {
-	Listen            string `yaml:"listen"`
-	AdminToken        string `yaml:"admin_token"`
-	EncryptKey        string `yaml:"encrypt_key"`
-	DatabaseURL       string `yaml:"database_url"`
-	RedisURL          string `yaml:"redis_url"`
-	StaticDir         string `yaml:"static_dir"`
-	LogBodiesDir      string `yaml:"log_bodies_dir"`
-	LogBodyMaxBytes   int64  `yaml:"log_body_max_bytes"`
-	LogBodiesMaxBytes int64  `yaml:"log_bodies_max_bytes"`
-	Jobs              Jobs   `yaml:"jobs"`
+	Listen            string  `yaml:"listen"`
+	AdminToken        string  `yaml:"admin_token"`
+	EncryptKey        string  `yaml:"encrypt_key"`
+	DatabaseURL       string  `yaml:"database_url"`
+	RedisURL          string  `yaml:"redis_url"`
+	StaticDir         string  `yaml:"static_dir"`
+	LogBodiesDir      string  `yaml:"log_bodies_dir"`
+	LogBodyMaxBytes   int64   `yaml:"log_body_max_bytes"`
+	LogBodiesMaxBytes int64   `yaml:"log_bodies_max_bytes"`
+	Jobs              Jobs    `yaml:"jobs"`
+	Billing           Billing `yaml:"billing"`
+}
+
+// Billing configures the LiteLLM price-card mirror that feeds the dashboard's
+// consumption estimates, plus optional surcharge rules layered on top of it.
+type Billing struct {
+	RemoteURL         string        `yaml:"remote_url"`
+	HashURL           string        `yaml:"hash_url"`
+	FullSyncInterval  time.Duration `yaml:"full_sync_interval"`
+	HashCheckInterval time.Duration `yaml:"hash_check_interval"`
+	TimeRules         []TimeRule    `yaml:"time_rules"`
+	EffortRules       []EffortRule  `yaml:"effort_rules"`
+}
+
+// TimeRule multiplies input/output/cache-read prices during configured time
+// windows (e.g. DeepSeek peak hours). Windows are half-open [start, end) in TZ;
+// end <= start wraps midnight. When no rule is configured, the built-in
+// DeepSeek peak-valley rule applies.
+type TimeRule struct {
+	ModelMatch  string       `yaml:"match"`
+	TZ          string       `yaml:"tz"`
+	WeekendTZ   string       `yaml:"weekend_tz"`
+	SkipWeekend bool         `yaml:"skip_weekend"`
+	Windows     []TimeWindow `yaml:"windows"`
+}
+
+type TimeWindow struct {
+	Days       []string `yaml:"days"`
+	Start      string   `yaml:"start"`
+	End        string   `yaml:"end"`
+	Multiplier float64  `yaml:"multiplier"`
+}
+
+// EffortRule multiplies the whole cost when a request's reasoning effort
+// (OpenAI protocol: reasoning_effort / reasoning.effort) matches a key.
+type EffortRule struct {
+	ModelMatch  string             `yaml:"match"`
+	Multipliers map[string]float64 `yaml:"multipliers"`
 }
 
 type Jobs struct {
@@ -33,6 +71,15 @@ type Jobs struct {
 	LogRetention         time.Duration `yaml:"log_retention"`
 	LogRetentionInterval time.Duration `yaml:"log_retention_interval"`
 }
+
+// Default LiteLLM price-card mirror and its change probe, kept inline so this
+// package stays a leaf (catalog's test imports store, which reaches back here).
+// The commits API answers with a few hundred bytes, keeping the 10-minute hash
+// check well inside GitHub's unauthenticated rate limit.
+const (
+	DefaultBillingRemoteURL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
+	DefaultBillingHashURL   = "https://api.github.com/repos/BerriAI/litellm/commits?path=model_prices_and_context_window.json&per_page=1"
+)
 
 func defaults() Config {
 	return Config{
@@ -49,6 +96,12 @@ func defaults() Config {
 			ModelsInterval:       time.Hour,
 			LogRetention:         24 * time.Hour,
 			LogRetentionInterval: time.Hour,
+		},
+		Billing: Billing{
+			RemoteURL:         DefaultBillingRemoteURL,
+			HashURL:           DefaultBillingHashURL,
+			FullSyncInterval:  24 * time.Hour,
+			HashCheckInterval: 10 * time.Minute,
 		},
 	}
 }
@@ -133,6 +186,20 @@ func Load() (*Config, error) {
 	}
 	if cfg.Jobs.LogRetentionInterval <= 0 {
 		cfg.Jobs.LogRetentionInterval = time.Hour
+	}
+	// Billing: an explicitly empty remote_url in YAML disables the LiteLLM
+	// mirror (defaults are pre-filled in defaults(), so only a deliberate
+	// override can blank it); sync cadence gets floors.
+	cfg.Billing.RemoteURL = strings.TrimSpace(cfg.Billing.RemoteURL)
+	cfg.Billing.HashURL = strings.TrimSpace(cfg.Billing.HashURL)
+	if cfg.Billing.FullSyncInterval <= 0 {
+		cfg.Billing.FullSyncInterval = 24 * time.Hour
+	}
+	if cfg.Billing.HashCheckInterval <= 0 {
+		cfg.Billing.HashCheckInterval = 10 * time.Minute
+	}
+	if cfg.Billing.HashCheckInterval < time.Minute {
+		cfg.Billing.HashCheckInterval = time.Minute
 	}
 	if strings.TrimSpace(cfg.AdminToken) == "" {
 		return nil, fmt.Errorf("admin_token / ADMIN_TOKEN is required")

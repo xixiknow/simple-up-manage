@@ -374,8 +374,14 @@ type TokenUsage struct {
 	OutputTokens        int64
 	CacheReadTokens     int64
 	CacheCreationTokens int64
-	CostUSD             *float64
-	UsageKnown          bool
+	// Anthropic ephemeral cache-write breakdown; both zero with a positive
+	// CacheCreationTokens means the upstream gave no 5m/1h details.
+	CacheCreation5mTokens int64
+	CacheCreation1hTokens int64
+	// ServiceTier is the OpenAI usage.service_tier (default/flex/priority...).
+	ServiceTier string
+	CostUSD     *float64
+	UsageKnown  bool
 }
 
 func MergeUsage(dst *TokenUsage, src TokenUsage) {
@@ -393,6 +399,15 @@ func MergeUsage(dst *TokenUsage, src TokenUsage) {
 	}
 	if src.CacheCreationTokens > 0 {
 		dst.CacheCreationTokens = src.CacheCreationTokens
+	}
+	if src.CacheCreation5mTokens > 0 {
+		dst.CacheCreation5mTokens = src.CacheCreation5mTokens
+	}
+	if src.CacheCreation1hTokens > 0 {
+		dst.CacheCreation1hTokens = src.CacheCreation1hTokens
+	}
+	if src.ServiceTier != "" {
+		dst.ServiceTier = src.ServiceTier
 	}
 	if src.CostUSD != nil {
 		dst.CostUSD = src.CostUSD
@@ -491,6 +506,19 @@ func absorbUsageMap(u *TokenUsage, m map[string]any) {
 		if v, ok := asInt(details["cache_write_tokens"]); ok {
 			u.CacheCreationTokens = v
 		}
+	}
+	// Anthropic reports the ephemeral cache-write tiers nested under
+	// cache_creation: {ephemeral_5m_input_tokens, ephemeral_1h_input_tokens}.
+	if cc, ok := asMap(m["cache_creation"]); ok {
+		if v, ok := asInt(cc["ephemeral_5m_input_tokens"]); ok {
+			u.CacheCreation5mTokens = v
+		}
+		if v, ok := asInt(cc["ephemeral_1h_input_tokens"]); ok {
+			u.CacheCreation1hTokens = v
+		}
+	}
+	if v, ok := m["service_tier"].(string); ok && v != "" {
+		u.ServiceTier = v
 	}
 	if v, ok := asFloat(m["cost"]); ok {
 		u.CostUSD = &v
