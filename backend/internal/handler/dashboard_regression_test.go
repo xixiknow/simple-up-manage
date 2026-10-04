@@ -133,10 +133,26 @@ func TestDashboardGatewayCachedCostAndDiagnosticIsolation(t *testing.T) {
 				t.Fatalf("unmatched diagnostic events=%d", depth)
 			}
 			if source == domain.SourceAdminTest {
-				var n int64
-				h.DB.Model(&dashboard.MinuteAgg{}).Count(&n)
-				if n != 0 {
-					t.Fatalf("diagnostic polluted business aggregates: %d", n)
+				// Probe traffic counts toward consumption aggregates (attempt
+				// family, global + provider dims) but must not touch quality,
+				// finance or request-family aggregates.
+				var aggs []dashboard.MinuteAgg
+				if err := h.DB.Find(&aggs).Error; err != nil {
+					t.Fatal(err)
+				}
+				if len(aggs) != 2 {
+					t.Fatalf("diagnostic aggregates = %d, want consumption-only rows", len(aggs))
+				}
+				for _, row := range aggs {
+					if row.Family != dashboard.FamilyAttempt {
+						t.Fatalf("diagnostic polluted %s aggregates: %+v", row.Family, row)
+					}
+					if row.ProviderSuccess != 0 || row.ProviderFailure != 0 || row.KnownRevenueUSD != 0 || row.KnownCostUSD != 0 {
+						t.Fatalf("diagnostic polluted quality/finance aggregates: %+v", row)
+					}
+					if row.ConsumptionUSD <= 0 {
+						t.Fatalf("diagnostic consumption missing: %+v", row)
+					}
 				}
 				snap := h.Dash.Metrics.Snapshot()
 				if snap.BusinessRPM != 0 || snap.UpstreamRPM != 0 {
