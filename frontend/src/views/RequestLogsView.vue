@@ -38,6 +38,13 @@ function traceReasonLabel(event: TraceEvent) {
   return r
 }
 
+// 计费输入口径 (sub2api convention): OpenAI prompt_tokens includes cached tokens;
+function billedInputTokens(row: Pick<RequestLog, 'protocol' | 'input_tokens' | 'cache_read_tokens' | 'cache_creation_tokens'>) {
+  if (row.protocol === 'openai') {
+    return Math.max(0, row.input_tokens - row.cache_read_tokens - row.cache_creation_tokens)
+  }
+  return row.input_tokens
+}
 // ---- 费用明细回执（cost_detail）----
 function multLabel(v?: number | null) {
   if (!v || v === 1) return ''
@@ -667,14 +674,16 @@ const columns = computed<DataTableColumns<RequestLog>>(() => {
     key: 'tokens',
     width: 148,
     render(row) {
+      const billedIn = billedInputTokens(row)
+      const tooltip = `输入 ${formatNumber(billedIn)} / 输出 ${formatNumber(row.output_tokens)}\n读 ${formatNumber(row.cache_read_tokens)} / 写 ${formatNumber(row.cache_creation_tokens)}${billedIn !== row.input_tokens ? `\n输入已扣除缓存：总 ${formatNumber(row.input_tokens)}` : ''}`
       return h(
         'div',
         {
           class: 'tok-cell',
-          title: `${formatNumber(row.input_tokens)} / ${formatNumber(row.output_tokens)}\n读 ${formatNumber(row.cache_read_tokens)} / 写 ${formatNumber(row.cache_creation_tokens)}`,
+          title: tooltip,
         },
         [
-          h('div', { class: 'tok-line' }, `${formatTokenCount(row.input_tokens)} / ${formatTokenCount(row.output_tokens)}`),
+          h('div', { class: 'tok-line' }, `${formatTokenCount(billedIn)} / ${formatTokenCount(row.output_tokens)}`),
           h(
             'div',
             { class: 'tok-line tok-cache' },
@@ -909,8 +918,9 @@ onUnmounted(() => {
               </div>
               <div class="ttft-meta"><span class="meta-k">首字检测</span>{{ ttftLabel[detail.ttft_status || ''] || '历史未记录' }}<span v-if="detail.ttft_event" class="mono"> · {{ detail.ttft_event }}</span></div>
               <div>
-                <span class="meta-k">Tokens</span>{{ formatNumber(detail.input_tokens) }} /
+                <span class="meta-k">Tokens</span>{{ formatNumber(billedInputTokens(detail)) }} /
                 {{ formatNumber(detail.output_tokens) }}
+                <span v-if="billedInputTokens(detail) !== detail.input_tokens" class="muted">（总输入 {{ formatNumber(detail.input_tokens) }}）</span>
               </div>
               <div>
                 <span class="meta-k">Cache</span>读 {{ formatNumber(detail.cache_read_tokens) }} / 写
@@ -1206,5 +1216,5 @@ onUnmounted(() => {
 .cost-detail-panel .cost-grand-k { opacity: 0.75; }
 .cost-detail-panel .cost-grand-v { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .cost-cell { border-bottom: 1px dashed var(--line); cursor: help; }
-.drawer-cost-panel { margin-top: 6px; }
+.drawer-cost-panel { margin-top: 6px; grid-column: 1 / -1; }
 </style>
