@@ -102,7 +102,7 @@ const columns: DataTableColumns<IntelKeyStat> = [
     render: row => row.last_answer || (row.last_verdict === 'error' ? '—' : ''),
   },
   {
-    title: '最近判定', key: 'last_verdict', width: 95, mobileTag: true,
+    title: '最近判定', key: 'last_verdict', width: 95,
     render: row => row.last_verdict
       ? h(UiTag, {
           type: row.last_verdict === 'correct' || row.last_verdict === 'success' ? 'success'
@@ -165,6 +165,7 @@ onBeforeUnmount(() => {
       :row-key="(row: IntelKeyStat) => row.platform_key_id"
       size="small"
       :bordered="false"
+      card
     >
       <template #empty>
         <div class="muted" style="padding: 28px 0">尚无测试数据，点击「立即测试」发起一轮</div>

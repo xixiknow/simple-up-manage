@@ -123,7 +123,7 @@ const planColumns: DataTableColumns<IntelPlanItem> = [
   },
   { title: '分组', key: 'group_name', width: 140, ellipsis: { tooltip: true }, render: row => row.group_name || `#${row.route_group_id}` },
   { title: '模型', key: 'model', width: 200, ellipsis: { tooltip: true } },
-  { title: '题型', key: 'question_kind', width: 90, mobileTag: true, render: row => kindTag(row.question_kind) },
+  { title: '题型', key: 'question_kind', width: 90, render: row => kindTag(row.question_kind) },
   { title: '周期', key: 'interval_minutes', width: 105, render: row => describeInterval(row.interval_minutes) },
   { title: '近期正确率', key: 'stats', width: 130, mobileTag: true, render: row => accuracyTag(row) },
   { title: '最近运行', key: 'last_run', width: 210, render: row => runSummary(row) },
@@ -136,7 +136,7 @@ const planColumns: DataTableColumns<IntelPlanItem> = [
     }),
   },
   {
-    title: '操作', key: 'actions', width: 240,
+    title: '操作', key: 'actions', width: 240, fixed: 'right',
     render: row => h(UiSpace, { size: 6 }, {
       default: () => [
         h(UiButton, {
@@ -296,6 +296,7 @@ watch(selectedId, () => {
         :row-props="rowProps"
         size="small"
         :bordered="false"
+        card
       >
         <template #empty>
           <div class="muted" style="padding: 30px 0">还没有测试任务，点击右上角「新建任务」开始</div>

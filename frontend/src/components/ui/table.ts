@@ -52,7 +52,15 @@ export const UiDataTable = defineComponent({
       const hiddenCols = p.cardCollapse ? p.columns.filter(c => c.mobileHide) : []
       return h('div', { class: 'table-cards' }, p.data.length ? p.data.map((row, ri) => {
         const cls = typeof p.rowClassName === 'function' ? p.rowClassName(row, ri) : p.rowClassName
-        return h('article', { key: p.rowKey ? p.rowKey(row) : row.id ?? ri, class: ['table-card', ...(cls ? [cls] : [])], ...p.rowProps?.(row, ri) }, [
+        // rowProps may carry its own class (e.g. row selection); merge it with
+        // the card class instead of letting the spread clobber it.
+        const { class: propClass, style: propStyle, ...rowRest } = p.rowProps?.(row, ri) ?? {}
+        return h('article', {
+          key: p.rowKey ? p.rowKey(row) : row.id ?? ri,
+          class: ['table-card', ...(cls ? [cls] : []), ...(propClass ? [propClass] : [])],
+          style: propStyle,
+          ...rowRest,
+        }, [
           titleCol || tagCol || headCols.length ? h('header', { class: 'table-card-head' }, [
             ...headCols.map(c => h('div', { class: 'table-card-lead', key: c.key }, [cellValue(c, row, ri)])),
             titleCol ? h('div', { class: 'table-card-title' }, [cellValue(titleCol, row, ri)]) : null,
