@@ -1,0 +1,96 @@
+# 生产蓝绿部署栈：宿主机 Nginx → Caddy（切换层）→ app-blue / app-green。
+#
+# 首次初始化（见 deploy/PRODUCTION-UPGRADE.md）：
+#   docker compose -f deploy/compose.prod.yml --profile bootstrap up -d
+#
+# 日常不要带 --profile bootstrap 运行：应用实例由「界面一键更新」自行编排，
+# compose 只管理 postgres / redis / proxy。app-green 不在本文件中定义——
+# 它由运行中的应用按需创建（克隆自身配置 + 新镜像），两个颜色互为对侧。
+name: simple-up-manage
+
+x-app-env: &app-env
+  LISTEN: ":8080"
+  ADMIN_TOKEN: ${ADMIN_TOKEN:?set ADMIN_TOKEN in deploy/.env}
+  APP_ENCRYPT_KEY: ${APP_ENCRYPT_KEY:?set APP_ENCRYPT_KEY in deploy/.env}
+  DATABASE_URL: postgres://sum:sum@postgres:5432/simple_up_manage?sslmode=disable
+  REDIS_URL: redis://redis:6379/0
+  STATIC_DIR: /app/web
+  CONFIG_FILE: ""
+  LOG_BODIES_DIR: /data/log-bodies
+  # 自更新编排配置
+  CADDY_CONTAINER: sum-proxy
+  CADDYFILE_PATH: /app/caddy/Caddyfile
+  STATE_FILE: /app/caddy/state.json
+  DOCKER_SOCKET: /var/run/docker.sock
+  REGISTRY_AUTH_FILE: /root/.docker/config.json
+
+x-app-common: &app-common
+  stop_grace_period: 330s
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_started
+  volumes:
+    - logbodies:/data/log-bodies
+    - ./caddy:/app/caddy
+    - /var/run/docker.sock:/var/run/docker.sock
+    # 私有镜像仓库认证（可选）：把宿主机 docker 凭据只读挂进来
+    # - ${DOCKER_CONFIG_JSON:-/dev/null}:/root/.docker/config.json:ro
+  healthcheck:
+    test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+    interval: 10s
+    timeout: 5s
+    retries: 12
+    start_period: 30s
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sum
+      POSTGRES_PASSWORD: sum
+      POSTGRES_DB: simple_up_manage
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sum -d simple_up_manage"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+
+  # 切换层：应用改写 ./caddy/Caddyfile 的 upstream 后 exec 本容器执行
+  # `caddy reload` 平滑切换。只绑 127.0.0.1，公网入口是宿主机 Nginx。
+  proxy:
+    image: caddy:2-alpine
+    container_name: sum-proxy
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./caddy:/etc/caddy
+
+  # 初始实例。COLOR/PEER_CONTAINER 成对出现，自更新时会克隆并在对侧重建。
+  app-blue:
+    <<: *app-common
+    profiles: ["bootstrap"]
+    image: ${BLUE_IMAGE:-ghcr.io/xixiklow/simple-up-manage:latest}
+    container_name: sum-app-blue
+    environment:
+      <<: *app-env
+      COLOR: blue
+      PEER_CONTAINER: sum-app-green
+
+volumes:
+  pgdata:
+  logbodies:

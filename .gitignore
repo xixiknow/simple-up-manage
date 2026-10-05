@@ -17,6 +17,9 @@ deploy/config.yaml
 .env
 .env.*
 
+# self-update runtime state (lives on the production host)
+deploy/caddy/state.json
+
 # ide / os
 .idea/
 .vscode/*

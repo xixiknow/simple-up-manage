@@ -1,0 +1,7 @@
+# 切换层反代。upstream（sum-app-blue / sum-app-green）由应用执行蓝绿切换时改写，
+# 平时无需手工维护。flush_interval -1 保证 LLM 流式响应与仪表盘 SSE 不被缓冲。
+:8080 {
+	reverse_proxy sum-app-blue:8080 {
+		flush_interval -1
+	}
+}

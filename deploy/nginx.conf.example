@@ -1,0 +1,25 @@
+# 宿主机 Nginx 站点示例：公网入口 → Caddy 切换层（127.0.0.1:8080）。
+# 放到 /etc/nginx/conf.d/ 或 sites-available 后执行 `nginx -t && nginx -s reload`。
+# 超时/缓冲参数是为 LLM 长请求与 SSE 调过的，不要省略。
+server {
+	listen 80;
+	server_name _;            # 有域名请替换，例如 console.example.com
+
+	location / {
+		proxy_pass http://127.0.0.1:8080;
+		proxy_http_version 1.1;
+
+		proxy_set_header Host $host;
+		proxy_set_header X-Real-IP $remote_addr;
+		proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+		proxy_set_header X-Forwarded-Proto $scheme;
+		proxy_set_header Upgrade $http_upgrade;
+		proxy_set_header Connection "";
+
+		proxy_buffering off;            # SSE / LLM 流式响应不缓冲
+		proxy_request_buffering off;    # 大请求体边收边转发
+		proxy_read_timeout 360s;        # 网关请求最长 300s，留余量
+		proxy_send_timeout 360s;
+		client_max_body_size 512m;      # 多模态大请求体
+	}
+}
