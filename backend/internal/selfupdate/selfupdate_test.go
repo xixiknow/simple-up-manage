@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRewriteCaddyfile(t *testing.T) {
@@ -201,5 +202,51 @@ func TestCapability(t *testing.T) {
 	c.SocketPath = filepath.Join(t.TempDir(), "missing.sock")
 	if c.capability().OK {
 		t.Fatalf("missing socket must be rejected")
+	}
+}
+
+// TestStartUpdateDoesNotDeadlock pins the mutex contract: the rollout
+// goroutine must not inherit s.mu, or its first setPhase re-locks a held
+// mutex, deadlocks, and wedges StartUpdate/Status forever (the v1.1.0 bug).
+func TestStartUpdateDoesNotDeadlock(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "docker.sock")
+	if err := os.WriteFile(sock, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := New(Config{
+		SocketPath: sock, Color: "blue", PeerName: "sum-app-green",
+		CaddyContainer: "sum-proxy", CaddyfilePath: "/app/caddy/Caddyfile",
+		DatabaseURL: "postgres://x",
+	}, nil)
+
+	if err := s.StartUpdate("latest"); err != nil {
+		t.Fatalf("first start: %v", err)
+	}
+	// The rollout fails fast against the fake socket and must release runMu.
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		if s.runMu.TryLock() {
+			s.runMu.Unlock()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("rollout goroutine still holding runMu after 15s")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	// A second start must be accepted (the failed run released everything)…
+	if err := s.StartUpdate("latest"); err != nil {
+		t.Fatalf("second start: %v", err)
+	}
+	// …and Status must return promptly instead of hanging on s.mu.
+	done := make(chan Status, 1)
+	go func() { done <- s.Status() }()
+	select {
+	case st := <-done:
+		if st.Phase == "" {
+			t.Fatalf("status = %+v", st)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Status() hung: s.mu is still held by a rollout goroutine")
 	}
 }

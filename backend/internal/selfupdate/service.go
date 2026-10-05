@@ -150,6 +150,11 @@ type Service struct {
 	mu        sync.Mutex
 	status    Status
 	lockToken string
+	// runMu guards one rollout at a time. s.mu must never be held across the
+	// rollout goroutine: setPhase/Status re-lock it, and Go mutexes are not
+	// reentrant — holding it here deadlocked the rollout at its first phase
+	// change and hung every update request and status poller behind it.
+	runMu sync.Mutex
 
 	checkMu      sync.Mutex
 	lastCheckRes CheckResult
@@ -290,20 +295,20 @@ func (s *Service) StartChecker(stop <-chan struct{}) {
 }
 
 // StartUpdate validates the request and kicks off the rollout in the
-// background. The in-process mutex plus a Redis lock prevent concurrent
-// rollouts across instances. The goroutine owns s.mu for the whole run.
+// background. The runMu TryLock plus a Redis lock prevent concurrent rollouts
+// across instances. The goroutine must not inherit s.mu — see the runMu comment.
 func (s *Service) StartUpdate(target string) error {
 	if !s.cap.OK {
 		return fmt.Errorf("self-update 不可用: %s", s.cap.Reason)
 	}
-	s.mu.Lock()
-	if s.status.Active() {
-		s.mu.Unlock()
+	if !s.runMu.TryLock() {
 		return errors.New("已有更新正在进行中")
 	}
+	s.mu.Lock()
 	s.status = Status{Phase: "idle", UpdatedAt: time.Now()}
+	s.mu.Unlock()
 	go func() {
-		defer s.mu.Unlock()
+		defer s.runMu.Unlock()
 		defer s.releaseLock()
 		if !s.acquireLock() {
 			s.setPhase("failed", "另一个实例正在执行更新", target)
