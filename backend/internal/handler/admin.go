@@ -21,18 +21,20 @@ import (
 	"simple-up-manage/internal/httpx"
 	"simple-up-manage/internal/ops"
 	"simple-up-manage/internal/picker"
+	"simple-up-manage/internal/selfupdate"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
 type Admin struct {
-	DB      *gorm.DB
-	Enc     *crypto.AESGCM
-	Ops     *ops.Service
-	Picker  picker.Picker
-	Gateway *Gateway
-	Dash    *dashboard.Service
+	DB         *gorm.DB
+	Enc        *crypto.AESGCM
+	Ops        *ops.Service
+	Picker     picker.Picker
+	Gateway    *Gateway
+	Dash       *dashboard.Service
+	SelfUpdate *selfupdate.Service
 }
 
 func (h *Admin) ListUpstreams(c *gin.Context) {

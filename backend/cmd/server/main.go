@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"simple-up-manage/internal/buildinfo"
 	"simple-up-manage/internal/config"
 	"simple-up-manage/internal/crypto"
 	"simple-up-manage/internal/dashboard"
@@ -18,6 +19,7 @@ import (
 	"simple-up-manage/internal/ops"
 	"simple-up-manage/internal/picker"
 	"simple-up-manage/internal/router"
+	"simple-up-manage/internal/selfupdate"
 	"simple-up-manage/internal/store"
 
 	"github.com/redis/go-redis/v9"
@@ -62,7 +64,16 @@ func main() {
 	stop := make(chan struct{})
 	recoveryDone := jobs.Start(cfg, opsSvc, pick.Reload, stop, dash)
 
-	engine := router.New(cfg, db, enc, opsSvc, pick, dash)
+	updCfg := selfupdate.ConfigFromEnv(cfg.DatabaseURL)
+	updater := selfupdate.New(updCfg, rdb)
+	if ok, reason := updater.Capability(); ok {
+		log.Printf("self-update: enabled color=%s peer=%s version=%s", updCfg.Color, updCfg.PeerName, buildinfo.Version)
+		updater.StartChecker(stop)
+	} else {
+		log.Printf("self-update: disabled (%s) version=%s", reason, buildinfo.Version)
+	}
+
+	engine := router.New(cfg, db, enc, opsSvc, pick, dash, updater)
 	requests := &drainingHandler{next: engine}
 	server := &http.Server{Addr: cfg.Listen, Handler: requests, ReadHeaderTimeout: 10 * time.Second}
 	go func() {

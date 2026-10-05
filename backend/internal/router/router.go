@@ -10,12 +10,13 @@ import (
 	"simple-up-manage/internal/middleware"
 	"simple-up-manage/internal/ops"
 	"simple-up-manage/internal/picker"
+	"simple-up-manage/internal/selfupdate"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
-func New(cfg *config.Config, db *gorm.DB, enc *crypto.AESGCM, opsSvc *ops.Service, pick picker.Picker, dash *dashboard.Service) *gin.Engine {
+func New(cfg *config.Config, db *gorm.DB, enc *crypto.AESGCM, opsSvc *ops.Service, pick picker.Picker, dash *dashboard.Service, upd *selfupdate.Service) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery(), gin.Logger(), middleware.CORS())
@@ -24,7 +25,7 @@ func New(cfg *config.Config, db *gorm.DB, enc *crypto.AESGCM, opsSvc *ops.Servic
 
 	g := handler.NewGateway(db, enc, opsSvc, pick)
 	g.Dash = dash
-	admin := &handler.Admin{DB: db, Enc: enc, Ops: opsSvc, Picker: pick, Gateway: g, Dash: dash}
+	admin := &handler.Admin{DB: db, Enc: enc, Ops: opsSvc, Picker: pick, Gateway: g, Dash: dash, SelfUpdate: upd}
 
 	a := r.Group("/api/v1/admin")
 	a.Use(middleware.AdminAuth(cfg.AdminToken))
@@ -105,6 +106,10 @@ func New(cfg *config.Config, db *gorm.DB, enc *crypto.AESGCM, opsSvc *ops.Servic
 		a.GET("/dashboard/recommendations", admin.DashboardRecommendations)
 		a.GET("/dashboard/settings", admin.DashboardGetSettings)
 		a.PUT("/dashboard/settings", admin.DashboardPutSettings)
+
+		a.GET("/system/version", admin.SystemVersion)
+		a.POST("/system/update", admin.SystemUpdate)
+		a.GET("/system/update/status", admin.SystemUpdateStatus)
 	}
 
 	r.POST("/v1/messages", g.Messages)

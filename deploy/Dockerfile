@@ -8,11 +8,14 @@ COPY frontend/ ./
 RUN npm run build
 
 FROM golang:1.25-alpine AS backend
+ARG VERSION=dev
 WORKDIR /src
 COPY backend/go.mod backend/go.sum ./
 RUN go mod download
 COPY backend/ ./
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+    -ldflags="-s -w -X simple-up-manage/internal/buildinfo.Version=${VERSION}" \
+    -o /out/server ./cmd/server
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata
