@@ -71,17 +71,27 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # metadata-action resolves semver from the event ref only, so a push to
+      # main cannot see the v* tag on the commit — resolve it explicitly.
+      - name: Resolve release version
+        id: relver
+        run: |
+          git fetch --tags --force
+          tag=$(git tag --points-at HEAD | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
       - uses: docker/metadata-action@v5
         id: meta
         with:
           images: ghcr.io/${{ github.repository }}
           # The version output (buildinfo + OCI org.opencontainers.image.version
-          # label) comes from the first rule: the semver of the v* git tag on
-          # the commit when present, falling back to the short sha otherwise.
+          # label) comes from the highest-priority rule that matches: the semver
+          # of the v* git tag on the commit when present, falling back to the
+          # short sha (tag rules are priority-sorted, not declaration-sorted).
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{raw}}
-            type=sha,prefix=
+            type=semver,pattern={{version}},value=${{ steps.relver.outputs.tag }}
+            type=semver,pattern={{raw}},value=${{ steps.relver.outputs.tag }}
+            type=sha,prefix=,priority=700
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=branch
 
