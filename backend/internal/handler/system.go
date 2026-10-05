@@ -10,9 +10,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// updateTargetRe accepts "latest", "previous" or a git short/full sha — the
-// tag shapes CI publishes to ghcr.
-var updateTargetRe = regexp.MustCompile(`^(latest|previous|[0-9a-fA-F]{4,40})$`)
+// updateTargetRe accepts "latest", "previous", a semver release ("1.2.3",
+// with or without the "v" prefix) or a git short/full sha — the tag shapes
+// CI publishes to ghcr.
+var updateTargetRe = regexp.MustCompile(`^(latest|previous|[0-9a-fA-F]{4,40}|v?[0-9]+\.[0-9]+\.[0-9]+)$`)
 
 // SystemVersion reports the running version, the registry's latest and
 // whether the environment can self-update.
