@@ -392,3 +392,37 @@ export function actionMessage(data: unknown, fallback: string) {
 }
 
 export type { ListResult }
+
+export type SystemVersion = {
+  version: string
+  color: string
+  latest?: string
+  target_version?: string
+  update_available: boolean
+  checked_at?: string | null
+  check_error?: string
+  can_self_update: boolean
+  unsupported_reason?: string
+  rollback_to?: string
+}
+
+export type UpdateStatus = {
+  phase: 'idle' | 'pulling' | 'creating' | 'waiting' | 'switching' | 'done' | 'failed'
+  message?: string
+  target?: string
+  started_at?: string | null
+  updated_at?: string
+  log_tail?: string[]
+}
+
+export function getSystemVersion() {
+  return get<SystemVersion>('/system/version')
+}
+
+export function getUpdateStatus() {
+  return get<UpdateStatus>('/system/update/status')
+}
+
+export function postSystemUpdate(target: string) {
+  return post<{ started: boolean; target: string }>('/system/update', { target })
+}

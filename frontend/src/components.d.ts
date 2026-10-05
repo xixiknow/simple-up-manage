@@ -28,6 +28,7 @@ declare module 'vue' {
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     StatusTag: typeof import('./components/StatusTag.vue')['default']
+    SystemUpdateModal: typeof import('./components/SystemUpdateModal.vue')['default']
     UiAlert: typeof import('@/components/ui')['UiAlert']
     UiBadge: typeof import('@/components/ui')['UiBadge']
     UiButton: typeof import('@/components/ui')['UiButton']

@@ -1,13 +1,17 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { CloseOutline, KeyOutline, ListOutline, LogOutOutline, MenuOutline, PulseOutline, ShuffleOutline, ServerOutline, SparklesOutline, ChevronBackOutline, ChevronForwardOutline } from '@/components/ui/icons'
+import { CloseOutline, DownloadOutline, KeyOutline, ListOutline, LogOutOutline, MenuOutline, PulseOutline, ShuffleOutline, ServerOutline, SparklesOutline, ChevronBackOutline, ChevronForwardOutline } from '@/components/ui/icons'
 import NoticeInbox from '@/components/NoticeInbox.vue'
+import SystemUpdateModal from '@/components/SystemUpdateModal.vue'
 import { useAuthStore } from '@/stores/auth'
+import { useSystemStore } from '@/stores/system'
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+const system = useSystemStore()
 const navOpen = ref(false)
+const updateOpen = ref(false)
 const ASIDE_COLLAPSED_KEY = 'console.asideCollapsed'
 const asideCollapsed = ref(localStorage.getItem(ASIDE_COLLAPSED_KEY) === '1')
 function toggleAside() {
@@ -24,13 +28,30 @@ const navItems = [
 ]
 const pageTitle = computed(() => (route.meta.title as string) || '控制台')
 function go(key: string) { navOpen.value = false; void router.push(key) }
-function logout() { auth.logout(); void router.push('/login') }
+function logout() { auth.logout(); system.reset(); void router.push('/login') }
+
+const versionText = computed(() => system.version || '…')
+const updateTitle = computed(() => {
+  if (system.updating) return '更新进行中'
+  if (system.updateAvailable) return '有新版本，点击查看'
+  return `当前版本 ${versionText.value}`
+})
+let versionTimer: number | null = null
+onMounted(() => {
+  void system.fetchVersion()
+  versionTimer = window.setInterval(() => void system.fetchVersion(), 10 * 60 * 1000)
+})
+onBeforeUnmount(() => { if (versionTimer !== null) window.clearInterval(versionTimer) })
 </script>
 
 <template>
   <div class="console-shell" :class="{ collapsed: asideCollapsed }">
     <aside class="console-aside">
       <div class="brand"><span>供</span><div>供货商管理<small>ADMIN CONSOLE</small></div></div>
+      <button v-if="!asideCollapsed" class="version-row" type="button" :title="updateTitle" @click="updateOpen = true">
+        <span class="version-label">版本</span><span class="version-sha mono">{{ versionText }}</span>
+        <span v-if="system.updating" class="version-dot updating" /><span v-else-if="system.updateAvailable" class="version-dot" />
+      </button>
       <div class="nav-label">工作台 / WORKSPACE</div>
       <nav aria-label="主导航">
         <button v-for="item in navItems" :key="item.key" type="button" :title="asideCollapsed ? item.label : undefined" :class="{ selected: route.path === item.key }" :aria-current="route.path === item.key ? 'page' : undefined" @click="go(item.key)">
@@ -47,7 +68,15 @@ function logout() { auth.logout(); void router.push('/login') }
         <button class="nav-toggle" type="button" aria-label="打开导航" @click="navOpen = true"><MenuOutline /></button>
         <div class="header-brand brand"><span>供</span><div>供货商管理<small>ADMIN CONSOLE</small></div></div>
         <div class="breadcrumb"><span class="crumb-root">管理控制台</span><ChevronForwardOutline class="crumb-root" />{{ pageTitle }}</div>
-        <div class="header-right"><NoticeInbox /><button class="logout" type="button" @click="logout"><LogOutOutline />退出</button></div>
+        <div class="header-right">
+          <button class="version-btn" type="button" :title="updateTitle" @click="updateOpen = true">
+            <DownloadOutline />
+            <span class="mono">{{ versionText }}</span>
+            <span v-if="system.updating" class="version-dot updating" /><span v-else-if="system.updateAvailable" class="version-dot" />
+          </button>
+          <NoticeInbox />
+          <button class="logout" type="button" @click="logout"><LogOutOutline />退出</button>
+        </div>
       </header>
       <div class="console-content"><router-view /></div>
     </main>
@@ -62,9 +91,14 @@ function logout() { auth.logout(); void router.push('/login') }
             <component :is="item.icon" class="nav-icon" />{{ item.label }}<ChevronForwardOutline v-if="route.path === item.key" class="nav-chevron" />
           </button>
         </nav>
+        <button class="version-row" type="button" :title="updateTitle" @click="navOpen = false; updateOpen = true">
+          <span class="version-label">版本</span><span class="version-sha mono">{{ versionText }}</span>
+          <span v-if="system.updating" class="version-dot updating" /><span v-else-if="system.updateAvailable" class="version-dot" />
+        </button>
         <div class="aside-bottom"><span class="live-dot" />内部运维<small>管理时区 · Asia/Shanghai</small></div>
       </div>
     </UiDrawer>
+    <SystemUpdateModal v-model:show="updateOpen" />
   </div>
 </template>
 
@@ -111,6 +145,59 @@ function logout() { auth.logout(); void router.push('/login') }
   font-weight:400;
   margin-top:5px;
   color:#9db5a5}
+.version-row {
+  display:flex;
+  align-items:center;
+  gap:7px;
+  margin-top:12px;
+  padding:8px 10px;
+  border-radius:8px;
+  font-size:11px;
+  color:#9db5a5;
+  text-align:left}
+.version-row:hover {
+  background:#ffffff0c;
+  color:#eef5e9}
+.version-label {
+  letter-spacing:1px;
+  flex:none}
+.version-sha {
+  color:#d9e8b3;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap}
+.version-btn {
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:8px 10px;
+  border-radius:7px;
+  font-size:12px;
+  color:#546c58}
+.version-btn:hover {
+  background:#eef3e7}
+.version-btn svg {
+  width:15px;
+  height:15px}
+.mono {
+  font-family:ui-monospace, SFMono-Regular, Menlo, monospace}
+.version-dot {
+  width:7px;
+  height:7px;
+  border-radius:50%;
+  background:#e0a83c;
+  flex:none;
+  margin-left:auto}
+.version-btn .version-dot {
+  margin-left:0}
+.version-dot.updating {
+  background:#9bc177;
+  animation:pulse 1.2s ease-in-out infinite}
+@keyframes pulse {
+  50% {opacity:0.3}
+}
+.nav-drawer .version-row {
+  margin-top:0}
 .nav-label {
   font-size:10px;
   letter-spacing:1.5px;
