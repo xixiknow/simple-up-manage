@@ -418,15 +418,15 @@ type IntelTestPlan struct {
 	Parallel int  `gorm:"not null;default:4" json:"parallel"`
 	Enabled  bool `gorm:"not null;default:true" json:"enabled"`
 	// QuarantineEnabled turns on automatic quarantine for candy plans: keys
-	// whose recent accuracy drops below the threshold leave the group and are
+	// whose recent accuracy fails the threshold leave the group and are
 	// retested with exponential backoff until they answer correctly twice in
 	// a row.
 	QuarantineEnabled bool `gorm:"not null;default:false" json:"quarantine_enabled"`
-	// QuarantineMinSamples is how many effective (judged) results in the last
-	// window must exist before the accuracy rule is evaluated. 0 = default 3.
+	// QuarantineMinSamples is the judgment window: only the most recent N
+	// effective (judged, non-error) results of a key decide. 0 = default 3.
 	QuarantineMinSamples int `gorm:"not null;default:0" json:"quarantine_min_samples"`
-	// QuarantineThreshold is the accuracy percent below which a key is
-	// quarantined. 0 = default 50.
+	// QuarantineThreshold is the accuracy percent at or below which a key is
+	// quarantined; a perfect score is never quarantined. 0 = default 50.
 	QuarantineThreshold float64    `gorm:"not null;default:0" json:"quarantine_threshold"`
 	LastRunAt           *time.Time `json:"last_run_at"`
 	NextRunAt           *time.Time `gorm:"index" json:"next_run_at"`
@@ -442,15 +442,16 @@ const (
 
 	IntelQuarantineDefaultMinSamples = 3
 	IntelQuarantineDefaultThreshold  = 50.0
-	// IntelQuarantineMaxWindow caps both the accuracy look-back window and the
-	// configurable minimum-sample count.
+	// IntelQuarantineMaxWindow caps the configurable judgment window size
+	// (QuarantineMinSamples).
 	IntelQuarantineMaxWindow = 10
 )
 
-// QuarantineRule returns the normalized trigger rule: evaluate once at least
-// minSamples effective results exist in the last window, and quarantine when
-// accuracy drops strictly below threshold percent. Zero / out-of-range plan
-// values fall back to the defaults so existing rows keep working.
+// QuarantineRule returns the normalized trigger rule: judge the most recent
+// minSamples effective results of a key, and quarantine when their accuracy
+// is at or below threshold percent — a perfect score is never quarantined.
+// Zero / out-of-range plan values fall back to the defaults so existing rows
+// keep working.
 func (p *IntelTestPlan) QuarantineRule() (minSamples int, threshold float64) {
 	minSamples = p.QuarantineMinSamples
 	if minSamples < 1 || minSamples > IntelQuarantineMaxWindow {

@@ -92,7 +92,7 @@ func TestIntelQuarantineTriggerFromRun(t *testing.T) {
 	if state.QuarantineCount != 1 || state.PassStreak != 0 {
 		t.Fatalf("count=%d streak=%d, want 1/0", state.QuarantineCount, state.PassStreak)
 	}
-	if !strings.Contains(state.Reason, "低于") {
+	if !strings.Contains(state.Reason, "未达到") {
 		t.Fatalf("reason = %q", state.Reason)
 	}
 	if state.NextTestAt == nil || !state.NextTestAt.After(time.Now().Add(30*time.Second)) {
@@ -352,6 +352,14 @@ func TestIntelQuarantineCustomRule(t *testing.T) {
 		{name: "min3 threshold50 two correct", minSamples: 3, threshold: 50, seedCorrect: 2, feedVerdict: domain.IntelVerdictIncorrect, wantQuarantine: false},
 		// Correct answers keep accuracy above the threshold.
 		{name: "min3 threshold50 all correct", minSamples: 3, threshold: 50, seedCorrect: 2, feedVerdict: domain.IntelVerdictCorrect, wantQuarantine: false},
+		// The window is exactly minSamples: 8 older correct answers outside the
+		// 2-result window cannot save a key whose last two answers are wrong
+		// (the old fixed 10-result window would have seen 80% and kept it).
+		{name: "min2 threshold50 history beyond window ignored", minSamples: 2, threshold: 50, seedCorrect: 8, seedWrong: 1, feedVerdict: domain.IntelVerdictIncorrect, wantQuarantine: true},
+		// Accuracy exactly at the threshold counts as failing.
+		{name: "min2 threshold50 equal to threshold fails", minSamples: 2, threshold: 50, seedCorrect: 1, feedVerdict: domain.IntelVerdictIncorrect, wantQuarantine: true},
+		// A perfect score is never quarantined, even at threshold 100.
+		{name: "min2 threshold100 all correct stays", minSamples: 2, threshold: 100, seedCorrect: 2, feedVerdict: domain.IntelVerdictCorrect, wantQuarantine: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, group := newIntelEnv(t, "openai", "21", 0)

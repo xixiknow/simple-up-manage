@@ -221,11 +221,11 @@ async function submit() {
       <ui-form-item v-if="form.question_kind === 'candy'" label="自动隔离（答错自动移出分组）">
         <ui-switch v-model:value="form.quarantine_enabled" />
         <p class="muted quarantine-rules">
-          开启后：分组内 Key 最近 10 次有效测试中，累计至少
-          <b>{{ form.quarantine_min_samples }}</b> 次且正确率低于
-          <b>{{ form.quarantine_threshold }}%</b> 即自动移出分组（按本轮测试周期累计）；
+          开启后：以分组内 Key 最近
+          <b>{{ form.quarantine_min_samples }}</b> 次有效测试为判定窗口，窗口内正确率未达到
+          <b>{{ form.quarantine_threshold }}%</b> 即自动移出分组（全部答对不会移除）；
           隔离后约 1 分钟内开始复测，未通过则间隔逐次翻倍（最长 30 分钟），答对一次立即回到快速确认，
-          连续两次答对自动加回分组。传输错误不计入正确率。关闭开关不会自动放行已隔离的 Key。
+          连续两次答对自动加回分组。传输错误不计入窗口，网络问题不会导致移除。关闭开关不会自动放行已隔离的 Key。
         </p>
         <div class="quarantine-rule-row">
           <span class="rule-label">最少样本数</span>

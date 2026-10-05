@@ -12,15 +12,14 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// Quarantine policy constants. Candy-only: the last 10 effective (judged)
-// results decide; when accuracy drops below the plan's threshold with at
-// least the plan's minimum sample count, the key leaves the group, then
-// retests on a per-key exponential backoff (1min, doubling to a 30min cap)
-// until it answers correctly twice in a row.
+// Quarantine policy constants. Candy-only: the last N (the plan's minimum
+// sample count) effective (judged) results decide; when accuracy drops to the
+// plan's threshold or below — a perfect score is never quarantined — the key
+// leaves the group, then retests on a per-key exponential backoff (1min,
+// doubling to a 30min cap) until it answers correctly twice in a row.
 const (
 	intelQuarantineBaseSec   = 60
 	intelQuarantineMaxSec    = 1800
-	intelQuarantineWindow    = domain.IntelQuarantineMaxWindow
 	intelQuarantineRestoreAt = 2
 )
 
@@ -185,12 +184,12 @@ func (s *Service) evaluateIntelQuarantine(plan *domain.IntelTestPlan, key *domai
 	if hasState && state.Status == domain.IntelQuarantineRestored && state.RestoredAt != nil {
 		q = q.Where("created_at > ?", *state.RestoredAt)
 	}
+	minSamples, threshold := plan.QuarantineRule()
 	var rows []domain.IntelTestResult
-	if err := q.Order("id DESC").Limit(intelQuarantineWindow).Find(&rows).Error; err != nil {
+	if err := q.Order("id DESC").Limit(minSamples).Find(&rows).Error; err != nil {
 		log.Printf("intel quarantine window plan=%d key=%d: %v", plan.ID, key.ID, err)
 		return
 	}
-	minSamples, threshold := plan.QuarantineRule()
 	if len(rows) < minSamples {
 		return
 	}
@@ -201,7 +200,9 @@ func (s *Service) evaluateIntelQuarantine(plan *domain.IntelTestPlan, key *domai
 		}
 	}
 	accuracy := float64(correct) / float64(len(rows)) * 100
-	if accuracy >= threshold {
+	// A perfect score is never quarantined, so a threshold of 100 cannot
+	// remove keys that answer correctly every time.
+	if accuracy > threshold || accuracy >= 100 {
 		return
 	}
 	// Only keys currently in the group can be quarantined; if the operator
@@ -217,7 +218,7 @@ func (s *Service) evaluateIntelQuarantine(plan *domain.IntelTestPlan, key *domai
 		return
 	}
 
-	reason := fmt.Sprintf("最近 %d 次有效测试正确率 %.0f%%（%d/%d），低于阈值 %.0f%%",
+	reason := fmt.Sprintf("最近 %d 次有效测试正确率 %.0f%%（%d/%d），未达到阈值 %.0f%%",
 		len(rows), accuracy, correct, len(rows), threshold)
 	backoff := intelQuarantineBaseSec
 	next := now.Add(time.Duration(backoff) * time.Second)
