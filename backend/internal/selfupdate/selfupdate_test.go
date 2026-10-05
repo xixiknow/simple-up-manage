@@ -1,6 +1,10 @@
 package selfupdate
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -106,6 +110,72 @@ func TestSplitRepo(t *testing.T) {
 	base, path, host := splitRepo("ghcr.io/xixiklow/simple-up-manage")
 	if base != "https://ghcr.io" || path != "xixiklow/simple-up-manage" || host != "ghcr.io" {
 		t.Fatalf("splitRepo = %q %q %q", base, path, host)
+	}
+}
+
+// newFakeRegistry serves a minimal OCI registry: the latest tag resolves to the
+// given index or plain manifest, and the referenced child manifests / config
+// blobs are served from the fixtures map.
+func newFakeRegistry(latest any, extra map[string]any) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/token":
+			_ = json.NewEncoder(w).Encode(map[string]string{"token": "test-token"})
+		case r.URL.Path == "/v2/x/y/manifests/latest":
+			_ = json.NewEncoder(w).Encode(latest)
+		default:
+			body, ok := extra[r.URL.Path]
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(body)
+		}
+	}))
+}
+
+func TestConfigVersionLabelFromIndex(t *testing.T) {
+	// buildx pushes an OCI index whose entries include provenance attestations
+	// (unknown/unknown); the amd64 child manifest must be fetched to reach the
+	// config blob digest — the old code requested the manifest digest from the
+	// blobs endpoint and always came up empty.
+	latest := map[string]any{"manifests": []map[string]any{
+		{"digest": "sha256:amd64", "platform": map[string]string{"architecture": "amd64", "os": "linux"}},
+		{"digest": "sha256:attest", "platform": map[string]string{"architecture": "unknown", "os": "unknown"}},
+	}}
+	extra := map[string]any{
+		"/v2/x/y/manifests/sha256:amd64": map[string]any{"config": map[string]string{"digest": "sha256:cfg"}},
+		"/v2/x/y/blobs/sha256:cfg":       map[string]any{"config": map[string]any{"Labels": map[string]string{"org.opencontainers.image.version": "1.2.3"}}},
+	}
+	srv := newFakeRegistry(latest, extra)
+	defer srv.Close()
+
+	r := &registryClient{base: srv.URL, repoPath: "x/y", http: srv.Client()}
+	ver, err := r.configVersionLabel(context.Background(), "latest")
+	if err != nil {
+		t.Fatalf("configVersionLabel: %v", err)
+	}
+	if ver != "1.2.3" {
+		t.Fatalf("version label = %q, want 1.2.3", ver)
+	}
+}
+
+func TestConfigVersionLabelFromPlainManifest(t *testing.T) {
+	latest := map[string]any{"config": map[string]string{"digest": "sha256:cfg"}}
+	extra := map[string]any{
+		"/v2/x/y/blobs/sha256:cfg": map[string]any{"config": map[string]any{"Labels": map[string]string{"org.opencontainers.image.version": "2.0.0"}}},
+	}
+	srv := newFakeRegistry(latest, extra)
+	defer srv.Close()
+
+	r := &registryClient{base: srv.URL, repoPath: "x/y", http: srv.Client()}
+	ver, err := r.configVersionLabel(context.Background(), "latest")
+	if err != nil {
+		t.Fatalf("configVersionLabel: %v", err)
+	}
+	if ver != "2.0.0" {
+		t.Fatalf("version label = %q, want 2.0.0", ver)
 	}
 }
 

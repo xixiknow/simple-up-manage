@@ -188,8 +188,8 @@ func (r *registryClient) headDigest(ctx context.Context, tag string) (string, er
 	return strings.ToLower(digest), nil
 }
 
-// configVersionLabel resolves the OCI version label (the git short sha our CI
-// stamps in) of the image a tag currently points at. Best effort: any failure
+// configVersionLabel resolves the OCI version label (the release version our
+// CI stamps in) of the image a tag currently points at. Best effort: any failure
 // returns an error the caller treats as "target version unknown".
 func (r *registryClient) configVersionLabel(ctx context.Context, tag string) (string, error) {
 	token, err := r.token(ctx)
@@ -221,7 +221,7 @@ func (r *registryClient) configVersionLabel(ctx context.Context, tag string) (st
 		return "", err
 	}
 
-	configDigest, err := resolveConfigDigest(raw)
+	configDigest, err := r.manifestConfigDigest(ctx, raw, auth)
 	if err != nil {
 		return "", err
 	}
@@ -250,9 +250,20 @@ func (r *registryClient) configVersionLabel(ctx context.Context, tag string) (st
 	return imgCfg.Config.Labels[versionLabel], nil
 }
 
-// resolveConfigDigest digs the image config blob digest out of either a
-// manifest list (picking linux/amd64) or a plain manifest.
-func resolveConfigDigest(raw []byte) (string, error) {
+// manifestConfigDigest returns the digest of the image config blob behind a
+// registry manifest response. raw may be an OCI index (multi-arch, plus the
+// provenance attestations buildx adds by default): the linux/amd64 child
+// manifest is fetched to read its config digest. A plain manifest carries its
+// config digest directly.
+func (r *registryClient) manifestConfigDigest(ctx context.Context, raw []byte, auth func(*http.Request)) (string, error) {
+	var plain struct {
+		Config struct {
+			Digest string `json:"digest"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(raw, &plain); err == nil && plain.Config.Digest != "" {
+		return plain.Config.Digest, nil
+	}
 	var index struct {
 		Manifests []struct {
 			Digest   string `json:"digest"`
@@ -262,14 +273,8 @@ func resolveConfigDigest(raw []byte) (string, error) {
 			} `json:"platform"`
 		} `json:"manifests"`
 	}
-	if err := json.Unmarshal(raw, &index); err != nil {
-		return "", err
-	}
-	if len(index.Manifests) == 0 {
-		return "", fmt.Errorf("registry manifest: no manifests")
-	}
-	if index.Manifests[0].Platform == nil {
-		return index.Manifests[0].Digest, nil
+	if err := json.Unmarshal(raw, &index); err != nil || len(index.Manifests) == 0 {
+		return "", fmt.Errorf("registry manifest: no config digest found")
 	}
 	pick := ""
 	for _, m := range index.Manifests {
@@ -281,7 +286,31 @@ func resolveConfigDigest(raw []byte) (string, error) {
 	if pick == "" {
 		return "", fmt.Errorf("registry manifest: no linux/amd64 entry")
 	}
-	return pick, nil
+	childReq, err := http.NewRequestWithContext(ctx, http.MethodGet, r.manifestURL(pick), nil)
+	if err != nil {
+		return "", err
+	}
+	auth(childReq)
+	childResp, err := r.http.Do(childReq)
+	if err != nil {
+		return "", err
+	}
+	defer childResp.Body.Close()
+	if childResp.StatusCode >= 300 {
+		return "", fmt.Errorf("registry manifest %s: HTTP %d", pick, childResp.StatusCode)
+	}
+	var child struct {
+		Config struct {
+			Digest string `json:"digest"`
+		} `json:"config"`
+	}
+	if err := json.NewDecoder(io.LimitReader(childResp.Body, 1<<20)).Decode(&child); err != nil {
+		return "", err
+	}
+	if child.Config.Digest == "" {
+		return "", fmt.Errorf("registry manifest %s: missing config digest", pick)
+	}
+	return child.Config.Digest, nil
 }
 
 // repoFromImage picks the registry repo ("ghcr.io/xixiklow/simple-up-manage")

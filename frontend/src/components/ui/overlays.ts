@@ -47,15 +47,32 @@ export const UiPopover = defineComponent({
       el.style.left = left + 'px'; el.style.top = top + 'px'
     }
     function hide() { update(false) }
+    // 视口或容器尺寸变化(手机地址栏收起、软键盘弹出、抽屉内滚动)时重新定位而不是关闭:
+    // 小屏上这些变化非常频繁,关闭会让下拉框刚打开就被收起,表现为闪动后无法选择。
+    let repositionFrame = 0
+    function reposition() {
+      if (!state.value) return
+      cancelAnimationFrame(repositionFrame)
+      repositionFrame = requestAnimationFrame(position)
+    }
     async function sync() {
       await nextTick()
       if (state.value) {
         panel.value?.showPopover(); position()
-        window.addEventListener('resize', hide)
-      } else { panel.value?.hidePopover(); window.removeEventListener('resize', hide) }
+        window.addEventListener('resize', reposition)
+        window.addEventListener('scroll', reposition, true)
+      } else {
+        panel.value?.hidePopover()
+        window.removeEventListener('resize', reposition)
+        window.removeEventListener('scroll', reposition, true)
+      }
     }
     watch(state, sync)
-    onBeforeUnmount(() => window.removeEventListener('resize', hide))
+    onBeforeUnmount(() => {
+      cancelAnimationFrame(repositionFrame)
+      window.removeEventListener('resize', reposition)
+      window.removeEventListener('scroll', reposition, true)
+    })
     expose({ close: hide })
     return () => h('span', { class: 'ui-popover-anchor', ref: anchor }, [
       h('span', { class: 'ui-popover-trigger', 'aria-controls': id, 'aria-expanded': state.value, onClick: (e: MouseEvent) => { e.stopPropagation(); update(!state.value) } }, slots.trigger?.()),
