@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { CloseOutline, DownloadOutline, KeyOutline, ListOutline, LogOutOutline, MenuOutline, PulseOutline, ShuffleOutline, ServerOutline, SparklesOutline, ChevronBackOutline, ChevronForwardOutline } from '@/components/ui/icons'
 import NoticeInbox from '@/components/NoticeInbox.vue'
@@ -37,11 +37,29 @@ const updateTitle = computed(() => {
   return `当前版本 ${versionText.value}`
 })
 let versionTimer: number | null = null
+let statusTimer: number | null = null
 onMounted(() => {
   void system.fetchVersion()
+  void system.fetchStatus()
   versionTimer = window.setInterval(() => void system.fetchVersion(), 10 * 60 * 1000)
 })
-onBeforeUnmount(() => { if (versionTimer !== null) window.clearInterval(versionTimer) })
+onBeforeUnmount(() => {
+  if (versionTimer !== null) window.clearInterval(versionTimer)
+  if (statusTimer !== null) window.clearInterval(statusTimer)
+})
+// 弹窗关闭后仍跟踪后台更新，完成后刷新版本号
+watch(
+  () => system.updating,
+  (up) => {
+    if (up) {
+      if (statusTimer === null) statusTimer = window.setInterval(() => void system.fetchStatus(), 2000)
+    } else if (statusTimer !== null) {
+      window.clearInterval(statusTimer)
+      statusTimer = null
+      void system.fetchVersion()
+    }
+  },
+)
 </script>
 
 <template>
