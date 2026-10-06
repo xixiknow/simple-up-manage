@@ -130,15 +130,15 @@ type ProbeOutcome struct {
 	Error      string `json:"error,omitempty"`
 	// Reply carries the assistant-visible answer text extracted from the probe
 	// response so the console can show what the upstream actually said.
-	Reply     string `json:"reply,omitempty"`
-	Models    int    `json:"models,omitempty"`
-	Message   string `json:"message,omitempty"`
-	Model     string `json:"model,omitempty"`
-	Vendor    string `json:"vendor,omitempty"`
-	KeyID     uint   `json:"key_id,omitempty"`
-	KeyName   string `json:"key_name,omitempty"`
-	Skipped   bool   `json:"skipped,omitempty"`
-	Reason    string `json:"reason,omitempty"`
+	Reply   string `json:"reply,omitempty"`
+	Models  int    `json:"models,omitempty"`
+	Message string `json:"message,omitempty"`
+	Model   string `json:"model,omitempty"`
+	Vendor  string `json:"vendor,omitempty"`
+	KeyID   uint   `json:"key_id,omitempty"`
+	KeyName string `json:"key_name,omitempty"`
+	Skipped bool   `json:"skipped,omitempty"`
+	Reason  string `json:"reason,omitempty"`
 }
 
 type ProbeBatchResult struct {
