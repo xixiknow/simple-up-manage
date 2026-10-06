@@ -126,16 +126,36 @@ func (s *Service) sendBusinessProbe(ctx context.Context, key *domain.PlatformKey
 	}
 	defer res.Body.Close()
 	out.StatusCode = res.StatusCode
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		out.RetryAfter = res.Header.Get("Retry-After")
-		raw, _ := io.ReadAll(io.LimitReader(res.Body, 500))
-		out.Error = string(raw)
+	// Buffer the whole body first so the console can show the reply text while
+	// validation still consumes the identical bytes.
+	raw, readErr := io.ReadAll(io.LimitReader(res.Body, upstream.MaxProbeBodyBytes+1))
+	if readErr != nil {
+		out.Error = readErr.Error()
 		return out
 	}
-	if err := upstream.ValidateProbeResponse(out.Path, res.Header.Get("Content-Type"), out.Stream, res.Body); err != nil {
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		out.RetryAfter = res.Header.Get("Retry-After")
+		out.Error = probeBodyError(raw)
+		return out
+	}
+	if err := upstream.ValidateProbeResponse(out.Path, res.Header.Get("Content-Type"), out.Stream, bytes.NewReader(raw)); err != nil {
 		out.Error = err.Error()
 		return out
 	}
 	out.Success = true
+	if out.Stream {
+		out.Reply = upstream.ExtractStreamReplyText(raw)
+	} else {
+		out.Reply = upstream.ExtractReplyText(out.Path, raw)
+	}
 	return out
+}
+
+// probeBodyError prefers the structured upstream error message over a raw body
+// snippet so failed probes stay readable in the console.
+func probeBodyError(raw []byte) string {
+	if msg := upstream.ExtractErrorMessage(raw); msg != "" {
+		return truncate(msg, 500)
+	}
+	return truncate(string(raw), 500)
 }

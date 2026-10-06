@@ -131,12 +131,18 @@ export type ProbeResult = {
   reason?: string
   message?: string
   error?: string
+  reply?: string
   model?: string
   protocol?: string
   path?: string
+  status_code?: number
   latency_ms?: number
+  models?: number
+  key_id?: number
+  key_name?: string
   ok?: number
   failed?: number
+  results?: ProbeResult[]
 }
 
 export function probeKey(id: number, deep = true, options: ProbeOptions = {}) {

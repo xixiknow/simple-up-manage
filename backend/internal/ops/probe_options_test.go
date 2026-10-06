@@ -140,9 +140,12 @@ func TestCustomProbeBatchAndDisabledKey(t *testing.T) {
 	}
 	prompt := "who are you"
 	s := New(db, enc, nil)
-	ok, fail, skipped, reasons := s.ProbeFilteredDetail(context.Background(), true, &up.ID, 0, ProbeOptions{Model: "manual", Prompt: &prompt})
-	if ok != 1 || fail != 0 || skipped != 1 || calls.Load() != 1 || reasons[domain.ProbeSkipDisabled] != 1 {
-		t.Fatalf("ok=%d failed=%d skipped=%d calls=%d reasons=%v", ok, fail, skipped, calls.Load(), reasons)
+	r := s.ProbeFilteredDetail(context.Background(), true, &up.ID, 0, ProbeOptions{Model: "manual", Prompt: &prompt})
+	if r.OK != 1 || r.Failed != 0 || r.Skipped != 1 || calls.Load() != 1 || r.SkippedReasons[domain.ProbeSkipDisabled] != 1 {
+		t.Fatalf("ok=%d failed=%d skipped=%d calls=%d reasons=%v", r.OK, r.Failed, r.Skipped, calls.Load(), r.SkippedReasons)
+	}
+	if len(r.Results) != 1 || r.Results[0].KeyID == 0 || r.Results[0].KeyName != "on" || r.Results[0].Reply == "" {
+		t.Fatalf("results=%+v", r.Results)
 	}
 	var key domain.PlatformKey
 	db.Where("name = ?", "on").First(&key)

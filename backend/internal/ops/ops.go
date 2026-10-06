@@ -128,12 +128,17 @@ type ProbeOutcome struct {
 	StatusCode int    `json:"status_code"`
 	LatencyMs  int    `json:"latency_ms"`
 	Error      string `json:"error,omitempty"`
-	Models     int    `json:"models,omitempty"`
-	Message    string `json:"message,omitempty"`
-	Model      string `json:"model,omitempty"`
-	Vendor     string `json:"vendor,omitempty"`
-	Skipped    bool   `json:"skipped,omitempty"`
-	Reason     string `json:"reason,omitempty"`
+	// Reply carries the assistant-visible answer text extracted from the probe
+	// response so the console can show what the upstream actually said.
+	Reply     string `json:"reply,omitempty"`
+	Models    int    `json:"models,omitempty"`
+	Message   string `json:"message,omitempty"`
+	Model     string `json:"model,omitempty"`
+	Vendor    string `json:"vendor,omitempty"`
+	KeyID     uint   `json:"key_id,omitempty"`
+	KeyName   string `json:"key_name,omitempty"`
+	Skipped   bool   `json:"skipped,omitempty"`
+	Reason    string `json:"reason,omitempty"`
 }
 
 type ProbeBatchResult struct {
@@ -141,6 +146,10 @@ type ProbeBatchResult struct {
 	Failed         int
 	Skipped        int
 	SkippedReasons map[string]int
+	// Results holds one outcome per probed key so the console can show each
+	// probe's reply/error. Pre-filter skips (disabled, backoff, throttle) stay
+	// counted-only.
+	Results []ProbeOutcome
 }
 
 func (s *Service) ProbeKey(ctx context.Context, keyID uint, deep bool, options ...ProbeOptions) (*ProbeOutcome, error) {
@@ -160,6 +169,8 @@ func (s *Service) ProbeKey(ctx context.Context, keyID uint, deep bool, options .
 			Skipped: true,
 			Reason:  domain.ProbeSkipDisabled,
 			Message: "该 Key 已关闭探测",
+			KeyID:   key.ID,
+			KeyName: key.Name,
 		}, nil
 	}
 	apiKey, err := s.decrypt(&key)
@@ -186,6 +197,8 @@ func (s *Service) ProbeKey(ctx context.Context, keyID uint, deep bool, options .
 	} else {
 		outcome = probeService.lightProbe(probeCtx, &key, apiKey)
 	}
+	outcome.KeyID = key.ID
+	outcome.KeyName = key.Name
 	if outcome.Skipped {
 		return &outcome, nil
 	}
@@ -387,7 +400,7 @@ func (s *Service) lightProbe(ctx context.Context, key *domain.PlatformKey, apiKe
 		if res.Status >= 200 && res.Status < 300 {
 			return ProbeOutcome{Success: true, StatusCode: res.Status}
 		}
-		return ProbeOutcome{StatusCode: res.Status, Error: truncate(string(res.Body), 500), RetryAfter: res.Headers.Get("Retry-After")}
+		return ProbeOutcome{StatusCode: res.Status, Error: probeBodyError(res.Body), RetryAfter: res.Headers.Get("Retry-After")}
 	}
 	if res.Status >= 200 && res.Status < 300 {
 		ids := upstream.ParseModelIDs(res.Body)
@@ -396,16 +409,16 @@ func (s *Service) lightProbe(ctx context.Context, key *domain.PlatformKey, apiKe
 	if res.Status == 404 {
 		u, err := s.Client.GetJSONWithHeaders(ctx, key.Upstream.BaseURL, usagePath, apiKey, keyProtocolHeaders(key, apiKey))
 		if err != nil {
-			return ProbeOutcome{StatusCode: res.Status, Error: truncate(string(res.Body), 500), RetryAfter: res.Headers.Get("Retry-After")}
+			return ProbeOutcome{StatusCode: res.Status, Error: probeBodyError(res.Body), RetryAfter: res.Headers.Get("Retry-After")}
 		}
 		ok := u.Status >= 200 && u.Status < 300
 		errMsg := ""
 		if !ok {
-			errMsg = truncate(string(u.Body), 500)
+			errMsg = probeBodyError(u.Body)
 		}
 		return ProbeOutcome{Success: ok, StatusCode: u.Status, Error: errMsg, RetryAfter: u.Headers.Get("Retry-After")}
 	}
-	return ProbeOutcome{StatusCode: res.Status, Error: truncate(string(res.Body), 500), RetryAfter: res.Headers.Get("Retry-After")}
+	return ProbeOutcome{StatusCode: res.Status, Error: probeBodyError(res.Body), RetryAfter: res.Headers.Get("Retry-After")}
 }
 
 func (s *Service) probeSettings(ctx context.Context) domain.SchedulerSettings {
@@ -826,21 +839,19 @@ func (s *Service) ProbeFiltered(ctx context.Context, deep bool, upstreamID *uint
 	return r.OK, r.Failed, r.Skipped
 }
 
-func (s *Service) ProbeFilteredDetail(ctx context.Context, deep bool, upstreamID *uint, skipRecent time.Duration, options ...ProbeOptions) (int, int, int, map[string]int) {
-	r := s.probeFilteredAt(ctx, deep, upstreamID, nil, skipRecent, time.Now(), options...)
-	return r.OK, r.Failed, r.Skipped, r.SkippedReasons
+func (s *Service) ProbeFilteredDetail(ctx context.Context, deep bool, upstreamID *uint, skipRecent time.Duration, options ...ProbeOptions) ProbeBatchResult {
+	return s.probeFilteredAt(ctx, deep, upstreamID, nil, skipRecent, time.Now(), options...)
 }
 
 // ProbeKeysDetail probes an explicit key id list; the console batch action uses it.
-func (s *Service) ProbeKeysDetail(ctx context.Context, deep bool, keyIDs []uint, options ...ProbeOptions) (int, int, int, map[string]int) {
-	r := s.probeFilteredAt(ctx, deep, nil, keyIDs, 0, time.Now(), options...)
-	return r.OK, r.Failed, r.Skipped, r.SkippedReasons
+func (s *Service) ProbeKeysDetail(ctx context.Context, deep bool, keyIDs []uint, options ...ProbeOptions) ProbeBatchResult {
+	return s.probeFilteredAt(ctx, deep, nil, keyIDs, 0, time.Now(), options...)
 }
 
 const probeConcurrency = 8
 
 func (s *Service) probeFilteredAt(ctx context.Context, deep bool, upstreamID *uint, keyIDs []uint, skipRecent time.Duration, now time.Time, options ...ProbeOptions) ProbeBatchResult {
-	out := ProbeBatchResult{SkippedReasons: map[string]int{}}
+	out := ProbeBatchResult{SkippedReasons: map[string]int{}, Results: []ProbeOutcome{}}
 	q := s.DB.WithContext(ctx).Where("status = ?", domain.StatusEnabled)
 	if upstreamID != nil && *upstreamID > 0 {
 		q = q.Where("upstream_id = ?", *upstreamID)
@@ -917,17 +928,20 @@ func (s *Service) probeFilteredAt(ctx context.Context, deep bool, upstreamID *ui
 				}
 				res, err := s.ProbeKey(ctx, id, deep, options...)
 				mu.Lock()
-				if err != nil {
-					out.Failed++
-				} else if res != nil && res.Skipped {
-					out.Skipped++
-					if res.Reason != "" {
-						out.SkippedReasons[res.Reason]++
-					}
-				} else if res == nil || !res.Success {
+				if err != nil || res == nil {
 					out.Failed++
 				} else {
-					out.OK++
+					out.Results = append(out.Results, *res)
+					if res.Skipped {
+						out.Skipped++
+						if res.Reason != "" {
+							out.SkippedReasons[res.Reason]++
+						}
+					} else if !res.Success {
+						out.Failed++
+					} else {
+						out.OK++
+					}
 				}
 				mu.Unlock()
 			}

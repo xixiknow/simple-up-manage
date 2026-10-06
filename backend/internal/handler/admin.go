@@ -1260,30 +1260,32 @@ func (h *Admin) RunProbes(c *gin.Context) {
 			httpx.BadRequest(c, "at most 200 key_ids")
 			return
 		}
-		ok, fail, skipped, reasons := h.Ops.ProbeKeysDetail(c.Request.Context(), body.Deep, body.KeyIDs, body.ProbeOptions)
-		msg := fmt.Sprintf("成功 %d，失败 %d", ok, fail)
-		if skipped > 0 {
-			msg = fmt.Sprintf("%s，跳过 %d", msg, skipped)
+		r := h.Ops.ProbeKeysDetail(c.Request.Context(), body.Deep, body.KeyIDs, body.ProbeOptions)
+		msg := fmt.Sprintf("成功 %d，失败 %d", r.OK, r.Failed)
+		if r.Skipped > 0 {
+			msg = fmt.Sprintf("%s，跳过 %d", msg, r.Skipped)
 		}
 		httpx.OK(c, gin.H{
-			"ok":              ok,
-			"failed":          fail,
-			"skipped":         skipped,
-			"skipped_reasons": reasons,
+			"ok":              r.OK,
+			"failed":          r.Failed,
+			"skipped":         r.Skipped,
+			"skipped_reasons": r.SkippedReasons,
+			"results":         r.Results,
 			"message":         msg,
 		})
 		return
 	}
-	ok, fail, skipped, reasons := h.Ops.ProbeFilteredDetail(c.Request.Context(), body.Deep, body.UpstreamID, 0, body.ProbeOptions)
-	msg := fmt.Sprintf("成功 %d，失败 %d", ok, fail)
-	if skipped > 0 {
-		msg = fmt.Sprintf("%s，跳过 %d", msg, skipped)
+	r := h.Ops.ProbeFilteredDetail(c.Request.Context(), body.Deep, body.UpstreamID, 0, body.ProbeOptions)
+	msg := fmt.Sprintf("成功 %d，失败 %d", r.OK, r.Failed)
+	if r.Skipped > 0 {
+		msg = fmt.Sprintf("%s，跳过 %d", msg, r.Skipped)
 	}
 	httpx.OK(c, gin.H{
-		"ok":              ok,
-		"failed":          fail,
-		"skipped":         skipped,
-		"skipped_reasons": reasons,
+		"ok":              r.OK,
+		"failed":          r.Failed,
+		"skipped":         r.Skipped,
+		"skipped_reasons": r.SkippedReasons,
+		"results":         r.Results,
 		"message":         msg,
 	})
 }
