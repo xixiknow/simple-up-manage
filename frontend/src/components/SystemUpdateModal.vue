@@ -114,11 +114,13 @@ function refresh() {
           <small>当前版本</small>
           <strong class="mono">{{ currentVersion }}</strong>
         </div>
-        <span class="version-arrow">→</span>
-        <div class="version-cell">
-          <small>目标版本</small>
-          <strong class="mono">{{ targetText }}</strong>
-        </div>
+        <template v-if="system.updateAvailable">
+          <span class="version-arrow">→</span>
+          <div class="version-cell">
+            <small>目标版本</small>
+            <strong class="mono">{{ targetText }}</strong>
+          </div>
+        </template>
       </div>
 
       <UiAlert v-if="system.info && !system.info.can_self_update" type="warning" title="当前环境不支持在线更新">
@@ -128,7 +130,7 @@ function refresh() {
         {{ system.info.check_error }}
       </UiAlert>
       <UiAlert v-else-if="!system.updateAvailable && system.info?.checked_at" type="info" title="已是最新版本">
-        可以随时手动指定版本执行更新。
+        当前无可用更新;新版本发布后,这里会出现「开始更新」按钮。如需强制重新部署当前最新镜像,可使用下方按钮。
       </UiAlert>
 
       <p class="update-note">
@@ -177,12 +179,20 @@ function refresh() {
       <template v-if="view === 'confirm'">
         <UiButton @click="close">取消</UiButton>
         <UiButton
+          v-if="system.updateAvailable"
           type="primary"
           :loading="system.starting"
           :disabled="!system.canSelfUpdate"
           @click="start('latest')"
         >
           开始更新
+        </UiButton>
+        <UiButton
+          v-else
+          :disabled="!system.canSelfUpdate || system.starting"
+          @click="start('latest')"
+        >
+          重新部署最新镜像
         </UiButton>
       </template>
       <template v-else-if="activePhase === 'done'">
