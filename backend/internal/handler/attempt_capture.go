@@ -20,8 +20,30 @@ type attemptPhase struct {
 	phase string
 }
 
-func (p *attemptPhase) set(s string) { p.mu.Lock(); p.phase = s; p.mu.Unlock() }
-func (p *attemptPhase) get() string  { p.mu.Lock(); defer p.mu.Unlock(); return p.phase }
+// phaseRank orders attempt phases chronologically. The transport fires trace
+// callbacks on its own read/write goroutines, so a late WroteRequest can land
+// after DoRaw already returned and the flow moved on — without the rank guard
+// it would roll the recorded phase backwards.
+var phaseRank = map[string]int{
+	"local":                 0,
+	"connecting":            1,
+	"dns":                   2,
+	"tls":                   3,
+	"sending_request":       4,
+	"awaiting_headers":      5,
+	"awaiting_first_output": 6,
+	"streaming":             7,
+	"compacting":            8,
+}
+
+func (p *attemptPhase) set(s string) {
+	p.mu.Lock()
+	if phaseRank[s] >= phaseRank[p.phase] {
+		p.phase = s
+	}
+	p.mu.Unlock()
+}
+func (p *attemptPhase) get() string { p.mu.Lock(); defer p.mu.Unlock(); return p.phase }
 func (p *attemptPhase) trace() *httptrace.ClientTrace {
 	return &httptrace.ClientTrace{
 		GetConn:           func(string) { p.set("connecting") },
