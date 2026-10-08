@@ -30,6 +30,7 @@ const TABS: Array<{ value: NoticeKind | ''; label: string }> = [
   { value: '', label: '全部' },
   { value: 'rate_change', label: '价格变动' },
   { value: 'model_change', label: '模型变化' },
+  { value: 'balance_alert', label: '余额预警' },
 ]
 
 function rateRow(item: Notice): RateRow {

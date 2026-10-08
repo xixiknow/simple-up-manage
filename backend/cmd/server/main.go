@@ -59,7 +59,7 @@ func main() {
 	}
 	opsSvc.Archives = archives
 	pick := picker.NewBand(db, rdb)
-	dash := dashboard.New(db)
+	dash := dashboard.New(db, enc)
 	dash.Start(context.Background())
 	stop := make(chan struct{})
 	recoveryDone := jobs.Start(cfg, opsSvc, pick.Reload, stop, dash)

@@ -244,7 +244,7 @@ func TestRPMExpiresWithoutNewTraffic(t *testing.T) {
 
 func TestShutdownDrainsDependencyRetriesAfterClosingStreams(t *testing.T) {
 	db := dashboardTestDB(t)
-	s := New(db)
+	s := New(db, nil)
 	sub := s.Metrics.Subscribe()
 	s.Metrics.CloseSubscriptions()
 	select {

@@ -312,7 +312,7 @@ export type LogBody = {
 export type RateChangeDirection = 'up' | 'down'
 export type RateChangeSource = 'billing' | 'manual' | 'models_sync'
 
-export type NoticeKind = 'rate_change' | 'model_change'
+export type NoticeKind = 'rate_change' | 'model_change' | 'balance_alert'
 
 // Payload schemas are fixed per kind — rate_change carries the key/rate move,
 // model_change carries the route group's added/removed model ids.
@@ -623,6 +623,23 @@ export const NOTICE_SOURCE_LABEL: Record<string, string> = {
 export const NOTICE_KIND_LABEL: Record<NoticeKind, string> = {
   rate_change: '价格变动',
   model_change: '模型变化',
+  balance_alert: '余额预警',
+}
+
+export type AlertSettings = {
+  enabled: boolean
+  hours_threshold: number
+  silence_hours: number
+  send_key_preview: string
+  has_key: boolean
+}
+
+export type AlertSettingsPayload = {
+  enabled?: boolean
+  hours_threshold?: number
+  silence_hours?: number
+  send_key?: string
+  clear_send_key?: boolean
 }
 
 export type DashRange = { from: string; to: string }

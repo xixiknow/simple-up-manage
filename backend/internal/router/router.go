@@ -86,6 +86,10 @@ func New(cfg *config.Config, db *gorm.DB, enc *crypto.AESGCM, opsSvc *ops.Servic
 		a.PUT("/scheduler", admin.UpdateScheduler)
 		a.GET("/scheduler/explain", admin.ExplainScheduler)
 
+		a.GET("/alert-settings", admin.GetAlertSettings)
+		a.PUT("/alert-settings", admin.UpdateAlertSettings)
+		a.POST("/alert-settings/test", admin.TestAlert)
+
 		a.GET("/intel-tests/plans", admin.ListIntelPlans)
 		a.POST("/intel-tests/plans", admin.CreateIntelPlan)
 		a.PUT("/intel-tests/plans/:id", admin.UpdateIntelPlan)

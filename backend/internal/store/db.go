@@ -83,6 +83,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&domain.ProbeLog{},
 		&domain.Notice{},
 		&domain.SchedulerSettings{},
+		&domain.AlertSettings{},
 		&domain.CatalogModel{},
 		&domain.CatalogMeta{},
 		&domain.IntelTestPlan{},

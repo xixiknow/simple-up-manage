@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { CloseOutline, DownloadOutline, KeyOutline, ListOutline, LogOutOutline, MenuOutline, PulseOutline, ShuffleOutline, ServerOutline, SparklesOutline, ChevronBackOutline, ChevronForwardOutline } from '@/components/ui/icons'
+import { CloseOutline, DownloadOutline, KeyOutline, ListOutline, LogOutOutline, MenuOutline, NotificationsOutline, PulseOutline, ShuffleOutline, ServerOutline, SparklesOutline, ChevronBackOutline, ChevronForwardOutline } from '@/components/ui/icons'
 import NoticeInbox from '@/components/NoticeInbox.vue'
 import SystemUpdateModal from '@/components/SystemUpdateModal.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -23,6 +23,7 @@ const navItems = [
   { label: '提供商', key: '/upstreams', icon: ServerOutline },
   { label: 'API 密钥', key: '/api-keys', icon: KeyOutline },
   { label: '调度', key: '/scheduler', icon: ShuffleOutline },
+  { label: '余额提醒', key: '/alerts', icon: NotificationsOutline },
   { label: '测智', key: '/intel', icon: SparklesOutline },
   { label: '请求记录', key: '/logs', icon: ListOutline },
 ]

@@ -1,5 +1,7 @@
 import { del, download, get, getList, post, put } from './http'
 import type {
+  AlertSettings,
+  AlertSettingsPayload,
   ConsumerKey,
   ConsumerKeyPayload,
   ConsumerKeyTestResult,
@@ -265,6 +267,18 @@ export function getScheduler() {
 
 export function updateScheduler(payload: SchedulerSettings) {
   return put<SchedulerSettings>('/scheduler', payload)
+}
+
+export function getAlertSettings() {
+  return get<AlertSettings>('/alert-settings')
+}
+
+export function updateAlertSettings(payload: AlertSettingsPayload) {
+  return put<AlertSettings>('/alert-settings', payload)
+}
+
+export function testAlert() {
+  return post<{ message: string }>('/alert-settings/test')
 }
 
 export function explainScheduler(params: {

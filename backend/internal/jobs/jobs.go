@@ -145,6 +145,13 @@ func Start(cfg *config.Config, opsSvc *ops.Service, afterCatalog func(), stop <-
 		go runTicker("dash-stale", time.Minute, stop, func(ctx context.Context) {
 			dash.InterruptStale(ctx, 6*time.Minute)
 		})
+		// Run once at startup so a restart does not wait out the first interval.
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			dash.CheckBalanceAlerts(ctx)
+		}()
+		go runTicker("balance-alert", 5*time.Minute, stop, dash.CheckBalanceAlerts)
 	}
 	return recoveryDone
 }

@@ -45,6 +45,12 @@ const router = createRouter({
           meta: { title: '调度' },
         },
         {
+          path: 'alerts',
+          name: 'alerts',
+          component: () => import('@/views/AlertSettingsView.vue'),
+          meta: { title: '余额提醒' },
+        },
+        {
           path: 'intel',
           name: 'intel',
           component: () => import('@/views/IntelTestsView.vue'),

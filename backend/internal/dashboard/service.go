@@ -8,12 +8,15 @@ import (
 	"sync"
 	"time"
 
+	"simple-up-manage/internal/crypto"
+
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
 type Service struct {
 	db           *gorm.DB
+	enc          *crypto.AESGCM
 	Metrics      *Metrics
 	settle       *settler
 	BalanceStale time.Duration
@@ -22,9 +25,10 @@ type Service struct {
 	stopOnce     sync.Once
 }
 
-func New(db *gorm.DB) *Service {
+func New(db *gorm.DB, enc *crypto.AESGCM) *Service {
 	s := &Service{
 		db:           db,
+		enc:          enc,
 		Metrics:      NewMetrics(nil),
 		settle:       newSettler(db),
 		BalanceStale: 2 * time.Minute,
