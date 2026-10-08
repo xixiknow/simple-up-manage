@@ -506,6 +506,7 @@ function openDetail(row: RequestLog) {
 }
 
 function streamLabel(row: RequestLog) {
+  if (row.path === '/v1/responses') return '压缩'
   return row.stream_known ? (row.stream ? '流式' : '同步') : '未知'
 }
 
