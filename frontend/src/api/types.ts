@@ -231,6 +231,7 @@ export type RequestLog = {
   in_flight?: boolean
   stream?: boolean
   stream_known?: boolean
+  compaction?: boolean
   cost_usd?: number
   cost_detail?: CostDetail | null
   error_message?: string

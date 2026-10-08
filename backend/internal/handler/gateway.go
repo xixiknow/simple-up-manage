@@ -222,7 +222,7 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 		if msg == "" {
 			msg = "request ended"
 		}
-		h.finishLog(lg, ck, nil, nil, protocol, model, path, reqID, clientIP, c.Writer.Status(), false, upstream.TokenUsage{}, 0, int(time.Since(reqStart).Milliseconds()), msg, reqSnap, nil)
+		h.finishLog(lg, ck, nil, nil, protocol, model, path, reqID, clientIP, c.Writer.Status(), false, upstream.TokenUsage{}, 0, int(time.Since(reqStart).Milliseconds()), msg, reqSnap, nil, false)
 	}()
 
 	attempts := 2
@@ -727,7 +727,7 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 			}
 			snap = reqSnap.withResponse(resp.Header, resp.Header.Get("Content-Type"), peek, int(total))
 			failure.ok = true
-			h.finishLog(lg, ck, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, int(time.Since(started).Milliseconds()), failure.msg, snap, nil)
+			h.finishLog(lg, ck, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, int(time.Since(started).Milliseconds()), failure.msg, snap, nil, false)
 		}
 		return failure
 	}
@@ -902,7 +902,7 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 	} else {
 		lg.traceEvent(h, pk, up, "failed", errMsg)
 	}
-	h.finishLog(lg, ck, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, success, logUsage, collector.ttftMs, dur, errMsg, snap, costDetail)
+	h.finishLog(lg, ck, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, success, logUsage, collector.ttftMs, dur, errMsg, snap, costDetail, collector.compaction)
 	if success {
 		if runtime, ok := h.Picker.(picker.RuntimeController); ok {
 			runtime.RecordProviderSuccess(c.Request.Context(), up.ID)
@@ -1223,12 +1223,13 @@ type ckIDs struct {
 	up *domain.Upstream
 }
 
-func (h *Gateway) finishLog(lg *liveLog, ck *domain.ConsumerKey, pk *domain.PlatformKey, up *domain.Upstream, protocol, model, path, reqID, clientIP string, status int, success bool, usage upstream.TokenUsage, ttft, dur int, errMsg string, snap ioCapture, costDetail *dashboard.CostDetail) {
+func (h *Gateway) finishLog(lg *liveLog, ck *domain.ConsumerKey, pk *domain.PlatformKey, up *domain.Upstream, protocol, model, path, reqID, clientIP string, status int, success bool, usage upstream.TokenUsage, ttft, dur int, errMsg string, snap ioCapture, costDetail *dashboard.CostDetail, compaction bool) {
 	completedAt := time.Now().UTC()
 	updates := logUpdates(ckIDs{pk: pk, up: up}, protocol, model, path, reqID, clientIP, status, success, usage, ttft, dur, errMsg, snap, false)
 	updates["completed_at"] = completedAt
 	updates["stream"] = snap.ReqStream
 	updates["stream_known"] = snap.StreamKnown
+	updates["compaction"] = compaction
 	if success {
 		updates["failure_scope"] = ""
 		updates["failure_action"] = ""
@@ -1262,6 +1263,7 @@ func (h *Gateway) finishLog(lg *liveLog, ck *domain.ConsumerKey, pk *domain.Plat
 			InFlight:            false,
 			Stream:              snap.ReqStream,
 			StreamKnown:         snap.StreamKnown,
+			Compaction:          compaction,
 			CompletedAt:         &completedAt,
 			CreatedAt:           snap.StartedAt,
 			CostUSD:             usage.CostUSD,

@@ -333,6 +333,7 @@ type RequestLog struct {
 	InFlight            bool       `gorm:"index" json:"in_flight"`
 	Stream              bool       `json:"stream"`
 	StreamKnown         bool       `gorm:"not null;default:false" json:"stream_known"`
+	Compaction          bool       `gorm:"not null;default:false" json:"compaction"`
 	LogRevision         uint64     `gorm:"not null;default:0" json:"-"`
 	CompletedAt         *time.Time `gorm:"index" json:"completed_at"`
 	CostUSD             *float64   `gorm:"type:decimal(20,8)" json:"cost_usd"`
