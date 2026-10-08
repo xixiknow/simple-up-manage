@@ -95,9 +95,13 @@ svg { flex-shrink: 0; }
 .ui-menu button:hover { background: #eef3e7; }
 .ui-select { position: relative; display: inline-flex; width: 100%; min-width: 0; }
 .ui-select > .ui-popover-anchor, .ui-select .ui-popover-trigger { width: 100%; }
-.ui-select-trigger { width: 100%; min-width: 0; border: 1px solid #dce4da; border-radius: 7px; padding: 10px 28px 10px 12px; background: #fff; color: #243c31; font-size: 12px; justify-content: space-between; text-align: left; }
+.ui-select-trigger { width: 100%; min-width: 0; border: 1px solid #dce4da; border-radius: 7px; padding: 10px 11px 10px 12px; background: #fff; color: #243c31; font-size: 12px; justify-content: space-between; text-align: left; }
 .ui-select-trigger > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ui-select-trigger .placeholder { color: #819087; }
+.ui-select-trigger .select-chevron { width: 14px; height: 14px; flex: none; color: #9aa89e; transition: transform .15s; }
+.ui-select-trigger[aria-expanded="true"] .select-chevron { transform: rotate(180deg); }
+.ui-select:has(> .input-clear) .ui-select-trigger { padding-right: 30px; }
+.ui-select:has(> .input-clear) .select-chevron { display: none; }
 .ui-select-menu { min-width: 200px; max-width: min(400px, calc(100vw - 48px)); }
 .ui-select-options { display: flex; flex-direction: column; max-height: 280px; overflow: auto; gap: 3px; }
 .ui-select-options > button, .ui-select-options > label { justify-content: flex-start; text-align: left; border-radius: 5px; padding: 9px 12px; font-size: 12px; }

@@ -266,7 +266,7 @@ const columns = computed<DataTableColumns<PlatformKey>>(() => [
     },
   },
   {
-    title: '近 60 次',
+    title: '近 30 次',
     key: 'health_pulse',
     width: 220,
     render(row) {

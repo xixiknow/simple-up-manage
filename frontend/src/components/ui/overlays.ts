@@ -1,5 +1,6 @@
 import { computed, defineComponent, h, inject, nextTick, onBeforeUnmount, onMounted, provide, ref, Teleport, useId, watch, type PropType } from 'vue'
 import { fieldKey, formKey, UiButton, px } from './controls'
+import { ChevronDownOutline } from './icons'
 
 // Native dialog supplies focus trapping, Escape, inert background and focus restoration.
 // The card/body/footer structure and visual tokens follow the rotation console.
@@ -104,7 +105,7 @@ export const UiSelect = defineComponent({
     }
     watch(query, () => { highlighted.value = 0 })
     return () => h('div', { class: ['ui-select', p.size, attrs.class], style: attrs.style as any }, [h(UiPopover, { show: open.value, disabled: p.disabled || form?.disabled(), 'onUpdate:show': (v: boolean) => { open.value = v; if (v) query.value = '' } }, {
-      trigger: () => h('button', { ...attrs, style: undefined, id: field?.id, type: 'button', role: 'combobox', 'aria-label': attrs['aria-label'] || field?.label() || p.placeholder, 'aria-expanded': open.value, 'aria-haspopup': 'listbox', class: 'ui-select-trigger', disabled: p.disabled || form?.disabled(), onKeydown: keydown }, [h('span', { class: { placeholder: !selected.value.length && p.value == null } }, selected.value.map(o => o.label).join('、') || (p.value != null && p.value !== '' ? String(p.value) : p.placeholder || '请选择')), p.loading ? h('span', { class: 'ui-spinner' }) : h('span', { 'aria-hidden': true }, '⌄')]),
+      trigger: () => h('button', { ...attrs, style: undefined, id: field?.id, type: 'button', role: 'combobox', 'aria-label': attrs['aria-label'] || field?.label() || p.placeholder, 'aria-expanded': open.value, 'aria-haspopup': 'listbox', class: 'ui-select-trigger', disabled: p.disabled || form?.disabled(), onKeydown: keydown }, [h('span', { class: { placeholder: !selected.value.length && p.value == null } }, selected.value.map(o => o.label).join('、') || (p.value != null && p.value !== '' ? String(p.value) : p.placeholder || '请选择')), p.loading ? h('span', { class: 'ui-spinner' }) : h(ChevronDownOutline, { class: 'select-chevron', 'aria-hidden': true })]),
       default: () => h('div', { class: 'ui-select-menu' }, [
         p.filterable || p.tag ? h('input', { type: 'search', autofocus: true, value: query.value, placeholder: p.tag ? '搜索或输入' : '搜索选项', 'aria-label': '搜索选项', onInput: (e: Event) => { query.value = (e.target as HTMLInputElement).value }, onKeydown: keydown }) : null,
         h('div', { role: 'listbox', 'aria-multiselectable': p.multiple || undefined, class: 'ui-select-options' }, available.value.length ? available.value.map((o, i) => h('button', { type: 'button', role: 'option', disabled: o.disabled, 'aria-selected': selected.value.includes(o), class: { selected: selected.value.includes(o), highlighted: i === highlighted.value }, onClick: () => choose(o), onKeydown: keydown }, p.renderLabel ? [p.renderLabel(o)] : [o.label])) : [p.tag && query.value ? h('button', { type: 'button', onClick: () => choose({ value: query.value }) }, '使用 ' + query.value) : slots.empty?.() || h('span', { class: 'muted' }, '没有匹配选项')]),

@@ -57,15 +57,20 @@ function lines(point: IntelVerdictPoint) {
   display: flex;
   gap: 2px;
   min-width: 150px;
-  height: 14px;
+  height: 20px;
   align-items: stretch;
 }
 .vt-cell {
   flex: 1 1 0;
   min-width: 3px;
   width: 100%;
-  height: 14px;
-  border-radius: 2px;
+  height: 20px;
+  border-radius: 3px;
+}
+.vt :deep(.ui-tooltip-trigger) {
+  flex: 1 1 0;
+  min-width: 3px;
+  display: flex;
 }
 .vt-cell.empty {
   background: #e5ebde;

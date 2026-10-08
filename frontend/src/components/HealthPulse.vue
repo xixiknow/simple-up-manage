@@ -16,8 +16,8 @@ const labels: Record<PulseState, string> = {
   empty: '无数据',
 }
 
-const cells = computed(() => (props.cells || []).slice(-60))
-const emptyCount = computed(() => 60 - cells.value.length)
+const cells = computed(() => (props.cells || []).slice(-30))
+const emptyCount = computed(() => 30 - cells.value.length)
 
 function cellClass(cell: HealthPulseCell) {
   if (cell.state === 'empty' || (cell.ok || 0) + (cell.fail || 0) === 0) return 'empty'
@@ -69,23 +69,23 @@ function lines(cell: HealthPulseCell) {
 <style scoped>
 .pulse {
   display: grid;
-  grid-template-columns: repeat(60, minmax(2px, 1fr));
+  grid-template-columns: repeat(30, minmax(3px, 1fr));
   align-items: stretch;
-  gap: 1px;
+  gap: 2px;
   min-width: 180px;
-  height: 18px;
+  height: 24px;
 }
 .pulse :deep(.ui-tooltip-trigger) {
   flex: 1 1 0;
-  min-width: 2px;
+  min-width: 3px;
   display: flex;
 }
 .pulse-cell {
   flex: 1 1 0;
   width: 100%;
-  min-width: 2px;
-  height: 18px;
-  border-radius: 1px;
+  min-width: 3px;
+  height: 24px;
+  border-radius: 2px;
 }
 .pulse-cell.empty {
   background: #e5ebde;

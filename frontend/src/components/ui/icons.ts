@@ -22,6 +22,7 @@ export const ShuffleOutline = icon("ShuffleOutline", [["path",{"d":"m18 14 4 4-4
 export const ServerOutline = icon("ServerOutline", [["rect",{"width":"20","height":"8","x":"2","y":"2","rx":"2","ry":"2","key":"ngkwjq"}],["rect",{"width":"20","height":"8","x":"2","y":"14","rx":"2","ry":"2","key":"iecqi9"}],["line",{"x1":"6","x2":"6.01","y1":"6","y2":"6","key":"16zg32"}],["line",{"x1":"6","x2":"6.01","y1":"18","y2":"18","key":"nzw8ys"}]])
 export const ChevronForwardOutline = icon("ChevronForwardOutline", [["path",{"d":"m9 18 6-6-6-6","key":"mthhwq"}]])
 export const ChevronBackOutline = icon("ChevronBackOutline", [["path",{"d":"m15 18-6-6 6-6","key":"15czc0"}]])
+export const ChevronDownOutline = icon("ChevronDownOutline", [["path",{"d":"m6 9 6 6 6-6","key":"1fq3v5"}]])
 export const RepeatOutline = icon("RepeatOutline", [["path",{"d":"m17 2 4 4-4 4","key":"1over"}],["path",{"d":"M3 11v-1a4 4 0 0 1 4-4h14","key":"1repb"}],["path",{"d":"m7 22-4-4 4-4","key":"1repc"}],["path",{"d":"M21 13v1a4 4 0 0 1-4 4H3","key":"1repd"}]])
 export const ArrowLeftRightOutline = icon("ArrowLeftRightOutline", [["path",{"d":"M8 3 4 7l4 4","key":"1alra"}],["path",{"d":"M4 7h16","key":"1alrc"}],["path",{"d":"m16 21 4-4-4-4","key":"1alrd"}],["path",{"d":"M20 17H4","key":"1alre"}]])
 export const ArrowBackOutline = icon("ArrowBackOutline", [["path",{"d":"m12 19-7-7 7-7","key":"1l729n"}],["path",{"d":"M19 12H5","key":"x3x0zl"}]])
