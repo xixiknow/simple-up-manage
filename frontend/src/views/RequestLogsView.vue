@@ -473,7 +473,8 @@ function startLive() {
   if (disposed) return
   stopLive()
   timer = window.setInterval(() => {
-    if (live.value) void load({ silent: true })
+    // 实时关闭时列表仍受快照 id 约束，静默刷新只会在途行原地收敛（首字 / 完成态），不会出现新行
+    if (live.value || items.value.some((r) => r.in_flight)) void load({ silent: true })
     if (showDetail.value && (detail.value?.in_flight || detail.value?.bodies?.some(b => b.status === 'saving'))) void refreshDetail(true)
   }, LIVE_MS)
 }
