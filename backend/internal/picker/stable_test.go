@@ -203,6 +203,76 @@ func TestResponsesSessionAndPreviousResponse(t *testing.T) {
 	}
 }
 
+// A bound session never explores, so without trials a faster challenger
+// starves of fresh samples and latency_improved can never confirm.
+func TestStableChallengerTrialFeedsSwitch(t *testing.T) {
+	p, keys, req := stableFixture(t)
+	ctx := context.Background()
+	p.cfg.ExplorationRatio = .05
+	req.Session = "s"
+	// 2200ms vs 500ms: 77% faster but < 2000ms absolute; OR threshold applies.
+	samples(t, p, req, keys[0].ID, true, 2200, 6, time.Now())
+	samples(t, p, req, keys[1].ID, true, 500, 6, time.Now().Add(-2*time.Minute))
+	p.CommitSuccess(ctx, req, Decision{}, keys[0].ID, "")
+	trials := 0
+	for i := 0; i < 20; i++ {
+		key, _, d, err := p.PickDecision(ctx, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.Reason == "challenger_trial" {
+			trials++
+			if key.ID != keys[1].ID || !d.Exploration {
+				t.Fatalf("trial: %+v", d)
+			}
+		} else if key.ID != keys[0].ID || d.Reason != "reuse" {
+			t.Fatalf("reuse: %+v", d)
+		}
+		p.CommitSuccess(ctx, req, d, key.ID, "")
+	}
+	if trials != 1 {
+		t.Fatalf("trials = %d", trials)
+	}
+	_ = p.withStableState(ctx, routeScope(req), false, func(s *stableState) {
+		if s.Bindings["s"].Key != keys[0].ID || s.Bindings["s"].Challenger != keys[1].ID {
+			t.Fatalf("binding moved: %+v", s.Bindings["s"])
+		}
+	})
+	_ = p.withStableState(ctx, routeScope(req), true, func(s *stableState) {
+		b := s.Bindings["s"]
+		b.Since = time.Now().Add(-61 * time.Second).UnixMilli()
+		s.Bindings["s"] = b
+	})
+	samples(t, p, req, keys[1].ID, true, 500, 3, time.Now())
+	key, _, d, err := p.PickDecision(ctx, req)
+	if err != nil || key.ID != keys[1].ID || d.Reason != "latency_improved" {
+		t.Fatalf("did not switch: %+v %v", d, err)
+	}
+	// Failover never spends a trial.
+	req.Exclude = []uint{9999}
+	for i := 0; i < 40; i++ {
+		if _, _, d, _ := p.PickDecision(ctx, req); d.Reason == "challenger_trial" {
+			t.Fatal("trial during failover")
+		}
+	}
+}
+
+// The bound key is already the fastest: no challenger, no trials.
+func TestStableNoTrialWhenBoundIsFastest(t *testing.T) {
+	p, keys, req := stableFixture(t)
+	ctx := context.Background()
+	p.cfg.ExplorationRatio = .05
+	req.Session = "s"
+	samples(t, p, req, keys[0].ID, true, 4000, 6, time.Now())
+	samples(t, p, req, keys[1].ID, true, 7000, 6, time.Now())
+	p.CommitSuccess(ctx, req, Decision{}, keys[0].ID, "")
+	for i := 0; i < 40; i++ {
+		if _, _, d, _ := p.PickDecision(ctx, req); d.Reason != "reuse" || d.SelectedKeyID != keys[0].ID {
+			t.Fatalf("unexpected: %+v", d)
+		}
+	}
+}
+
 func TestStableEmptyPreview(t *testing.T) {
 	p, _, req := stableFixture(t)
 	req.AllowKeys = map[uint]struct{}{}

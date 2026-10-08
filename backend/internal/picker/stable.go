@@ -335,7 +335,8 @@ func (p *BandPicker) stableDecision(ctx context.Context, req Request, mutate boo
 			if c.Reliable || (degraded && c.Quality+1e-9 >= b.Quality) {
 				chosen = current
 				d.Reason = "reuse"
-				improved := best != current && b.LatencySamples >= cfg.MinSamples && c.LatencySamples >= cfg.MinSamples && b.SuccessRate >= c.SuccessRate && c.TTFTp50-b.TTFTp50 >= cfg.SwitchImprovementMs && float64(c.TTFTp50-b.TTFTp50) >= float64(c.TTFTp50)*cfg.SwitchImprovementRatio
+				gap := c.TTFTp50 - b.TTFTp50
+				improved := best != current && b.LatencySamples >= cfg.MinSamples && c.LatencySamples >= cfg.MinSamples && b.SuccessRate >= c.SuccessRate && gap > 0 && (gap >= cfg.SwitchImprovementMs || float64(gap) >= float64(c.TTFTp50)*cfg.SwitchImprovementRatio)
 				if improved {
 					if binding.Challenger != b.KeyID {
 						binding.Challenger = b.KeyID
@@ -370,6 +371,21 @@ func (p *BandPicker) stableDecision(ctx context.Context, req Request, mutate boo
 		if len(req.Exclude)+len(req.ExcludeProviders)+len(req.ExcludeKeyModels) > 0 {
 			d.Reason = "failover"
 			return
+		}
+		// Bound sessions never explore, so a faster challenger would starve of
+		// fresh samples and latency_improved could never confirm. Lend it the
+		// exploration slot without moving the binding.
+		if req.Session != "" && hasBinding && d.Reason == "reuse" && chosen == current && best != current && req.ExplorationSlot && cfg.ExplorationRatio > 0 {
+			c, b := cands[current], cands[best]
+			faster := b.LatencySamples < cfg.MinSamples || (c.LatencySamples >= cfg.MinSamples && b.TTFTp50 < c.TTFTp50)
+			if faster && now-state.Explored[b.KeyID] >= 60000 {
+				chosen = best
+				d.Exploration = true
+				d.Reason = "challenger_trial"
+				if mutate {
+					state.Explored[b.KeyID] = now
+				}
+			}
 		}
 		if (req.Session == "" || !hasBinding) && cfg.ExplorationRatio > 0 {
 			if req.ExplorationSlot {
@@ -450,7 +466,9 @@ func (p *BandPicker) CommitSuccess(ctx context.Context, req Request, d Decision,
 		if req.Session != "" {
 			ttl = p.Settings().StickyTTLSec
 		}
-		if !d.Exploration || req.Session != "" {
+		// A challenger trial only gathers samples; switching stays with
+		// latency_improved so the session keeps its stable binding.
+		if d.Reason != "challenger_trial" && (!d.Exploration || req.Session != "") {
 			old, exists := state.Bindings[req.Session]
 			// A late completion cannot overwrite a newer successful decision.
 			if !exists || old.Key == key || old.Key == d.PreviousKeyID {

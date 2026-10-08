@@ -813,6 +813,11 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 			lg.markFailure(h, outcome.scope, outcome.action)
 			return outcome
 		}
+		if err != nil && path == "/v1/responses" && !collector.upstreamTerminal() && c.Request.Context().Err() == nil {
+			// Already committed: failover is no longer transparent, so end
+			// the stream in-protocol rather than truncating it silently.
+			writeResponsesStreamError(c.Writer, proxyTimeoutMessage(err, false))
+		}
 	} else if isTextAPI(path) && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		const maxJSONResponse = 16 << 20
 		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, maxJSONResponse+1))
@@ -866,8 +871,17 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 
 	success := resp.StatusCode >= 200 && resp.StatusCode < 300 && err == nil
 	errMsg := ""
+	failAction := "response_failure"
 	if err != nil {
 		errMsg = err.Error()
+		// A committed stream can still stall; keep the timeout class so the
+		// circuit breaker weighs it like a pre-commit timeout.
+		if isTimeoutErr(err) {
+			failAction, errMsg = "upstream_timeout", proxyTimeoutMessage(err, false)
+			if collector != nil && collector.compaction && collector.ttftMs == 0 {
+				failAction, errMsg = "compaction_timeout", "compaction timeout"
+			}
+		}
 	} else if !success {
 		errMsg = http.StatusText(resp.StatusCode)
 	}
@@ -900,7 +914,7 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 	outcome = forwardOutcome{ok: true, validSuccess: success, responseID: collector.responseID, msg: errMsg}
 	if !success {
 		outcome.scope = failureScopeKeyModel
-		outcome.action = "response_failure"
+		outcome.action = failAction
 	}
 	return outcome
 }
@@ -1592,6 +1606,9 @@ type streamCollector struct {
 	onCompaction   func()
 	onFirstOutput  func()
 	compaction     bool
+	// committable marks a validated, non-error Responses lifecycle event: the
+	// stream may be committed downstream before the first semantic output.
+	committable    bool
 	eventName      string
 	eventData      []string
 	eventBytes     int
@@ -1743,6 +1760,23 @@ func (s *streamCollector) finishEvent() {
 		s.terminal = true
 		s.terminalErr = errors.New(upstream.ParseError([]byte(data)).Summary("upstream stream ended: " + name))
 	}
+	if s.strict && s.protocolPath == "/v1/responses" && s.terminalErr == nil && strings.HasPrefix(name, "response.") {
+		s.committable = true
+	}
+}
+
+// upstreamTerminal reports whether the stream ended on the upstream's own
+// protocol-level error event, which is safe to forward as-is.
+func (s *streamCollector) upstreamTerminal() bool {
+	switch s.events.Terminal {
+	case "error", "response.failed", "response.incomplete":
+		return true
+	}
+	return false
+}
+
+func (s *streamCollector) atEventBoundary() bool {
+	return len(s.buf) == 0 && s.eventName == "" && len(s.eventData) == 0 && s.eventBytes == 0
 }
 
 func copySSE(w gin.ResponseWriter, r io.Reader, col *streamCollector, hold bool, onRelease func()) error {
@@ -1752,9 +1786,20 @@ func copySSE(w gin.ResponseWriter, r io.Reader, col *streamCollector, hold bool,
 	}
 	br := bufio.NewReaderSize(r, 32*1024)
 	buf := make([]byte, 32*1024)
-	var pending []byte
+	var pending, tail []byte
 	released := !hold
 	var releaseErr error
+	writeTail := func() error {
+		if len(tail) == 0 {
+			return nil
+		}
+		_, err := w.Write(tail)
+		tail = tail[:0]
+		if err == nil && flusher != nil {
+			flusher.Flush()
+		}
+		return err
+	}
 	release := func() {
 		if released {
 			return
@@ -1782,18 +1827,28 @@ func copySSE(w gin.ResponseWriter, r io.Reader, col *streamCollector, hold bool,
 					return errors.New("stream prefix exceeded limit before first token")
 				}
 				pending = append(pending, chunk...)
-				if col.ttftMs > 0 {
+				// Responses lifecycle events (created, in_progress, compaction)
+				// commit early: callers abort when no response starts within
+				// their first-byte window, even though TTFT is still pending.
+				if col.ttftMs > 0 || (col.committable && col.terminalErr == nil) {
 					release()
 					if releaseErr != nil {
 						return releaseErr
 					}
 				}
 			} else {
-				if _, werr := w.Write(chunk); werr != nil {
-					return werr
+				// Forward whole events only, so a frame rejected on its closing
+				// blank line never reaches the client half-written.
+				tail = append(tail, chunk...)
+				if col.terminalErr != nil && col.protocolPath == "/v1/responses" && !col.upstreamTerminal() {
+					// The caller closes the committed stream with a protocol
+					// error event instead.
+					return col.terminalErr
 				}
-				if flusher != nil {
-					flusher.Flush()
+				if !col.strict || col.terminal || col.atEventBoundary() || len(tail) > upstream.MaxSSEEventBytes {
+					if err := writeTail(); err != nil {
+						return err
+					}
 				}
 			}
 			if col.terminal {
@@ -1816,10 +1871,21 @@ func copySSE(w gin.ResponseWriter, r io.Reader, col *streamCollector, hold bool,
 					return errors.New("upstream stream ended without terminal event")
 				}
 				release()
+				if releaseErr == nil {
+					releaseErr = writeTail()
+				}
 				return releaseErr
 			}
 			return err
 		}
+	}
+}
+
+func writeResponsesStreamError(w gin.ResponseWriter, msg string) {
+	data, _ := json.Marshal(map[string]any{"type": "error", "code": "upstream_stream_error", "message": msg, "param": nil})
+	_, _ = w.Write([]byte("event: error\ndata: " + string(data) + "\n\n"))
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
 	}
 }
 

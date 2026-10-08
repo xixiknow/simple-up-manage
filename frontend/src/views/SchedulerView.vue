@@ -133,6 +133,14 @@ const RANKING_OPTIONS = [
   { label: '负载均衡', value: 'load_balance' },
 ]
 
+const RANKING_HINT: Record<string, string> = {
+  stable_latency: '会话沿用上次成功的 Key，仅在别的 Key 首字持续明显更快时切换；无绑定时选首字最快且成本最低的 Key',
+  adaptive: '有会话 ID 时按缓存亲和，没有时按负载均衡',
+  fixed_order: '近优 Key 中按 Key ID 固定顺序选择',
+  cache_affinity: '同一会话尽量固定到同一个 Key，提高 Prompt 缓存命中',
+  load_balance: '近优 Key 中优先选当前并发最少的，分摊压力',
+}
+
 const EMPTY_VENDORS: CatalogVendor[] = [
   { id: 'openai', name: 'OpenAI', protocol: 'openai', models: [] },
   { id: 'anthropic', name: 'Anthropic', protocol: 'anthropic', models: [] },
@@ -425,35 +433,52 @@ onMounted(async () => {
           <div class="grid">
             <ui-form-item label="成功率权重" path="weight_success">
               <ui-input-number v-model:value="form.weight_success" :min="0" :max="1" :step="0.05" style="width: 100%" />
+              <template #feedback>近期请求成功率在质量分中的占比，越高越偏向稳定的 Key</template>
             </ui-form-item>
             <ui-form-item label="缓存率权重" path="weight_cache">
               <ui-input-number v-model:value="form.weight_cache" :min="0" :max="1" :step="0.05" style="width: 100%" />
+              <template #feedback>Prompt 缓存命中率的占比，越高越偏向缓存命中多、更省钱的 Key</template>
             </ui-form-item>
             <ui-form-item label="TTFT 权重" path="weight_ttft">
               <ui-input-number v-model:value="form.weight_ttft" :min="0" :max="1" :step="0.05" style="width: 100%" />
+              <template #feedback>首字时延的占比，越高越偏向首字快的 Key</template>
             </ui-form-item>
           </div>
         </ui-card>
         <ui-card v-if="form.ranking_mode === 'stable_latency'" size="small" title="稳定首字优先" :bordered="false">
+          <p class="muted card-hint">会话默认沿用上次成功的 Key；只有别的 Key 首字明显更快并持续一段时间，才会切换过去。</p>
           <div class="grid">
-            <ui-form-item label="最小改善比例"><ui-input-number v-model:value="form.switch_improvement_ratio" :min="0.01" :max="1" :step="0.05" /></ui-form-item>
-            <ui-form-item label="最小改善 ms"><ui-input-number v-model:value="form.switch_improvement_ms" :min="1" :step="500" /></ui-form-item>
-            <ui-form-item label="改善确认秒数"><ui-input-number v-model:value="form.switch_confirm_sec" :min="1" :step="10" /></ui-form-item>
+            <ui-form-item label="最小改善比例">
+              <ui-input-number v-model:value="form.switch_improvement_ratio" :min="0.01" :max="1" :step="0.05" />
+              <template #feedback>候选 Key 首字 p50 比当前 Key 快至少该比例即视为更优（与“最小改善 ms”满足其一即可）</template>
+            </ui-form-item>
+            <ui-form-item label="最小改善 ms">
+              <ui-input-number v-model:value="form.switch_improvement_ms" :min="1" :step="500" />
+              <template #feedback>候选 Key 首字 p50 比当前 Key 快至少该毫秒数即视为更优（与“最小改善比例”满足其一即可）</template>
+            </ui-form-item>
+            <ui-form-item label="改善确认秒数">
+              <ui-input-number v-model:value="form.switch_confirm_sec" :min="1" :step="10" />
+              <template #feedback>更优状态需持续该秒数，且候选 Key 期间新增 ≥3 个成功样本，才真正切换</template>
+            </ui-form-item>
           </div>
         </ui-card>
         <ui-card size="small" title="观测窗口" :bordered="false" :loading="loading">
           <div class="grid">
             <ui-form-item label="窗口分钟">
               <ui-input-number v-model:value="form.window_minutes" :min="1" :max="180" style="width: 100%" />
+              <template #feedback>只用最近 N 分钟的请求结果计算成功率、首字时延和缓存率</template>
             </ui-form-item>
             <ui-form-item label="窗口样本">
               <ui-input-number v-model:value="form.window_max_samples" :min="10" :max="500" style="width: 100%" />
+              <template #feedback>每个 Key 最多取窗口内最近 N 条请求参与统计</template>
             </ui-form-item>
             <ui-form-item label="最少样本">
               <ui-input-number v-model:value="form.min_samples" :min="1" :max="50" style="width: 100%" />
+              <template #feedback>样本少于该数视为数据不足：成功率按先验值估计，首字不参与比较（稳定首字优先模式下至少 5）</template>
             </ui-form-item>
             <ui-form-item v-if="form.ranking_mode !== 'stable_latency'" label="TTFT 上限 ms">
               <ui-input-number v-model:value="form.ttft_cap_ms" :min="500" :max="30000" style="width: 100%" />
+              <template #feedback>首字时延达到该值时 TTFT 得分为 0，越低于该值得分越高</template>
             </ui-form-item>
           </div>
         </ui-card>
@@ -461,63 +486,63 @@ onMounted(async () => {
           <div class="grid">
             <ui-form-item label="候选排序">
               <ui-select v-model:value="form.ranking_mode" :options="RANKING_OPTIONS" style="width: 100%" />
+              <template #feedback>{{ RANKING_HINT[form.ranking_mode] }}</template>
             </ui-form-item>
             <ui-form-item v-if="form.ranking_mode !== 'stable_latency'" label="近优带宽 ε" path="epsilon">
               <ui-input-number v-model:value="form.epsilon" :min="0.01" :max="0.5" :step="0.01" style="width: 100%" />
+              <template #feedback>质量分与最高分相差不超过 ε 的 Key 视为近优，再在其中按排序方式挑选</template>
             </ui-form-item>
             <ui-form-item label="按模型列表过滤">
-              <ui-space align="center" size="small">
-                <ui-switch v-model:value="form.filter_by_models" />
-                <span class="muted">Key 已获取的模型列表非空且不含请求 model 时跳过该 Key</span>
-              </ui-space>
+              <ui-switch v-model:value="form.filter_by_models" />
+              <template #feedback>Key 已获取的模型列表非空且不含请求 model 时跳过该 Key</template>
             </ui-form-item>
           </div>
         </ui-card>
         <ui-card size="small" title="故障与粘滞" :bordered="false" :loading="loading">
           <div class="grid">
-			<ui-form-item label="探索比例"><ui-input-number v-model:value="form.exploration_ratio" :min="0" :max="0.05" :step="0.01" style="width: 100%" /></ui-form-item>
+            <ui-form-item label="探索比例">
+              <ui-input-number v-model:value="form.exploration_ratio" :min="0" :max="0.05" :step="0.01" style="width: 100%" />
+              <template #feedback>约该比例的请求分给久未采样的 Key 收集数据；稳定首字优先模式下也用于让已绑定会话试用更快的 Key。0 为关闭，上限 0.05</template>
+            </ui-form-item>
           </div>
         </ui-card>
         <ui-card size="small" title="熔断与恢复" :bordered="false" :loading="loading">
           <div class="grid">
             <ui-form-item label="失败阈值">
               <ui-input-number v-model:value="form.circuit_failure_threshold" :min="1" :max="100" :precision="0" style="width: 100%" />
+              <template #feedback>熔断窗口内失败达到该次数，暂停该 Key 的当前模型与接口</template>
             </ui-form-item>
             <ui-form-item label="流量系数">
-              <ui-space align="center" size="small">
-                <ui-input-number v-model:value="form.circuit_rate_factor" :min="0" :max="1" :step="0.05" style="width: 110px" />
-                <span class="muted">阈值为 max(失败阈值, 窗口尝试数×系数)，0 表示固定阈值</span>
-              </ui-space>
+              <ui-input-number v-model:value="form.circuit_rate_factor" :min="0" :max="1" :step="0.05" style="width: 100%" />
+              <template #feedback>阈值为 max(失败阈值, 窗口尝试数×系数)，流量大时不因零星失败熔断；0 表示固定阈值</template>
             </ui-form-item>
             <ui-form-item label="FTT 记失败">
-              <ui-space align="center" size="small">
-                <ui-input-number v-model:value="form.ftt_failure_weight" :min="1" :max="10" :precision="0" style="width: 110px" />
-                <span class="muted">首字超时一次按 N 次失败记账</span>
-              </ui-space>
+              <ui-input-number v-model:value="form.ftt_failure_weight" :min="1" :max="10" :precision="0" style="width: 100%" />
+              <template #feedback>首字超时一次按 N 次失败记账，让卡顿的 Key 更快熔断</template>
             </ui-form-item>
             <ui-form-item label="熔断窗口秒">
               <ui-input-number v-model:value="form.circuit_window_sec" :min="10" :max="600" :precision="0" style="width: 100%" />
+              <template #feedback>统计失败次数的滑动时间窗口</template>
             </ui-form-item>
             <ui-form-item label="冷却秒">
               <ui-input-number v-model:value="form.circuit_cooldown_sec" :min="5" :max="600" :precision="0" style="width: 100%" />
+              <template #feedback>熔断后暂停的初始时长，到期后需通过恢复验证才重新放量</template>
             </ui-form-item>
             <ui-form-item label="最大冷却秒">
               <ui-input-number v-model:value="form.circuit_max_cooldown_sec" :min="30" :max="3600" :precision="0" style="width: 100%" />
+              <template #feedback>恢复验证连续失败时冷却时长翻倍，最长不超过该值</template>
             </ui-form-item>
             <ui-form-item label="恢复名额/分">
-              <ui-space align="center" size="small">
-                <ui-input-number v-model:value="form.recovery_budget_per_min" :min="1" :max="10" :precision="0" style="width: 110px" />
-                <span class="muted">每分组每分钟真流量恢复验证次数</span>
-              </ui-space>
+              <ui-input-number v-model:value="form.recovery_budget_per_min" :min="1" :max="10" :precision="0" style="width: 100%" />
+              <template #feedback>每个分组每分钟最多用几次真实请求去验证熔断 Key 是否恢复</template>
             </ui-form-item>
             <ui-form-item label="恢复检查超时秒">
               <ui-input-number v-model:value="form.recovery_check_timeout_sec" :min="30" :max="300" :precision="0" :step="5" style="width: 100%" />
+              <template #feedback>自动恢复检查请求的超时，需大于推理模型的首字耗时，否则健康的 Key 也会检查失败</template>
             </ui-form-item>
             <ui-form-item label="重试首字等待秒">
-              <ui-space align="center" size="small">
-                <ui-input-number v-model:value="form.failover_first_token_wait_sec" :min="3" :max="30" :precision="0" style="width: 110px" />
-                <span class="muted">换 Key 重试的首字等待上限</span>
-              </ui-space>
+              <ui-input-number v-model:value="form.failover_first_token_wait_sec" :min="3" :max="30" :precision="0" style="width: 100%" />
+              <template #feedback>换 Key 重试时的首字等待上限（首次尝试固定 30 秒），避免连续卡顿叠加</template>
             </ui-form-item>
           </div>
         </ui-card>
@@ -547,9 +572,11 @@ onMounted(async () => {
             :loading="syncingCatalog"
             @update:value="(value: string) => setProbeValue(vendor, value)"
           />
+          <template #feedback>探测 {{ vendor.name }} 的 Key 时使用的模型，建议选便宜、响应快的小模型</template>
         </ui-form-item>
         <ui-form-item label="探测超时（秒）">
           <ui-input-number v-model:value="form.probe_timeout_sec" :min="1" :max="300" :precision="0" :step="5" style="width: 100%" />
+              <template #feedback>手动或定时探测的超时时间，超时记为探测失败</template>
         </ui-form-item>
       </ui-form>
     </ui-card>

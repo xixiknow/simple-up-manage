@@ -150,10 +150,40 @@ func TestStrictStreamValidation(t *testing.T) {
 			if (err == nil) != tc.ok || (col.ttftMs > 0) != tc.hasFirst {
 				t.Fatalf("err=%v ttft=%d", err, col.ttftMs)
 			}
-			if !tc.ok && !tc.hasFirst && c.Writer.Written() {
+			if !tc.ok && !tc.hasFirst && c.Writer.Written() && !col.committable {
 				t.Fatal("invalid stream committed before failover")
 			}
 		})
+	}
+}
+
+// Validated Responses lifecycle events commit the stream before the first
+// text so callers with a first-byte deadline see the response start; TTFT
+// stays pending and a later error never forwards the rejected frame.
+func TestResponsesLifecycleCommitsBeforeFirstOutput(t *testing.T) {
+	created := "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"r\"}}\n\n"
+	inProgress := "data: {\"type\":\"response.in_progress\"}\n\n"
+	reader, writer := io.Pipe()
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	released := make(chan struct{})
+	col := &streamCollector{start: time.Now(), protocolPath: "/v1/responses", strict: true}
+	done := make(chan error, 1)
+	go func() { done <- copySSE(c.Writer, reader, col, true, func() { close(released) }) }()
+	_, _ = io.WriteString(writer, testResponseMetadata+created)
+	select {
+	case <-released:
+	case <-time.After(time.Second):
+		t.Fatal("lifecycle event did not commit the stream")
+	}
+	_, _ = io.WriteString(writer, inProgress+"data: {\"type\":\"bogus\"}\n\n")
+	_ = writer.Close()
+	err := <-done
+	if err == nil || col.ttftMs != 0 || !c.Writer.Written() {
+		t.Fatalf("err=%v ttft=%d written=%v", err, col.ttftMs, c.Writer.Written())
+	}
+	if got := rec.Body.String(); got != testResponseMetadata+created+inProgress {
+		t.Fatalf("forwarded %q", got)
 	}
 }
 

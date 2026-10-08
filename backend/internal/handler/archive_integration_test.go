@@ -152,7 +152,7 @@ func TestGatewayDoneOnlyArchivesAndDiagnostics(t *testing.T) {
 						t.Fatalf("attempt=%+v", a)
 					}
 				case "compaction_timeout":
-					if a.StatusCode != 200 || a.FailurePhase != "compacting" || a.FailureAction != "compaction_timeout" || a.ErrorMessage != "compaction timeout" || elapsed < 400*time.Millisecond || elapsed > 2*time.Second || c.Writer.Written() || out.failOver {
+					if a.StatusCode != 200 || a.FailurePhase != "compacting" || a.FailureAction != "compaction_timeout" || a.ErrorMessage != "compaction timeout" || elapsed < 400*time.Millisecond || elapsed > 2*time.Second || !c.Writer.Written() || !strings.Contains(w.Body.String(), "event: error") || out.failOver {
 						t.Fatalf("attempt=%+v elapsed=%v written=%v", a, elapsed, c.Writer.Written())
 					}
 				case "connect_failure":
@@ -163,7 +163,7 @@ func TestGatewayDoneOnlyArchivesAndDiagnostics(t *testing.T) {
 					if a.Result != "client_cancelled" || a.FailureAction != "client_cancelled" {
 						t.Fatalf("attempt=%+v", a)
 					}
-					if compaction && (a.FailurePhase != "compacting" || elapsed > time.Second || c.Writer.Written()) {
+					if compaction && (a.FailurePhase != "compacting" || elapsed > time.Second || strings.Contains(w.Body.String(), "event: error")) {
 						t.Fatalf("compaction ignored cancellation: attempt=%+v elapsed=%v", a, elapsed)
 					}
 				}
