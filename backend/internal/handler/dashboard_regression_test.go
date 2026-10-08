@@ -56,7 +56,7 @@ func dashboardGatewayFixture(t *testing.T, server *httptest.Server) (*Gateway, *
 		t.Fatal(err)
 	}
 	h := NewGateway(db, enc, nil, fixturePicker{key: &key, up: &up})
-	h.Dash = dashboard.New(db)
+	h.Dash = dashboard.New(db, enc)
 	t.Cleanup(h.Dash.Stop)
 	return h, &key, &consumer
 }
