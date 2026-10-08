@@ -1229,7 +1229,10 @@ func (h *Gateway) finishLog(lg *liveLog, ck *domain.ConsumerKey, pk *domain.Plat
 	updates["completed_at"] = completedAt
 	updates["stream"] = snap.ReqStream
 	updates["stream_known"] = snap.StreamKnown
-	updates["compaction"] = compaction
+	// compaction is the response-side observation (streamCollector); the request
+	// already counts as a compaction request when it carried the trigger item,
+	// so failed or non-streaming requests keep the mark too.
+	updates["compaction"] = compaction || snap.ReqCompaction
 	if success {
 		updates["failure_scope"] = ""
 		updates["failure_action"] = ""
@@ -1263,7 +1266,7 @@ func (h *Gateway) finishLog(lg *liveLog, ck *domain.ConsumerKey, pk *domain.Plat
 			InFlight:            false,
 			Stream:              snap.ReqStream,
 			StreamKnown:         snap.StreamKnown,
-			Compaction:          compaction,
+			Compaction:          compaction || snap.ReqCompaction,
 			CompletedAt:         &completedAt,
 			CreatedAt:           snap.StartedAt,
 			CostUSD:             usage.CostUSD,

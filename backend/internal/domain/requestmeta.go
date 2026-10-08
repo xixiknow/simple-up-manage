@@ -52,3 +52,29 @@ func RequestStream(contentType string, body []byte) (stream, known bool) {
 	}
 	return stream, true
 }
+
+// RequestCompaction reports whether an OpenAI Responses request carries the
+// official compaction_trigger input item ("Compacts the current context.
+// Must be the final input item."). The trigger marks request intent, so the
+// check runs before any upstream response exists and tolerates the item at
+// any position of the input array.
+func RequestCompaction(path string, body []byte) bool {
+	if path != "/v1/responses" {
+		return false
+	}
+	var value struct {
+		Input []json.RawMessage `json:"input"`
+	}
+	if json.Unmarshal(body, &value) != nil {
+		return false
+	}
+	for _, raw := range value.Input {
+		var item struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(raw, &item) == nil && item.Type == "compaction_trigger" {
+			return true
+		}
+	}
+	return false
+}

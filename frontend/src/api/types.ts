@@ -568,6 +568,7 @@ export type RequestLogQuery = ListParams & {
   key_id?: number
   route_group_id?: number
   success?: boolean
+  compaction?: boolean
   model?: string
   from?: string
   to?: string

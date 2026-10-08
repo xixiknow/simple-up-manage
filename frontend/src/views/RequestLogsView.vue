@@ -224,6 +224,7 @@ const filters = reactive({
   route_group_id: null as number | null,
   model: '',
   success: '' as '' | 'true' | 'false',
+  compaction: '' as '' | 'true' | 'false',
   range: null as [number, number] | null,
 })
 
@@ -231,6 +232,12 @@ const successOptions = [
   { label: '全部', value: '' },
   { label: '成功', value: 'true' },
   { label: '失败', value: 'false' },
+]
+
+const compactionOptions = [
+  { label: '全部', value: '' },
+  { label: '压缩', value: 'true' },
+  { label: '非压缩', value: 'false' },
 ]
 
 const probeOptions = [
@@ -372,6 +379,7 @@ function queryFromFilters(): RequestLogQuery {
     route_group_id: filters.route_group_id || undefined,
     model: filters.model.trim() || undefined,
     success: filters.success === '' ? undefined : filters.success === 'true',
+    compaction: filters.compaction === '' ? undefined : filters.compaction === 'true',
     from: filters.range ? new Date(filters.range[0]).toISOString() : undefined,
     to: filters.range ? new Date(filters.range[1]).toISOString() : undefined,
   }
@@ -441,6 +449,7 @@ function reset() {
   filters.consumer_key_id = null
   filters.model = ''
   filters.success = ''
+  filters.compaction = ''
   filters.range = null
   filters.route_group_id = null
   if (modelTimer != null) {
@@ -506,8 +515,11 @@ function openDetail(row: RequestLog) {
 }
 
 function streamLabel(row: RequestLog) {
-  if (row.compaction) return '压缩'
   return row.stream_known ? (row.stream ? '流式' : '同步') : '未知'
+}
+
+function compactionLabel(row: RequestLog) {
+  return row.compaction ? '压缩' : null
 }
 
 const detailTrace = computed(() => (detail.value ? selectionTrace(detail.value) : []))
@@ -651,7 +663,14 @@ const columns = computed<DataTableColumns<RequestLog>>(() => {
   },
   { title: '协议', key: 'protocol', width: 90, mobileHide: true },
   {
-    title: headerFilter('类型', !!filters.external_probe_rule, () => h('div', { class: 'th-filter-panel' }, [
+    title: headerFilter('类型', !!filters.external_probe_rule || filters.compaction !== '', () => h('div', { class: 'th-filter-panel' }, [
+      h('label', { class: 'th-filter-field' }, [
+        '压缩',
+        h(UiSelect, {
+          value: filters.compaction, options: compactionOptions, size: 'small', placeholder: '全部', style: { width: '200px' },
+          'onUpdate:value': (v: '' | 'true' | 'false') => { filters.compaction = v; applyFilters() },
+        }),
+      ]),
       h('label', { class: 'th-filter-field' }, [
         '外部探测',
         h(UiSelect, {
@@ -664,9 +683,13 @@ const columns = computed<DataTableColumns<RequestLog>>(() => {
     width: 136,
     mobileHide: true,
     render(row) {
-      const kids: VNodeChild[] = [
+      const kids: VNodeChild[] = []
+      if (compactionLabel(row)) {
+        kids.push(h(UiTag, { size: 'small', bordered: false, type: 'info', title: '上下文压缩请求' }, { default: () => compactionLabel(row) }))
+      }
+      kids.push(
         h(UiTag, { size: 'small', bordered: false, type: row.stream_known && row.stream ? 'info' : 'default' }, { default: () => streamLabel(row) }),
-      ]
+      )
       if (row.external_probe_rule) {
         kids.push(h(UiTag, {
           size: 'small', bordered: false, type: 'warning',
@@ -900,6 +923,7 @@ onUnmounted(() => {
           <label class="filter-field"><span>分组</span><ui-select v-model:value="filters.route_group_id" :options="groupOptions" clearable filterable placeholder="全部" @update:value="applyFilters" /></label>
           <label class="filter-field"><span>模型</span><ui-input v-model:value="filters.model" clearable placeholder="模型名称" @update:value="scheduleApply" /></label>
           <label class="filter-field"><span>成败</span><ui-select v-model:value="filters.success" :options="successOptions" placeholder="全部" @update:value="applyFilters" /></label>
+          <label class="filter-field"><span>压缩</span><ui-select v-model:value="filters.compaction" :options="compactionOptions" placeholder="全部" @update:value="applyFilters" /></label>
           <label class="filter-field"><span>外部探测</span><ui-select v-model:value="filters.external_probe_rule" :options="probeOptions" clearable placeholder="全部" @update:value="applyFilters" /></label>
           <div class="filter-field"><span>时间范围</span><ui-date-picker v-model:value="filters.range" type="datetimerange" clearable start-placeholder="从" end-placeholder="到" @update:value="applyFilters" /></div>
         </div>
@@ -936,7 +960,7 @@ onUnmounted(() => {
               <div><span class="meta-k">模型</span>{{ detail.model || '—' }}</div>
               <div><span class="meta-k">外部探测</span>{{ detail.external_probe_rule ? EXTERNAL_PROBE_LABEL[detail.external_probe_rule] || detail.external_probe_rule : '未标记' }}</div>
               <div>
-                <span class="meta-k">类型</span>{{ streamLabel(detail) }}
+                <span class="meta-k">类型</span>{{ [compactionLabel(detail), streamLabel(detail)].filter(Boolean).join(' · ') }}
               </div>
               <div>
                 <span class="meta-k">路径</span><span class="mono">{{ detail.path || '—' }}</span>

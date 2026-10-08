@@ -1343,6 +1343,13 @@ func (h *Admin) ListRequestLogs(c *gin.Context) {
 			q = q.Where("in_flight = ? AND success = ?", false, false)
 		}
 	}
+	if v := strings.TrimSpace(c.Query("compaction")); v != "" {
+		if v != "true" && v != "1" && v != "false" && v != "0" {
+			httpx.BadRequest(c, "invalid compaction")
+			return
+		}
+		q = q.Where("compaction = ?", v == "true" || v == "1")
+	}
 	if v := strings.TrimSpace(c.Query("model")); v != "" {
 		q = q.Where("model = ?", v)
 	}

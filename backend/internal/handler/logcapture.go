@@ -26,17 +26,18 @@ var redactHeaderKeys = map[string]struct{}{
 }
 
 type ioCapture struct {
-	TTFTStatus  string
-	TTFTEvent   string
-	StartedAt   time.Time
-	ReqStream   bool
-	StreamKnown bool
-	ReqHeaders  string
-	ReqBody     string
-	ReqTrunc    bool
-	RespHeaders string
-	RespBody    string
-	RespTrunc   bool
+	TTFTStatus    string
+	TTFTEvent     string
+	StartedAt     time.Time
+	ReqStream     bool
+	StreamKnown   bool
+	ReqCompaction bool
+	ReqHeaders    string
+	ReqBody       string
+	ReqTrunc      bool
+	RespHeaders   string
+	RespBody      string
+	RespTrunc     bool
 }
 
 func captureInbound(r *http.Request, body []byte) ioCapture {
@@ -46,11 +47,12 @@ func captureInbound(r *http.Request, body []byte) ioCapture {
 	bodyStr, trunc := captureBody(r.Header.Get("Content-Type"), body, len(body))
 	stream, known := domain.RequestStream(r.Header.Get("Content-Type"), body)
 	return ioCapture{
-		ReqStream:   stream,
-		StreamKnown: known,
-		ReqHeaders:  headersJSON(r.Header, r.Method, requestURI(r)),
-		ReqBody:     bodyStr,
-		ReqTrunc:    trunc,
+		ReqStream:     stream,
+		StreamKnown:   known,
+		ReqCompaction: domain.RequestCompaction(r.URL.Path, body),
+		ReqHeaders:    headersJSON(r.Header, r.Method, requestURI(r)),
+		ReqBody:       bodyStr,
+		ReqTrunc:      trunc,
 	}
 }
 
