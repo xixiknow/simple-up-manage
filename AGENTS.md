@@ -13,6 +13,24 @@ git push origin main --follow-tags
 
 禁止先 `git push origin main`、之后再单独补推 tag。
 
+## 发版：push 前本地先过 gofmt（CI 第一关）
+
+CI 的 syntax job 第一步就是 `gofmt -l .`（`.github/workflows/ci.yml`），任何格式不合规都会让 syntax 失败、image job 被 skip——tag 指向的 commit 不会产出版本镜像。因此 **push 发版 commit 前，本地必须执行**：
+
+```bash
+cd backend && gofmt -l .   # 无输出才算过
+```
+
+2026-10-09 的 v1.5.0 曾因 `streamCollector` 字段对齐不合规在此翻车：tag 已推、CI 16 秒即挂、v1.5.0 无任何镜像产出，最终只能 bump PATCH 补发 v1.5.1。
+
+## 发版：tag 落在旧 commit 上时，用 rerun 恢复，不要用空 commit
+
+CI 只由 push main 触发（`on: push: branches`）。若 tag 补推/晚推到一个**已有历史 run 的 commit** 上，tag push 本身不会触发 CI；此时：
+
+- **正确做法**：对该 commit 已有的那次（成功的）run 执行 `gh run rerun <run-id>`。rerun 会重新 checkout 该 commit，`Resolve release version` 里的 `git fetch --tags --force` 能拿到新补的 tag，正确产出版本镜像（2026-10-09 的 v1.5.1 即由此恢复）。
+- **禁止**：推一个空 commit 来"触发 CI"。空 commit 上没有 tag，`git tag --points-at HEAD` 解析不到版本，只会白跑一次、产出 `latest`/`main`/`<sha>` 镜像，版本镜像依然缺失。
+- rerun 只能在 run **完全结束**后执行（运行中会报 "already running"）。
+
 **原因**：CI 由 push main 触发（`.github/workflows/ci.yml` 的 image job），构建时通过 `git tag --points-at HEAD` 解析版本号，并注入到 `build-args: VERSION`、OCI label `org.opencontainers.image.version` 以及镜像标签 `vX.Y.Z`/`X.Y.Z`。若 tag 晚于 main 到达远程，CI 解析不到版本：镜像只会打 `latest`/`main`/`<sha>` 标签，且二进制内 `buildinfo.Version` 是短 sha 而非版本号，selfupdate 的版本对比会误判。
 
 **事故恢复**：tag 补推后，对当次 run 执行 `gh run rerun <run-id>` 重跑即可正确打标（2026-10-08 的 v1.3.2、2026-10-09 的 v1.4.1 均曾因此返工）。注意 rerun 只能在 run **完全结束**后执行（运行中会报 "already running"），首轮 image job 已按无版本号方式发布到 `latest`/`main`/`<sha>` 属预期，rerun 后的产物才带版本标签。
@@ -64,7 +82,8 @@ CI 每次 push main 产出：`X.Y.Z`/`vX.Y.Z`（不可变）、`<short-sha>`（�
 ### 操作清单
 
 1. 确认 working tree 干净、CI 绿；
-2. **查 GitHub 最新版本 tag 并据此选定严格递增的新版本号**（见上一节）；
-3. 一个 commit 只打一个 tag：`git tag -a v1.3.3 -m "release v1.3.3" && git push origin main --follow-tags`；
-4. **push 后立即验证 tag 已到达远程**：`git ls-remote --tags origin | grep v1.3.3`，无输出说明 tag 没上去（大概率是打成了轻量 tag），此时先 `git push origin v1.3.3` 补推再走事故恢复，不要干等 CI；
-5. 打完查看 Actions run 日志，确认 "Resolve release version" 步骤输出了解析到的 tag。
+2. 查 GitHub 最新版本 tag 并据此选定严格递增的新版本号（见上一节）；
+3. **本地过 `gofmt -l .`**（backend 目录，无输出才算过，见上文）；
+4. 一个 commit 只打一个 tag：`git tag -a v1.3.3 -m "release v1.3.3" && git push origin main --follow-tags`；
+5. **push 后立即验证 tag 已到达远程**：`git ls-remote --tags origin | grep v1.3.3`，无输出说明 tag 没上去（大概率是打成了轻量 tag），此时先 `git push origin v1.3.3` 补推再走事故恢复，不要干等 CI；
+6. 打完查看 Actions run 日志，确认 "Resolve release version" 步骤输出了解析到的 tag；若 tag 是补推到旧 commit 上的，用 `gh run rerun` 恢复而非空 commit（见上文）。
