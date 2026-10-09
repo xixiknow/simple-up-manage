@@ -257,7 +257,7 @@ onBeforeUnmount(() => {
   margin-top: 4px;
   display: flex;
   gap: 8px;
-  font-size: 11px;
+  font-size: 12px;
   color: #819087;
   flex-wrap: wrap;
 }

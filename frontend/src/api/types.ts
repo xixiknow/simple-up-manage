@@ -435,6 +435,8 @@ export type SchedulerSettings = {
   sticky_openai: boolean
   sticky_ttl_sec: number
   failover_max: number
+  failover_exhaust_pool: boolean
+  stream_hold_until_token: boolean
   retry_max: number
   cooldown_sec: number
   failure_window_sec: number

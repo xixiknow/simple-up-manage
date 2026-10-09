@@ -111,6 +111,8 @@ const form = reactive<SchedulerSettings>({
   sticky_openai: false,
   sticky_ttl_sec: 3600,
   failover_max: 2,
+  failover_exhaust_pool: false,
+  stream_hold_until_token: false,
   retry_max: 1,
   cooldown_sec: 30,
   failure_window_sec: 60,
@@ -543,6 +545,22 @@ onMounted(async () => {
             <ui-form-item label="重试首字等待秒">
               <ui-input-number v-model:value="form.failover_first_token_wait_sec" :min="3" :max="30" :precision="0" style="width: 100%" />
               <template #feedback>换 Key 重试时的首字等待上限（首次尝试固定 30 秒），避免连续卡顿叠加</template>
+            </ui-form-item>
+            <ui-form-item label="最大尝试次数">
+              <ui-input-number v-model:value="form.failover_max" :min="1" :max="5" :precision="0" style="width: 100%" />
+              <template #feedback>失败时最多尝试的 Key 数（含首次）；开启尽力投递后忽略该限制</template>
+            </ui-form-item>
+            <ui-form-item label="同 Key 重试次数">
+              <ui-input-number v-model:value="form.retry_max" :min="0" :max="5" :precision="0" style="width: 100%" />
+              <template #feedback>网络错误、5xx、529 类失败在同一 Key 上的额外重试次数，0 为失败立即换 Key</template>
+            </ui-form-item>
+            <ui-form-item label="尽力投递">
+              <ui-switch v-model:value="form.failover_exhaust_pool" />
+              <template #feedback>开启后失败就切换下一个可用 Key，直到成功、候选耗尽或总超时，不再受最大尝试次数限制（仅对绑定路由组的请求生效）</template>
+            </ui-form-item>
+            <ui-form-item label="流式延迟提交">
+              <ui-switch v-model:value="form.stream_hold_until_token" />
+              <template #feedback>/v1/responses 流推迟到首个文本 token 才返回响应头，首字之前的上游失败可静默换 Key 重试；首字等待预算到期时若上游仍在产出（收到过字节）会自动放行继续流，不会误杀慢推理；代价是首字前客户端拿不到响应头</template>
             </ui-form-item>
           </div>
         </ui-card>

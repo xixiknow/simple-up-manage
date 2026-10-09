@@ -367,7 +367,7 @@ watch(selectedId, () => {
 .meta-chip {
   background: #f3f7ee;
   color: #546c58;
-  font-size: 11.5px;
+  font-size: 12px;
   border-radius: 6px;
   padding: 4px 10px;
 }
@@ -385,7 +385,7 @@ watch(selectedId, () => {
 .run-chip {
   min-width: 44px;
   text-align: center;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   border-radius: 5px;
   padding: 3px 7px;
@@ -403,7 +403,7 @@ watch(selectedId, () => {
 }
 .runs-caption {
   margin-left: 6px;
-  font-size: 11px;
+  font-size: 12px;
 }
 :deep(.row-selected) {
   background: #f3f7ee;

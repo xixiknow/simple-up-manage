@@ -222,7 +222,7 @@ function refresh() {
 }
 .version-cell small {
   display: block;
-  font-size: 10px;
+  font-size: 12px;
   letter-spacing: 1px;
   color: #7c8d81;
   margin-bottom: 5px;
@@ -316,7 +316,7 @@ function refresh() {
   border-radius: 8px;
   background: #12271f;
   color: #b7d0ba;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.7;
   white-space: pre-wrap;
   word-break: break-all;

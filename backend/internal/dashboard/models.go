@@ -27,6 +27,17 @@ const (
 	DefaultMinFinanceCoverage      = 0.90
 	DefaultMinCommonDemandCoverage = 0.50
 
+	// Urgent projection: consumption is uneven across the hours of a day, so a
+	// mature provider's remaining hours come from an hourly burn shape over the
+	// past BurnProfileWindowDays, scaled to the last 24h consumption level.
+	// Providers whose first traffic started less than BurnProfileMatureHours
+	// ago lack a daily shape and fall back to the flat-rate estimate. The
+	// projection walk itself is capped well beyond RenewalHorizonHours because
+	// anything past the horizon is filtered from the urgent list anyway.
+	BurnProfileWindowDays   = 7
+	BurnProfileMatureHours  = 24.0
+	BurnProfileProjectLimit = 10 * 24
+
 	// LegacySeed* are the seed thresholds from before they were relaxed;
 	// dash_settings rows still holding exactly these values are upgraded
 	// during migration, rows the user edited are left alone.

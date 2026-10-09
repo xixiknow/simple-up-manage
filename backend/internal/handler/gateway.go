@@ -15,6 +15,7 @@ import (
 	"net/http/httptrace"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"simple-up-manage/internal/crypto"
@@ -228,6 +229,7 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 	attempts := 2
 	retries := 1
 	failoverWait := 10 * time.Second
+	exhaustPool := false
 	if h.Picker != nil {
 		s := h.Picker.Settings()
 		if n := s.FailoverMax; n > 0 {
@@ -237,6 +239,7 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 			retries = s.RetryMax
 		}
 		failoverWait = time.Duration(s.FailoverFirstTokenWaitSec) * time.Second
+		exhaustPool = s.FailoverExhaustPool
 	}
 	allow, drift, bound, err := ops.ResolveSnapshotAllowKeys(c.Request.Context(), h.DB, groupID, protocol, model)
 	if err != nil {
@@ -269,6 +272,13 @@ func (h *Gateway) proxy(c *gin.Context, protocol string) {
 			return
 		}
 		allow = filtered
+	}
+	if exhaustPool && bound && len(allow) > 0 {
+		// Best-effort delivery: one attempt per candidate key, so a request
+		// survives as many dead keys as the pool holds. The loop still ends
+		// via ErrNoUpstream once every key is excluded, and via the overall
+		// proxy deadline.
+		attempts = len(allow)
 	}
 
 	var exclude, excludeProviders, excludeKeyModels []uint
@@ -553,6 +563,10 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 	var collector *streamCollector
 	phase := &attemptPhase{phase: "local"}
 	var archived *archivedResponse
+	holdUntilToken := false
+	if h.Picker != nil {
+		holdUntilToken = h.Picker.Settings().StreamHoldUntilToken
+	}
 	defer func() {
 		attempt.FailureAction = outcome.action
 		if !outcome.validSuccess {
@@ -734,7 +748,7 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 
 	defer resp.Body.Close()
 
-	collector = &streamCollector{start: started, attemptStart: attempt.StartedAt, protocolPath: path, strict: isTextAPI(path), onProgress: func(ttft, dur int, usage upstream.TokenUsage) {
+	collector = &streamCollector{start: started, attemptStart: attempt.StartedAt, protocolPath: path, strict: isTextAPI(path), holdUntilToken: holdUntilToken, onProgress: func(ttft, dur int, usage upstream.TokenUsage) {
 		if ttft > 0 {
 			phase.set("streaming")
 		}
@@ -751,25 +765,6 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 	}
 	ct := strings.ToLower(resp.Header.Get("Content-Type"))
 	streaming := isSSEContentType(ct)
-	if isTextAPI(path) && resp.StatusCode >= 200 && resp.StatusCode < 300 && !streaming && (wantStream || !isJSONContentType(ct)) {
-		peek, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorInspectBytes+1))
-		msg := "invalid upstream response protocol"
-		snap := reqSnap.withResponse(resp.Header, ct, peek, len(peek))
-		h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, int(time.Since(started).Milliseconds()), msg, snap, true, true)
-		outcome := forwardOutcome{failOver: true, scope: failureScopeKeyModel, action: "invalid_response", msg: msg}
-		lg.markFailure(h, outcome.scope, outcome.action)
-		return outcome
-	}
-	if streaming {
-		elapsed := time.Since(attempt.StartedAt)
-		if !firstWatch.running() {
-			remain := firstWait - elapsed
-			firstWatch.start(cancelAttempt, remain, deadline)
-		}
-	} else {
-		firstWatch.stop()
-	}
-
 	var committed bool
 	commitHeaders := func() {
 		if committed || c.Writer.Written() {
@@ -787,6 +782,36 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 		}
 		c.Writer.Header().Set("X-Request-Id", reqID)
 		c.Status(resp.StatusCode)
+	}
+	if isTextAPI(path) && resp.StatusCode >= 200 && resp.StatusCode < 300 && !streaming && (wantStream || !isJSONContentType(ct)) {
+		peek, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorInspectBytes+1))
+		msg := "invalid upstream response protocol"
+		snap := reqSnap.withResponse(resp.Header, ct, peek, len(peek))
+		h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, upstream.TokenUsage{}, 0, int(time.Since(started).Milliseconds()), msg, snap, true, true)
+		outcome := forwardOutcome{failOver: true, scope: failureScopeKeyModel, action: "invalid_response", msg: msg}
+		lg.markFailure(h, outcome.scope, outcome.action)
+		return outcome
+	}
+	if streaming {
+		elapsed := time.Since(attempt.StartedAt)
+		if !firstWatch.running() {
+			remain := firstWait - elapsed
+			// Commit-on-timeout (mirrors Aether's pre-commit budget): when the
+			// first-token watch expires, bytes already received mean a live,
+			// merely slow upstream — commit the held response and let the
+			// stream continue instead of cancelling the attempt. A fully
+			// silent upstream still fails over.
+			firstWatch.setOnFire(func() bool {
+				if !collector.sawBytes.Load() {
+					return false
+				}
+				collector.releaseHeld(c.Writer, commitHeaders)
+				return true
+			})
+			firstWatch.start(cancelAttempt, remain, deadline)
+		}
+	} else {
+		firstWatch.stop()
 	}
 
 	var respPrefix []byte
@@ -1613,13 +1638,83 @@ type streamCollector struct {
 	compaction     bool
 	// committable marks a validated, non-error Responses lifecycle event: the
 	// stream may be committed downstream before the first semantic output.
-	committable    bool
+	committable bool
+	// holdUntilToken suppresses that early commit: response headers are sent
+	// only with the first text token, so pre-token failures (response.failed,
+	// error, first-token timeout) stay transparent failovers. The client sees
+	// no response headers during compaction while this is enabled.
+	holdUntilToken bool
+	// hold state lives on the collector (not copySSE locals) so the first-token
+	// watch timer can commit from another goroutine when the pre-commit budget
+	// expires with bytes flowing. holdMu serializes buffer/release between the
+	// reader loop and the timer.
+	holdMu       sync.Mutex
+	holdPending  []byte
+	holdReleased bool
+	// holdDead marks a copySSE return with the hold unspent: a racing watch
+	// fire must not commit a failed attempt's buffered bytes to the client.
+	holdDead atomic.Bool
+	// sawBytes records any upstream body progress (lifecycle events, pings,
+	// anything). The watch consults it on timeout: bytes mean the upstream is
+	// alive and merely slow, so the attempt commits instead of failing.
+	sawBytes       atomic.Bool
 	eventName      string
 	eventData      []string
 	eventBytes     int
 	eventOversized bool
 	terminal       bool
 	terminalErr    error
+}
+
+// holdBuffer stashes pre-commit bytes on the collector. It returns false once
+// the hold is already released (the chunk must go through the ordered tail
+// path instead) or the buffered prefix outgrew its cap.
+func (s *streamCollector) holdBuffer(chunk []byte) bool {
+	s.holdMu.Lock()
+	defer s.holdMu.Unlock()
+	if s.holdReleased || s.holdDead.Load() {
+		return false
+	}
+	if len(s.holdPending)+len(chunk) > upstream.MaxSSEEventBytes {
+		return false
+	}
+	s.holdPending = append(s.holdPending, chunk...)
+	return true
+}
+
+// holdBufferedLen reports buffered bytes for the copySSE overflow check.
+func (s *streamCollector) holdBufferedLen() int {
+	s.holdMu.Lock()
+	defer s.holdMu.Unlock()
+	return len(s.holdPending)
+}
+
+// releaseHeld commits the response headers and flushes the buffered prefix.
+// Idempotent and safe to call from the watch timer goroutine; a no-op once
+// copySSE has exited with the hold unspent.
+func (s *streamCollector) releaseHeld(w gin.ResponseWriter, commitHeaders func()) {
+	s.holdMu.Lock()
+	defer s.holdMu.Unlock()
+	if s.holdReleased || s.holdDead.Load() {
+		return
+	}
+	s.holdReleased = true
+	if commitHeaders != nil {
+		commitHeaders()
+	}
+	if len(s.holdPending) > 0 {
+		_, _ = w.Write(s.holdPending)
+		s.holdPending = nil
+	}
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (s *streamCollector) holdReleasedState() bool {
+	s.holdMu.Lock()
+	defer s.holdMu.Unlock()
+	return s.holdReleased
 }
 
 func (s *streamCollector) markTTFT() {
@@ -1652,6 +1747,9 @@ func (s *streamCollector) noteBytes(n int) {
 
 func (s *streamCollector) feed(p []byte) int {
 	consumed := len(p)
+	if consumed > 0 {
+		s.sawBytes.Store(true)
+	}
 	s.buf = append(s.buf, p...)
 	for {
 		i := bytes.IndexByte(s.buf[s.lineScanOffset:], '\n')
@@ -1791,8 +1889,7 @@ func copySSE(w gin.ResponseWriter, r io.Reader, col *streamCollector, hold bool,
 	}
 	br := bufio.NewReaderSize(r, 32*1024)
 	buf := make([]byte, 32*1024)
-	var pending, tail []byte
-	released := !hold
+	var tail []byte
 	var releaseErr error
 	writeTail := func() error {
 		if len(tail) == 0 {
@@ -1806,36 +1903,30 @@ func copySSE(w gin.ResponseWriter, r io.Reader, col *streamCollector, hold bool,
 		return err
 	}
 	release := func() {
-		if released {
-			return
-		}
-		released = true
-		if onRelease != nil {
-			onRelease()
-		}
-		if len(pending) == 0 {
-			return
-		}
-		_, releaseErr = w.Write(pending)
-		pending = nil
-		if releaseErr == nil && flusher != nil {
-			flusher.Flush()
-		}
+		// releaseHeld runs onRelease (commitHeaders) exactly once under the
+		// hold lock, before flushing the buffered prefix.
+		col.releaseHeld(w, onRelease)
 	}
+	defer func() {
+		// Whatever the exit path, the attempt is over: a watch timer that
+		// fires afterwards must not commit buffered bytes to the client.
+		col.holdDead.Store(true)
+	}()
 	for {
 		n, err := br.Read(buf)
 		if n > 0 {
 			chunk := buf[:n]
 			chunk = chunk[:col.feed(chunk)]
-			if !released {
-				if len(pending)+len(chunk) > upstream.MaxSSEEventBytes {
+			if !col.holdReleasedState() {
+				if !col.holdBuffer(chunk) {
 					return errors.New("stream prefix exceeded limit before first token")
 				}
-				pending = append(pending, chunk...)
 				// Responses lifecycle events (created, in_progress, compaction)
 				// commit early: callers abort when no response starts within
 				// their first-byte window, even though TTFT is still pending.
-				if col.ttftMs > 0 || (col.committable && col.terminalErr == nil) {
+				// holdUntilToken defers that commit to the first text token so
+				// pre-token failures remain transparent failovers.
+				if col.ttftMs > 0 || (col.committable && !col.holdUntilToken && col.terminalErr == nil) {
 					release()
 					if releaseErr != nil {
 						return releaseErr
@@ -1900,6 +1991,11 @@ type firstTokenWatch struct {
 	fired   bool
 	stopped bool
 	started bool
+	// onFire runs when the timer fires, before cancelling. Returning true
+	// means the attempt was salvaged (e.g. bytes had flowed, so the hold
+	// commits and the stream continues): the watch neither marks the timeout
+	// nor cancels, so a later failure keeps its non-timeout classification.
+	onFire func() bool
 }
 
 func (w *firstTokenWatch) start(cancel context.CancelFunc, wait time.Duration, deadline time.Time) {
@@ -1916,6 +2012,10 @@ func (w *firstTokenWatch) start(cancel context.CancelFunc, wait time.Duration, d
 	}
 	w.started = true
 	if wait <= 0 {
+		if w.onFire != nil && w.onFire() {
+			w.started = false
+			return
+		}
 		w.fired = true
 		go cancel()
 		return
@@ -1926,10 +2026,25 @@ func (w *firstTokenWatch) start(cancel context.CancelFunc, wait time.Duration, d
 			w.mu.Unlock()
 			return
 		}
+		if w.onFire != nil && w.onFire() {
+			w.mu.Unlock()
+			return
+		}
 		w.fired = true
 		w.mu.Unlock()
 		cancel()
 	})
+}
+
+// setOnFire installs the salvage callback. Call it before start; the timer
+// reads it under w.mu when it fires.
+func (w *firstTokenWatch) setOnFire(cb func() bool) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.onFire = cb
 }
 
 func (w *firstTokenWatch) stop() {

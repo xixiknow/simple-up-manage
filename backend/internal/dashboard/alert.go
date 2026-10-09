@@ -141,7 +141,7 @@ func buildAlertMessage(targets []alertTarget) (title, desp string) {
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString("\n> 预计小时数 = 余额 ÷ 近 24 小时消耗速率，仅统计本网关已知流量。\n")
+	b.WriteString("\n> 预计小时数按余额、近 24 小时已知消耗水平与近 7 天分时段消耗分布逐小时推算，仅统计本网关已知流量；流量不足一天的提供商按平摊速率估算。\n")
 	return title, b.String()
 }
 

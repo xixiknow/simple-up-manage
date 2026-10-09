@@ -691,16 +691,16 @@ function onProviderMenu(key: string) {
 .d-head { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
 .d-title { flex: 1; min-width: 220px; }
 .d-title h2 { margin: 0; font-size: 16px; font-weight: 650; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.kind-label { color: #819087; font-size: 11px; font-weight: 400; overflow-wrap: anywhere; }
+.kind-label { color: #819087; font-size: 12px; font-weight: 400; overflow-wrap: anywhere; }
 .note { margin-top: 5px; font-size: 12px; }
 .d-actions { display: flex; gap: 7px; flex-wrap: wrap; }
 .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 9px; }
 .stat { border: 1px solid #eef0e9; border-radius: 10px; padding: 10px 13px; background: #fbfcf8; }
 .stat-key { background: var(--accent-soft, #e8eedb); border-color: #dbe7c8; }
-.stat > span { font-size: 10px; color: #819087; letter-spacing: .8px; display: block; }
+.stat > span { font-size: 12px; color: #819087; letter-spacing: .8px; display: block; }
 .stat b { display: block; font-size: 19px; font-weight: 650; letter-spacing: -.3px; }
 .stat b.time { font-size: 14px; padding-top: 4px; }
-.stat .sub { font-size: 11px; color: #819087; margin-top: 3px; }
+.stat .sub { font-size: 12px; color: #819087; margin-top: 3px; }
 .stat.bad b { color: #a16d50; }
 .k-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
 .k-count { margin-left: auto; font-size: 12px; }

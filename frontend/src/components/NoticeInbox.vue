@@ -273,7 +273,7 @@ onUnmounted(() => {
   border-radius: 999px;
   background: #a16d50;
   color: #fff;
-  font-size: 10px;
+  font-size: 12px;
   line-height: 16px;
   text-align: center;
 }
@@ -385,7 +385,7 @@ onUnmounted(() => {
   white-space: nowrap;
   padding: 0 6px;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: 12px;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 .chip.add {
@@ -399,7 +399,7 @@ onUnmounted(() => {
 }
 .time {
   color: #819087;
-  font-size: 11px;
+  font-size: 12px;
   white-space: nowrap;
 }
 :deep(.ui-empty) {

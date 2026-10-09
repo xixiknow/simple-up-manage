@@ -67,10 +67,6 @@ watch(
   <div class="console-shell" :class="{ collapsed: asideCollapsed }">
     <aside class="console-aside">
       <div class="brand"><span>供</span><div>供货商管理<small>ADMIN CONSOLE</small></div></div>
-      <button v-if="!asideCollapsed" class="version-row" type="button" :title="updateTitle" @click="updateOpen = true">
-        <span class="version-label">版本</span><span class="version-sha mono">{{ versionText }}</span>
-        <span v-if="system.updating" class="version-dot updating" /><span v-else-if="system.updateAvailable" class="version-dot" />
-      </button>
       <div class="nav-label">工作台 / WORKSPACE</div>
       <nav aria-label="主导航">
         <button v-for="item in navItems" :key="item.key" type="button" :title="asideCollapsed ? item.label : undefined" :class="{ selected: route.path === item.key }" :aria-current="route.path === item.key ? 'page' : undefined" @click="go(item.key)">
@@ -136,7 +132,7 @@ watch(
   color:#c0d0c5;
   display:flex;
   flex-direction:column;
-  padding:31px 18px;
+  padding:18px 14px;
   z-index:20;
   transition:width .25s ease, padding .25s ease}
 .brand {
@@ -220,15 +216,15 @@ watch(
 .nav-label {
   font-size:10px;
   letter-spacing:1.5px;
-  margin:49px 14px 16px;
+  margin:18px 14px 12px;
   color:#81a18e}
 nav {
   display:flex;
   flex-direction:column;
-  gap:7px}
+  gap:6px}
 nav button {
   justify-content:flex-start;
-  padding:13px 14px;
+  padding:11px 12px;
   border-radius:8px;
   font-size:13px;
   gap:13px}
@@ -253,7 +249,7 @@ nav button:focus-visible {
   margin-left:auto}
 .aside-bottom {
   margin-top:auto;
-  padding:25px 12px 0;
+  padding:18px 12px 0;
   font-size:11px;
   line-height:2}
 .aside-bottom small {
@@ -269,7 +265,7 @@ nav button:focus-visible {
 .aside-collapse {
   justify-content:flex-start;
   margin-top:14px;
-  padding:11px 14px;
+  padding:9px 12px;
   border-radius:8px;
   font-size:12px;
   gap:13px;
@@ -293,7 +289,7 @@ nav button:focus-visible {
 .console-shell.collapsed .aside-bottom {
   display:none}
 .console-shell.collapsed nav {
-  margin-top:30px}
+  margin-top:18px}
 .console-shell.collapsed nav button,
 .console-shell.collapsed .aside-collapse {
   justify-content:center;
@@ -309,19 +305,19 @@ nav button:focus-visible {
   flex-direction:column;
   transition:margin-left .25s ease}
 .console-header {
-  height:76px;
+  height:56px;
   flex:none;
   border-bottom:1px solid #e1e7df;
   display:flex;
   align-items:center;
   justify-content:space-between;
-  padding:0 39px;
+  padding:0 24px;
   background:#ffffff70}
 .breadcrumb,.header-right {
   display:flex;
   align-items:center;
   gap:13px;
-  font-size:11px;
+  font-size:12px;
   color:#7c8d81}
 .breadcrumb svg {
   width:13px;
@@ -338,7 +334,7 @@ nav button:focus-visible {
   width:16px;
   height:16px}
 .console-content {
-  padding:36px 39px 55px;
+  padding:24px 24px 48px;
   max-width:1700px;
   width:100%;
   margin:0 auto;
@@ -403,9 +399,9 @@ nav button:focus-visible {
   font-size:16px;
   gap:9px}
 .console-content {
-  padding:28px 24px}
+  padding:24px 16px}
 .console-header {
-  padding:0 24px}
+  padding:0 16px}
 }
 @media(max-width:760px) {
   .console-shell {

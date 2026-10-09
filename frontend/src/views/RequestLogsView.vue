@@ -573,9 +573,11 @@ const columns = computed<DataTableColumns<RequestLog>>(() => {
       }),
     ])),
     key: 'created_at',
-    width: 160,
+    width: 108,
     render(row) {
-      return formatTime(row.created_at)
+      return h('div', { class: 'time-cell' }, formatTime(row.created_at).split(' ').map((part, i) =>
+        h('div', { class: i === 0 ? 'time-date' : 'time-clock' }, part),
+      ))
     },
   },
   {
@@ -937,7 +939,7 @@ onUnmounted(() => {
       </ui-drawer-content>
     </ui-drawer>
 
-    <ui-drawer v-model:show="showDetail" width="min(640px, 100vw)" placement="right">
+    <ui-drawer v-model:show="showDetail" width="min(850px, 100vw)" placement="right">
       <ui-drawer-content title="请求明细" closable :native-scrollbar="false">
         <ui-spin :show="detailLoading">
           <ui-alert v-if="detailError" type="error" :title="detailError" style="margin-bottom: 10px" />
@@ -1154,7 +1156,7 @@ onUnmounted(() => {
 .page :deep(.th-filter svg) { width: 12px; height: 12px; }
 .page :deep(.th-filter-panel) { display: flex; flex-direction: column; gap: 8px; padding: 4px 2px; min-width: 200px; }
 .page :deep(.th-filter-panel .ui-date-picker) { flex-direction: column; align-items: stretch; }
-.page :deep(.th-filter-field) { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: #819087; }
+.page :deep(.th-filter-field) { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #819087; }
 /* 分组列切换标志 */
 .page :deep(.group-cell) { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
 .page :deep(.group-name) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1167,6 +1169,10 @@ onUnmounted(() => {
 .page :deep(.tok-cell) { line-height: 1.35; }
 .page :deep(.tok-line) { font-variant-numeric: tabular-nums; }
 .page :deep(.tok-cache) { color: #819087; font-size: 12px; }
+/* 时间列：日期/时刻两行 */
+.page :deep(.time-cell) { line-height: 1.35; font-variant-numeric: tabular-nums; }
+.page :deep(.time-date) { color: #819087; font-size: 12px; }
+.page :deep(.time-clock) { font-weight: 550; }
 /* 进行中请求的耗时呼吸 */
 .page :deep(.timing-live) { animation: timing-breathe 1.6s ease-in-out infinite; }
 @keyframes timing-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
@@ -1183,7 +1189,7 @@ onUnmounted(() => {
   border-radius: 999px;
   background: #eef3e7;
   color: #425b35;
-  font-size: 11px;
+  font-size: 12px;
 }
 .chip-icon { width: 12px; height: 12px; }
 .chip-accent { background: #e4ecf4; color: #2f5d7c; }
@@ -1193,8 +1199,8 @@ onUnmounted(() => {
 .trace-icon { width: 13px; height: 13px; color: #6b8070; flex: none; }
 .trace-result { font-weight: 650; color: #3c543e; }
 .trace-upstream { color: #819087; }
-.trace-retry { display: inline-flex; align-items: center; gap: 3px; color: #b0803c; font-size: 11px; font-variant-numeric: tabular-nums; }
-.trace-reason { margin-top: 2px; font-size: 11px; color: #819087; overflow-wrap: anywhere; }
+.trace-retry { display: inline-flex; align-items: center; gap: 3px; color: #b0803c; font-size: 12px; font-variant-numeric: tabular-nums; }
+.trace-reason { margin-top: 2px; font-size: 12px; color: #819087; overflow-wrap: anywhere; }
 .decision-details :deep(.cand-status) { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
 .decision-details :deep(.cand-skip) { color: #819087; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 110px; }
 .decision-details :deep(.cand-selected td) { background: #f3f7ee !important; }
@@ -1233,7 +1239,7 @@ onUnmounted(() => {
   font-weight: 650;
 }
 .io-tab-hint {
-  font-size: 11px;
+  font-size: 12px;
   color: #819087;
 }
 .io-pane {
@@ -1259,19 +1265,19 @@ onUnmounted(() => {
 /* 费用回执面板：由子组件渲染，父页 scoped 样式够不到，走全局命名空间 cost-* */
 .cost-detail-panel { display: flex; flex-direction: column; gap: 8px; max-width: calc(100vw - 32px); font-size: 12px; }
 .cost-detail-panel .cost-head { display: flex; align-items: center; gap: 8px; }
-.cost-detail-panel .cost-matched { opacity: 0.7; font-size: 11px; }
+.cost-detail-panel .cost-matched { opacity: 0.7; font-size: 12px; }
 .cost-detail-panel .cost-table { display: flex; flex-direction: column; gap: 2px; }
 .cost-detail-panel .cost-tr { display: grid; grid-template-columns: 108px 1fr 88px 92px; gap: 8px; align-items: baseline; padding: 1px 0; }
-.cost-detail-panel .cost-thead { opacity: 0.55; font-size: 11px; border-bottom: 1px solid var(--line); padding-bottom: 3px; }
+.cost-detail-panel .cost-thead { opacity: 0.55; font-size: 12px; border-bottom: 1px solid var(--line); padding-bottom: 3px; }
 .cost-detail-panel .cost-td { text-align: right; white-space: nowrap; }
 .cost-detail-panel .cost-td-label { text-align: left; }
-.cost-detail-panel .cost-note { opacity: 0.6; font-size: 11px; white-space: nowrap; }
+.cost-detail-panel .cost-note { opacity: 0.6; font-size: 12px; white-space: nowrap; }
 .cost-detail-panel .cost-td-amount { font-variant-numeric: tabular-nums; font-weight: 600; }
 .cost-detail-panel .cost-td-price { opacity: 0.7; }
 .cost-detail-panel .cost-chips { display: flex; flex-wrap: wrap; gap: 4px; }
-.cost-detail-panel .cost-chip { border: 1px solid var(--line); background: var(--row); border-radius: 4px; padding: 1px 6px; font-size: 11px; opacity: 0.85; }
+.cost-detail-panel .cost-chip { border: 1px solid var(--line); background: var(--row); border-radius: 4px; padding: 1px 6px; font-size: 12px; opacity: 0.85; }
 .cost-detail-panel .cost-subtotal { border-top: 1px solid var(--line); padding-top: 5px; }
-.cost-detail-panel .cost-sub-note { font-size: 11px; opacity: 0.65; white-space: nowrap; }
+.cost-detail-panel .cost-sub-note { font-size: 12px; opacity: 0.65; white-space: nowrap; }
 .cost-detail-panel .cost-grand { display: flex; align-items: baseline; justify-content: space-between; background: var(--row); border-radius: 6px; padding: 6px 10px; }
 .cost-detail-panel .cost-grand-k { opacity: 0.75; }
 .cost-detail-panel .cost-grand-v { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
@@ -1294,7 +1300,7 @@ onUnmounted(() => {
 .tok-num.c-cr { color: #0284c7; }
 .tok-num.c-cw { color: #d97706; }
 .tok-badge {
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 500;
   border-radius: 4px;
   padding: 0 4px;
@@ -1307,7 +1313,7 @@ onUnmounted(() => {
 .tok-badge.dur { background: #ffedd5; color: #ea580c; border-color: #fed7aa; }
 .tok-badge.ladder { background: #e0e7ff; color: #4338ca; border-color: #c7d2fe; }
 @media (max-width: 430px) {
-  .cost-detail-panel { font-size: 11px; }
+  .cost-detail-panel { font-size: 12px; }
   .cost-detail-panel .cost-tr { grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 6px; }
   .cost-detail-panel .cost-note { white-space: nowrap; }
 }

@@ -108,7 +108,7 @@ async function submit() {
   display: block;
   margin-top: 4px;
   color: #9db5a5;
-  font-size: 10px;
+  font-size: 12px;
   letter-spacing: 1.6px;
 }
 .hero h1 {
@@ -151,7 +151,7 @@ async function submit() {
   display: block;
   margin-bottom: 12px;
   color: #7c8f80;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 650;
   letter-spacing: 1.8px;
 }
@@ -170,7 +170,7 @@ async function submit() {
   display: block;
   margin-top: 18px;
   color: #9aa78b;
-  font-size: 11px;
+  font-size: 12px;
   text-align: center;
 }
 @media (max-width: 1100px) {

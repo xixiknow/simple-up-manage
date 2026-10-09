@@ -630,12 +630,12 @@ function requestClose(next: boolean) {
   .key-row .col-rate::before {
     content: '倍率 ';
     color: #819087;
-    font-size: 11px;
+    font-size: 12px;
   }
   .key-row .col-balance::before {
     content: '余额 ';
     color: #819087;
-    font-size: 11px;
+    font-size: 12px;
   }
 }
 .save-text .dot {

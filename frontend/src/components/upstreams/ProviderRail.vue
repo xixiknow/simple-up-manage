@@ -128,16 +128,16 @@ const quickChips = computed(() => [
 .p-row.on { background: var(--row, #f3f7ee); box-shadow: inset 3px 0 0 var(--green, #174b3d); }
 .p-line1 { display: flex; align-items: center; gap: 7px; }
 .p-name { font-weight: 650; font-size: 13px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.p-badge { padding: 2px 8px; border-radius: 5px; font-size: 10px; background: #faece6; color: #a16d50; white-space: nowrap; }
-.p-line2 { display: flex; align-items: center; gap: 7px; font-size: 11px; color: #819087; }
+.p-badge { padding: 2px 8px; border-radius: 5px; font-size: 12px; background: #faece6; color: #a16d50; white-space: nowrap; }
+.p-line2 { display: flex; align-items: center; gap: 7px; font-size: 12px; color: #819087; }
 .p-bal { margin-left: auto; font-variant-numeric: tabular-nums; font-size: 12px; color: #3c543e; font-weight: 650; }
 .p-bal.low { color: #a16d50; }
-.p-line3 { font-size: 10px; }
+.p-line3 { font-size: 12px; }
 .rail-foot {
   display: flex;
   justify-content: space-between;
   padding: 9px 14px;
-  font-size: 11px;
+  font-size: 12px;
   border-top: 1px solid #eef0e9;
   background: #fbfcf8;
 }

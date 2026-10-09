@@ -94,6 +94,16 @@ func (s *Service) Recommendations(ctx context.Context, staleAfter time.Duration)
 func (s *Service) urgent(ctx context.Context, r Range, cfg Settings, staleAfter time.Duration) ([]UrgentItem, error) {
 	bal := s.currentBalance(ctx, staleAfter)
 	avail := s.availableFrom()
+	ids := make([]uint, 0, len(bal.Providers))
+	for _, p := range bal.Providers {
+		if p.Enabled && !p.Unlimited && !p.Unknown && p.BalanceUSD != nil {
+			ids = append(ids, p.ID)
+		}
+	}
+	profiles, err := s.burnProfiles(ctx, r.To, ids)
+	if err != nil {
+		return nil, err
+	}
 	var items []UrgentItem
 	for _, p := range bal.Providers {
 		if !p.Enabled || p.Unlimited || p.Unknown || p.BalanceUSD == nil {
@@ -134,15 +144,29 @@ func (s *Service) urgent(ctx context.Context, r Range, cfg Settings, staleAfter 
 		// Failed attempts carry no measurable consumption and must not veto the
 		// estimate; they are noted in the reason instead. Stale balances still
 		// predict, with the refresh time called out.
-		observed := s.observedHours(ctx, r, avail, p.ID)
-		hourly := att.ConsumptionUSD / observed
-		hours := *p.BalanceUSD / hourly
+		prof := profiles[p.ID]
+		if prof != nil && r.To.Sub(prof.firstBucket).Hours() < BurnProfileMatureHours {
+			prof = nil
+		}
+		var hours float64
+		var observed float64
+		if *p.BalanceUSD <= 0 {
+			hours = 0
+		} else if prof != nil {
+			hours = projectDiurnal(*p.BalanceUSD, att.ConsumptionUSD, prof.share, r.To)
+		} else {
+			observed = s.observedHours(ctx, r, avail, p.ID)
+			hourly := att.ConsumptionUSD / observed
+			hours = *p.BalanceUSD / hourly
+		}
 		if hours < 0 {
 			hours = 0
 		}
 		it.HoursLeft = &hours
 		if hours <= 0 {
 			it.Reason = "余额已耗尽"
+		} else if prof != nil {
+			it.Reason = fmt.Sprintf("预计可支撑 %.1f 小时（按近 %.0f 小时已知消耗 $%.4f 与近 %d 天分时段消耗分布估算）", hours, r.To.Sub(r.From).Hours(), att.ConsumptionUSD, BurnProfileWindowDays)
 		} else {
 			it.Reason = fmt.Sprintf("预计可支撑 %.1f 小时（按近 %.1f 小时已知消耗 $%.4f 估算）", hours, observed, att.ConsumptionUSD)
 		}
@@ -180,6 +204,95 @@ func (s *Service) urgent(ctx context.Context, r Range, cfg Settings, staleAfter 
 		filtered = append(filtered, it)
 	}
 	return filtered, nil
+}
+
+// burnProfile is a provider's hourly burn shape in Shanghai-local clock hours:
+// share[h] is the fraction of its consumption that historically falls in hour
+// h of the day. firstBucket gates maturity — a provider with less than
+// BurnProfileMatureHours of traffic has not covered a full day cycle yet.
+type burnProfile struct {
+	firstBucket time.Time
+	share       [24]float64
+}
+
+// burnProfiles scans minute aggregates directly (not rangeRows, which folds
+// whole days into DayAgg and loses hour resolution) and groups them per
+// provider and Shanghai-local hour. Hour extraction happens in Go so the same
+// query works on sqlite and postgres. Empty ids skips the query entirely.
+func (s *Service) burnProfiles(ctx context.Context, now time.Time, ids []uint) (map[uint]*burnProfile, error) {
+	profiles := map[uint]*burnProfile{}
+	if len(ids) == 0 {
+		return profiles, nil
+	}
+	from := now.Add(-BurnProfileWindowDays * 24 * time.Hour)
+	var rows []MinuteAgg
+	if err := s.db.WithContext(ctx).
+		Select("bucket", "dim_id", "consumption_usd").
+		Where("family = ? AND dim = ? AND dim_id IN ? AND bucket >= ? AND bucket < ?", FamilyAttempt, DimProvider, ids, from.UTC().Truncate(time.Minute), now.UTC()).
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return profiles, nil
+	}
+	loc := shanghaiLoc()
+	totals := map[uint]*[24]float64{}
+	first := map[uint]time.Time{}
+	for _, row := range rows {
+		t := totals[row.DimID]
+		if t == nil {
+			t = &[24]float64{}
+			totals[row.DimID] = t
+		}
+		t[row.Bucket.In(loc).Hour()] += row.ConsumptionUSD
+		if f, ok := first[row.DimID]; !ok || row.Bucket.Before(f) {
+			first[row.DimID] = row.Bucket
+		}
+	}
+	for id, t := range totals {
+		p := &burnProfile{firstBucket: first[id]}
+		var sum float64
+		for _, v := range t {
+			sum += v
+		}
+		if sum > 0 {
+			for h, v := range t {
+				p.share[h] = v / sum
+			}
+		}
+		profiles[id] = p
+	}
+	return profiles, nil
+}
+
+// projectDiurnal walks forward from now in Shanghai-local clock hours, spending
+// dailyTotal × share[h] per (fraction of an) hour until the balance runs out,
+// and returns the remaining hours. The walk is capped at BurnProfileProjectLimit
+// hours — anything beyond that is filtered by RenewalHorizonHours anyway.
+// A flat share degenerates to the flat-rate estimate.
+func projectDiurnal(balance, dailyTotal float64, share [24]float64, now time.Time) float64 {
+	if balance <= 0 || dailyTotal <= 0 {
+		return 0
+	}
+	loc := shanghaiLoc()
+	nl := now.In(loc)
+	y, m, d := nl.Date()
+	hourStart := time.Date(y, m, d, nl.Hour(), 0, 0, 0, loc)
+	w := 1 - now.Sub(hourStart).Hours() // remaining fraction of the current clock hour
+	h := nl.Hour()
+	used := 0.0
+	elapsed := 0.0
+	for step := 0; step < BurnProfileProjectLimit; step++ {
+		burn := dailyTotal * share[h] * w
+		if burn > 0 && used+burn >= balance {
+			return elapsed + w*((balance-used)/burn)
+		}
+		used += burn
+		elapsed += w
+		w = 1
+		h = (h + 1) % 24
+	}
+	return BurnProfileProjectLimit
 }
 
 // observedHours normalizes the burn-rate window: traffic that started later

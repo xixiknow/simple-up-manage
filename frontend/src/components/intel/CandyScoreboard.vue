@@ -212,11 +212,11 @@ onBeforeUnmount(() => {
 .summary-value.mid { color: #9d853f; }
 .summary-value.poor { color: #a16d50; }
 .summary-label {
-  font-size: 11px;
+  font-size: 12px;
   color: #819087;
 }
 .scope-note {
-  font-size: 11px;
+  font-size: 12px;
   margin-bottom: 10px;
 }
 .warn-item {
@@ -232,7 +232,7 @@ onBeforeUnmount(() => {
   cursor: help;
 }
 .quarantine-sub {
-  font-size: 11px;
+  font-size: 12px;
   color: #819087;
   line-height: 1.4;
 }

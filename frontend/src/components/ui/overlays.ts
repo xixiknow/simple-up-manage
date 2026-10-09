@@ -1,6 +1,6 @@
 import { computed, defineComponent, h, inject, nextTick, onBeforeUnmount, onMounted, provide, ref, Teleport, useId, watch, type PropType } from 'vue'
 import { fieldKey, formKey, UiButton, px } from './controls'
-import { ChevronDownOutline } from './icons'
+import { ChevronDownOutline, CloseOutline } from './icons'
 
 // Native dialog supplies focus trapping, Escape, inert background and focus restoration.
 // The card/body/footer structure and visual tokens follow the rotation console.
@@ -111,22 +111,48 @@ export const UiSelect = defineComponent({
         h('div', { role: 'listbox', 'aria-multiselectable': p.multiple || undefined, class: 'ui-select-options' }, available.value.length ? available.value.map((o, i) => h('button', { type: 'button', role: 'option', disabled: o.disabled, 'aria-selected': selected.value.includes(o), class: { selected: selected.value.includes(o), highlighted: i === highlighted.value }, onClick: () => choose(o), onKeydown: keydown }, p.renderLabel ? [p.renderLabel(o)] : [o.label])) : [p.tag && query.value ? h('button', { type: 'button', onClick: () => choose({ value: query.value }) }, '使用 ' + query.value) : slots.empty?.() || h('span', { class: 'muted' }, '没有匹配选项')]),
         slots.action ? h('div', { class: 'ui-select-action' }, slots.action()) : null,
       ]),
-    }), p.clearable && p.value != null ? h('button', { type: 'button', class: 'input-clear', 'aria-label': '清空' + (field?.label() || p.placeholder || ''), disabled: p.disabled || form?.disabled(), onClick: () => { emit('update:value', p.multiple ? [] : null); emit('clear') } }, '×') : null])
+    }), p.clearable && p.value != null ? h('button', { type: 'button', class: 'input-clear', 'aria-label': '清空' + (field?.label() || p.placeholder || ''), disabled: p.disabled || form?.disabled(), onClick: () => { emit('update:value', p.multiple ? [] : null); emit('clear') } }, h(CloseOutline)) : null])
   },
 })
 export const UiPopselect = defineComponent({ props: { show: Boolean, value: Array as PropType<any[]>, options: Array as PropType<any[]>, multiple: Boolean, scrollable: Boolean, trigger: String, placement: String, disabled: Boolean }, emits: { 'update:show': (_v: boolean) => true, 'update:value': (_v: any[]) => true }, setup(p, { slots, emit }) { return () => h(UiPopover, { show: p.show, disabled: p.disabled, placement: p.placement, 'onUpdate:show': (v: boolean) => emit('update:show', v) }, { trigger: () => h('span', { role: 'button', tabindex: 0, 'aria-label': '修改路由分组', onKeydown: (e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); emit('update:show', !p.show) } } }, slots.default?.()), default: () => h('div', { class: 'ui-select-options', role: 'group', 'aria-label': '路由分组' }, p.options?.length ? p.options.map(o => h('label', { class: 'checkbox' }, [h('input', { type: 'checkbox', checked: p.value?.includes(o.value), disabled: p.disabled || o.disabled, onChange: (e: Event) => emit('update:value', (e.target as HTMLInputElement).checked ? [...(p.value || []), o.value] : (p.value || []).filter(v => v !== o.value)) }), o.label])) : slots.empty?.()) }) } })
 
-type Notice = { id: number; content: string | (() => any); type: string; closable?: boolean }
+// duration 存进 notice，供进度条动画时长使用；0 表示不自动消失、不渲染进度条
+type Notice = { id: number; content: string | (() => any); type: string; closable?: boolean; duration: number }
 type Confirm = { title: string; content: string | (() => any); positiveText?: string; negativeText?: string; onPositiveClick?: () => unknown }
 const notices = ref<Notice[]>([]), confirmation = ref<Confirm | null>(null)
 let noticeId = 0
 function message(type: string, content: string | (() => any), options: { duration?: number; closable?: boolean } = {}) {
   const id = ++noticeId
-  notices.value.push({ id, type, content, closable: options.closable })
+  const duration = options.duration ?? 4000
+  notices.value.push({ id, type, content, closable: options.closable, duration })
   const destroy = () => { notices.value = notices.value.filter(n => n.id !== id) }
-  if (options.duration !== 0) window.setTimeout(destroy, options.duration ?? 4000)
+  if (duration !== 0) window.setTimeout(destroy, duration)
   return { destroy }
 }
 export function useMessage() { return { success: (text: string | (() => any), opts?: any) => message('success', text, opts), error: (text: string | (() => any), opts?: any) => message('error', text, opts), warning: (text: string | (() => any), opts?: any) => message('warning', text, opts), info: (text: string | (() => any), opts?: any) => message('info', text, opts) } }
 export function useDialog() { return { warning(options: Confirm) { confirmation.value = options } } }
-export const UiFeedback = defineComponent({ setup() { const busy = ref(false); return () => [h(Teleport, { to: 'body' }, [h('div', { class: 'ui-toasts', 'aria-live': 'polite' }, notices.value.map(n => h('div', { class: ['toast', 'ui-message', n.type], key: n.id }, [typeof n.content === 'function' ? n.content() : n.content, n.closable ? h('button', { type: 'button', 'aria-label': '关闭消息', onClick: () => { notices.value = notices.value.filter(x => x.id !== n.id) } }, '×') : null])))]), h(UiModal, { show: !!confirmation.value, title: confirmation.value?.title, closable: !busy.value, 'onUpdate:show': (v: boolean) => { if (!v) confirmation.value = null } }, { default: () => typeof confirmation.value?.content === 'function' ? confirmation.value.content() : confirmation.value?.content, footer: () => [h(UiButton, { disabled: busy.value, onClick: () => { confirmation.value = null } }, () => confirmation.value?.negativeText || '取消'), h(UiButton, { type: 'primary', loading: busy.value, onClick: async () => { busy.value = true; try { const result = await confirmation.value?.onPositiveClick?.(); if (result !== false) confirmation.value = null } finally { busy.value = false } } }, () => confirmation.value?.positiveText || '确认')] })] } })
+export const UiFeedback = defineComponent({
+  setup() {
+    const busy = ref(false)
+    return () => [
+      h(Teleport, { to: 'body' }, [
+        h('div', { class: 'ui-toasts', 'aria-live': 'polite' }, notices.value.map(n => h('div', { class: ['toast', 'ui-message', n.type], key: n.id }, [
+          h('div', { class: 'toast-body' }, [
+            h('div', { class: 'toast-content' }, [
+              typeof n.content === 'function' ? n.content() : n.content,
+              n.closable ? h('button', { type: 'button', class: 'toast-close', 'aria-label': '关闭消息', onClick: () => { notices.value = notices.value.filter(x => x.id !== n.id) } }, h(CloseOutline)) : null,
+            ]),
+            n.duration !== 0 ? h('i', { class: 'toast-timer', style: { animationDuration: n.duration + 'ms' }, 'aria-hidden': true }) : null,
+          ]),
+        ]))),
+        h(UiModal, { show: !!confirmation.value, title: confirmation.value?.title, closable: !busy.value, 'onUpdate:show': (v: boolean) => { if (!v) confirmation.value = null } }, {
+          default: () => typeof confirmation.value?.content === 'function' ? confirmation.value.content() : confirmation.value?.content,
+          footer: () => [
+            h(UiButton, { disabled: busy.value, onClick: () => { confirmation.value = null } }, () => confirmation.value?.negativeText || '取消'),
+            h(UiButton, { type: 'primary', loading: busy.value, onClick: async () => { busy.value = true; try { const result = await confirmation.value?.onPositiveClick?.(); if (result !== false) confirmation.value = null } finally { busy.value = false } } }, () => confirmation.value?.positiveText || '确认'),
+          ],
+        }),
+      ]),
+    ]
+  },
+})

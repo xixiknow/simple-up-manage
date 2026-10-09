@@ -69,6 +69,8 @@ const router = createRouter({
   ],
 })
 
+const APP_TITLE = '供货商管理'
+
 router.beforeEach((to) => {
   const auth = useAuthStore()
   if (to.meta.public) {
@@ -79,6 +81,11 @@ router.beforeEach((to) => {
     return { path: '/login', query: { redirect: to.fullPath } }
   }
   return true
+})
+
+router.afterEach((to) => {
+  const pageTitle = to.meta.title as string | undefined
+  document.title = pageTitle ? `${pageTitle} · ${APP_TITLE}` : APP_TITLE
 })
 
 export default router

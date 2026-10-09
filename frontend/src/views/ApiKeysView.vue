@@ -797,7 +797,7 @@ onMounted(() => {
   padding: 2px 0;
 }
 :deep(.rg-option-meta) {
-  font-size: 11px;
+  font-size: 12px;
   color: #819087;
 }
 :deep(.rg-option-meta.warn) {

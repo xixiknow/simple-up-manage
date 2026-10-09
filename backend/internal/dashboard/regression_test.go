@@ -277,10 +277,12 @@ func TestShutdownDrainsDependencyRetriesAfterClosingStreams(t *testing.T) {
 }
 
 func TestUrgentPredictsFromObservedWindow(t *testing.T) {
-	for _, mode := range []string{"steady", "fresh", "gap", "unknown", "stale", "noburn", "depleted", "idle", "idledepleted", "nobalanceat"} {
+	for _, mode := range []string{"steady", "fresh", "gap", "unknown", "stale", "noburn", "depleted", "idle", "idledepleted", "nobalanceat", "diurnal"} {
 		t.Run(mode, func(t *testing.T) {
 			db := dashboardTestDB(t)
-			now := time.Now().UTC().Truncate(time.Minute)
+			// Anchor now to Shanghai noon so clock-hour projections are deterministic.
+			nl := time.Now().In(shanghaiLoc())
+			now := time.Date(nl.Year(), nl.Month(), nl.Day(), 12, 0, 0, 0, shanghaiLoc()).UTC()
 			available := now.Add(-48 * time.Hour)
 			balanceAt := now
 			if mode == "fresh" {
@@ -302,15 +304,12 @@ func TestUrgentPredictsFromObservedWindow(t *testing.T) {
 				up.LastBalanceAt = nil
 			}
 			put(t, db, up)
-			buckets := []MinuteAgg{
-				{Bucket: now.Add(-24 * time.Hour), Family: FamilyAttempt, Dim: DimProvider, DimID: 1, ConsumptionUSD: 12, ProviderSuccess: 1},
-				{Bucket: now.Add(-time.Minute), Family: FamilyAttempt, Dim: DimProvider, DimID: 1, ConsumptionUSD: 12, ProviderSuccess: 1},
-			}
+			var buckets []MinuteAgg
 			switch mode {
 			case "fresh":
+				// Single hour of traffic: too young for a daily shape, so the
+				// flat-rate fallback must still produce 0.5h.
 				buckets = []MinuteAgg{{Bucket: now.Add(-time.Hour), Family: FamilyAttempt, Dim: DimProvider, DimID: 1, ConsumptionUSD: 24, ProviderSuccess: 1}}
-			case "unknown":
-				buckets[1].UnknownConsumption = 7
 			case "noburn", "depleted":
 				buckets = []MinuteAgg{
 					{Bucket: now.Add(-24 * time.Hour), Family: FamilyAttempt, Dim: DimProvider, DimID: 1, ProviderFailure: 3},
@@ -318,6 +317,23 @@ func TestUrgentPredictsFromObservedWindow(t *testing.T) {
 				}
 			case "idle", "idledepleted":
 				buckets = nil
+			case "diurnal":
+				// $12 every day in the Shanghai-noon hour only. The last 24h
+				// window sees exactly one noon bucket, so dailyTotal = $12 with
+				// the whole shape concentrated in the hour that starts now.
+				for d := BurnProfileWindowDays; d >= 1; d-- {
+					buckets = append(buckets, MinuteAgg{Bucket: now.Add(-time.Duration(d) * 24 * time.Hour), Family: FamilyAttempt, Dim: DimProvider, DimID: 1, ConsumptionUSD: 12, ProviderSuccess: 1})
+				}
+			default:
+				// steady, gap, unknown, stale: $1 every hour across the whole
+				// profile window. A flat shape must degenerate to the old
+				// flat-rate answer of 12h for a $12 balance.
+				for i := BurnProfileWindowDays * 24; i >= 1; i-- {
+					buckets = append(buckets, MinuteAgg{Bucket: now.Add(-time.Duration(i) * time.Hour), Family: FamilyAttempt, Dim: DimProvider, DimID: 1, ConsumptionUSD: 1, ProviderSuccess: 1})
+				}
+			}
+			if mode == "unknown" {
+				buckets[len(buckets)-1].UnknownConsumption = 7
 			}
 			for i := range buckets {
 				put(t, db, &buckets[i])
@@ -368,6 +384,13 @@ func TestUrgentPredictsFromObservedWindow(t *testing.T) {
 				if !it.Insufficient || it.HoursLeft != nil {
 					t.Fatalf("expected insufficient: %+v", it)
 				}
+			case "diurnal":
+				if it.HoursLeft == nil || !strings.Contains(it.Reason, "分时段消耗分布") {
+					t.Fatalf("diurnal projection not used: %+v", it)
+				}
+				// The balance is spent entirely within the noon hour that starts
+				// now, so one hour remains.
+				closeAmount(t, *it.HoursLeft, 1)
 			}
 		})
 	}

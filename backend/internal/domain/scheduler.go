@@ -46,6 +46,14 @@ type SchedulerSettings struct {
 	StickyOpenAI              bool    `gorm:"not null;default:false" json:"sticky_openai"`
 	StickyTTLSec              int     `gorm:"not null;default:3600" json:"sticky_ttl_sec"`
 	FailoverMax               int     `gorm:"not null;default:2" json:"failover_max"`
+	// FailoverExhaustPool keeps switching to the next eligible key until the
+	// candidate pool is exhausted (best-effort delivery). When enabled the
+	// FailoverMax cap is ignored for requests bound to a route group.
+	FailoverExhaustPool bool `gorm:"not null;default:false" json:"failover_exhaust_pool"`
+	// StreamHoldUntilToken delays committing /v1/responses streams to the
+	// client until the first text token, so pre-first-token upstream failures
+	// can transparently fail over; it also keeps the first-token watch armed.
+	StreamHoldUntilToken bool `gorm:"not null;default:false" json:"stream_hold_until_token"`
 	// RetryMax is extra attempts on the same key after a retryable failure
 	// (network / 5xx / 429 / 529) before switching keys. 0 means no same-key retry.
 	RetryMax            int    `gorm:"not null;default:1" json:"retry_max"`
@@ -98,6 +106,8 @@ func DefaultSchedulerSettings() SchedulerSettings {
 		StickyOpenAI:              false,
 		StickyTTLSec:              3600,
 		FailoverMax:               2,
+		FailoverExhaustPool:       false,
+		StreamHoldUntilToken:      false,
 		RetryMax:                  1,
 		CooldownSec:               30,
 		FailureWindowSec:          60,
