@@ -5,15 +5,17 @@
 打 `v*` 版本 tag 时，tag 和它指向的 commit 必须在同一次 push 中到达远程：
 
 ```bash
-git tag v1.3.3
+git tag -a v1.3.3 -m "release v1.3.3"
 git push origin main --follow-tags
 ```
+
+**tag 必须用 `-a` 打成注解 tag**：`--follow-tags` 只跟随注解 tag（`git tag --follow` 同理），轻量 tag（`git tag v1.3.3`）会被静默留在本地——main 到了远程而 tag 没到，效果与"先 push main 再补 tag"完全相同（2026-10-09 的 v1.4.1 曾因此返工）。
 
 禁止先 `git push origin main`、之后再单独补推 tag。
 
 **原因**：CI 由 push main 触发（`.github/workflows/ci.yml` 的 image job），构建时通过 `git tag --points-at HEAD` 解析版本号，并注入到 `build-args: VERSION`、OCI label `org.opencontainers.image.version` 以及镜像标签 `vX.Y.Z`/`X.Y.Z`。若 tag 晚于 main 到达远程，CI 解析不到版本：镜像只会打 `latest`/`main`/`<sha>` 标签，且二进制内 `buildinfo.Version` 是短 sha 而非版本号，selfupdate 的版本对比会误判。
 
-**事故恢复**：tag 补推后，对当次 run 执行 `gh run rerun <run-id>` 重跑即可正确打标（2026-10-08 的 v1.3.2 曾因此返工）。
+**事故恢复**：tag 补推后，对当次 run 执行 `gh run rerun <run-id>` 重跑即可正确打标（2026-10-08 的 v1.3.2、2026-10-09 的 v1.4.1 均曾因此返工）。注意 rerun 只能在 run **完全结束**后执行（运行中会报 "already running"），首轮 image job 已按无版本号方式发布到 `latest`/`main`/`<sha>` 属预期，rerun 后的产物才带版本标签。
 
 ## 发版：版本号约定
 
@@ -44,5 +46,6 @@ CI 每次 push main 产出：`X.Y.Z`/`vX.Y.Z`（不可变）、`<short-sha>`（�
 ### 操作清单
 
 1. 确认 working tree 干净、CI 绿；
-2. 一个 commit 只打一个 tag：`git tag v1.3.3 && git push origin main --follow-tags`；
-3. 打完查看 Actions run 日志，确认 "Resolve release version" 步骤输出了解析到的 tag。
+2. 一个 commit 只打一个 tag：`git tag -a v1.3.3 -m "release v1.3.3" && git push origin main --follow-tags`；
+3. **push 后立即验证 tag 已到达远程**：`git ls-remote --tags origin | grep v1.3.3`，无输出说明 tag 没上去（大概率是打成了轻量 tag），此时先 `git push origin v1.3.3` 补推再走事故恢复，不要干等 CI；
+4. 打完查看 Actions run 日志，确认 "Resolve release version" 步骤输出了解析到的 tag。
