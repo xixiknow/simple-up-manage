@@ -752,7 +752,7 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 		if ttft > 0 {
 			phase.set("streaming")
 		}
-		h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, usage, ttft, dur, "", ioCapture{}, true, false)
+		h.patchLog(lg, pk, up, protocol, model, path, reqID, clientIP, resp.StatusCode, false, usage, ttft, dur, "", ioCapture{FirstEventMs: collector.firstEventMs}, true, false)
 	}}
 	if len(outputCallbacks) > 0 && resp.StatusCode >= 200 && resp.StatusCode < 300 && isTextAPI(path) {
 		collector.onFirstOutput = func() { firstWatch.stop(); outputCallbacks[0]() }
@@ -914,6 +914,7 @@ func (h *Gateway) forwardOnce(c *gin.Context, ck *domain.ConsumerKey, pk *domain
 	snap := reqSnap.withResponse(resp.Header, resp.Header.Get("Content-Type"), respPrefix, respTotal)
 	snap.TTFTEvent = collector.firstEvent
 	snap.TTFTStatus = collector.ttftStatus(success)
+	snap.FirstEventMs = collector.firstEventMs
 	// Preserve upstream evidence for attempt settlement; without a reported
 	// cost, quota and the log amount use the itemized price-card billing
 	// scaled by the key's upstream rate multiplier.
@@ -1372,6 +1373,9 @@ func logUpdates(ids ckIDs, protocol, model, path, reqID, clientIP string, status
 	if snap.TTFTEvent != "" {
 		updates["ttft_event"] = snap.TTFTEvent
 	}
+	if snap.FirstEventMs > 0 {
+		updates["first_event_ms"] = snap.FirstEventMs
+	}
 	if snap.ReqHeaders != "" {
 		updates["request_headers"] = snap.ReqHeaders
 		updates["request_body"] = snap.ReqBody
@@ -1627,6 +1631,10 @@ type streamCollector struct {
 	attemptStart   time.Time
 	firstAt        time.Time
 	ttftMs         int
+	// firstEventMs records the first complete SSE event regardless of content
+	// (message_start, response.created, ping...) — the "first packet" metric
+	// that upstream gateways commonly report as TTFT. 0 means not seen yet.
+	firstEventMs   int
 	buf            []byte
 	lineScanOffset int
 	prefix         []byte
@@ -1821,6 +1829,9 @@ func (s *streamCollector) finishEvent() {
 		s.validateEvent(name, strings.TrimSpace(data))
 		s.terminal = true
 		return
+	}
+	if s.firstEventMs == 0 {
+		s.firstEventMs = max(1, int(time.Since(s.start).Milliseconds()))
 	}
 	upstream.MergeUsage(&s.usage, upstream.ParseSSEUsageLine("data: "+data))
 	var event struct {

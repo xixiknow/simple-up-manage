@@ -329,6 +329,7 @@ type RequestLog struct {
 	TTFTMs              int        `json:"ttft_ms"`
 	TTFTStatus          string     `json:"ttft_status"`
 	TTFTEvent           string     `json:"ttft_event"`
+	FirstEventMs        int        `json:"first_event_ms"`
 	DurationMs          int        `json:"duration_ms"`
 	InFlight            bool       `gorm:"index" json:"in_flight"`
 	Stream              bool       `json:"stream"`

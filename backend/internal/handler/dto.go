@@ -249,6 +249,7 @@ type logDTO struct {
 	TTFTMs              int                   `json:"ttft_ms"`
 	TTFTStatus          string                `json:"ttft_status"`
 	TTFTEvent           string                `json:"ttft_event"`
+	FirstEventMs        int                   `json:"first_event_ms"`
 	DurationMs          int                   `json:"duration_ms"`
 	InFlight            bool                  `json:"in_flight"`
 	Stream              bool                  `json:"stream"`
@@ -299,6 +300,7 @@ func toLogDTO(l domain.RequestLog, upstreamName, consumerName string) logDTO {
 		TTFTMs:              l.TTFTMs,
 		TTFTStatus:          l.TTFTStatus,
 		TTFTEvent:           l.TTFTEvent,
+		FirstEventMs:        l.FirstEventMs,
 		DurationMs:          l.DurationMs,
 		InFlight:            l.InFlight,
 		Stream:              l.Stream,

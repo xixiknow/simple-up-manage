@@ -227,6 +227,7 @@ export type RequestLog = {
   cache_read_tokens: number
   cache_creation_tokens: number
   ttft_ms: number
+  first_event_ms: number
   duration_ms: number
   in_flight?: boolean
   stream?: boolean

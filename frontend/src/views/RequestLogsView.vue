@@ -761,9 +761,11 @@ const columns = computed<DataTableColumns<RequestLog>>(() => {
     render(row) {
       const dur = rowElapsedMs(row)
       const ttft = row.ttft_ms > 0 ? formatSeconds(row.ttft_ms) : '—'
-      return h('div', { class: ['tok-cell', { 'timing-live': row.in_flight }], title: `TTFT ${ttft} · 总耗时 ${formatSeconds(dur)}` }, [
+      const firstPkt = row.first_event_ms > 0 ? formatSeconds(row.first_event_ms) : ''
+      const tps = formatTps(row.output_tokens, dur, row.ttft_ms)
+      return h('div', { class: ['tok-cell', { 'timing-live': row.in_flight }], title: `TTFT ${ttft} · 首包 ${firstPkt || '—'} · 总耗时 ${formatSeconds(dur)}` }, [
         h('div', { class: 'tok-line' }, `${ttft} / ${formatSeconds(dur)}`),
-        h('div', { class: 'tok-line tok-cache' }, formatTps(row.output_tokens, dur, row.ttft_ms)),
+        h('div', { class: 'tok-line tok-cache' }, firstPkt ? `首包 ${firstPkt} · ${tps}` : tps),
       ])
     },
   },
@@ -976,6 +978,7 @@ onUnmounted(() => {
               <div>
                 <span class="meta-k">耗时</span>{{ detail.ttft_ms > 0 ? formatSeconds(detail.ttft_ms) : '—' }} /
                 {{ formatSeconds(rowElapsedMs(detail)) }}
+                <span v-if="detail.first_event_ms > 0" class="muted"> · 首包 {{ formatSeconds(detail.first_event_ms) }}</span>
                 <span class="muted"> · {{ formatTps(detail.output_tokens, rowElapsedMs(detail), detail.ttft_ms) }}</span>
               </div>
               <div class="ttft-meta"><span class="meta-k">首字检测</span>{{ ttftLabel[detail.ttft_status || ''] || '历史未记录' }}<span v-if="detail.ttft_event" class="mono"> · {{ detail.ttft_event }}</span></div>

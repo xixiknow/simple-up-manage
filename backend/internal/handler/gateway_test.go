@@ -298,3 +298,36 @@ func TestStreamCollectorTTFTOnFirstText(t *testing.T) {
 		t.Fatalf("ttft %d too small, want ~800ms after first text", col.ttftMs)
 	}
 }
+
+func TestStreamCollectorFirstEventMs(t *testing.T) {
+	col := &streamCollector{start: time.Now().Add(-500 * time.Millisecond)}
+	col.feed([]byte("data: {\"type\":\"message_start\"}\n\n"))
+	if col.firstEventMs == 0 {
+		t.Fatal("first SSE event should set first_event_ms regardless of content")
+	}
+	if col.ttftMs != 0 {
+		t.Fatalf("message_start should not set ttft, got %d", col.ttftMs)
+	}
+	col.feed([]byte("data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n\n"))
+	if col.ttftMs == 0 {
+		t.Fatal("text delta should set ttft")
+	}
+	if col.ttftMs < col.firstEventMs {
+		t.Fatalf("ttft %d should be >= first_event_ms %d", col.ttftMs, col.firstEventMs)
+	}
+	if col.firstEventMs < 400 {
+		t.Fatalf("first_event_ms %d too small, want ~500ms", col.firstEventMs)
+	}
+
+	done := &streamCollector{start: time.Now().Add(-100 * time.Millisecond)}
+	done.feed([]byte("data: [DONE]\n\n"))
+	if done.firstEventMs != 0 {
+		t.Fatalf("[DONE] should not set first_event_ms, got %d", done.firstEventMs)
+	}
+
+	nonStream := &streamCollector{start: time.Now()}
+	nonStream.noteBytes(64)
+	if nonStream.ttftMs == 0 || nonStream.firstEventMs != 0 {
+		t.Fatalf("binary path: ttft=%d first_event_ms=%d, want ttft>0 first_event_ms=0", nonStream.ttftMs, nonStream.firstEventMs)
+	}
+}
