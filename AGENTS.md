@@ -33,6 +33,16 @@ CI 只由 push main 触发（`on: push: branches`）。若 tag 补推/晚推到�
 
 **原因**：CI 由 push main 触发（`.github/workflows/ci.yml` 的 image job），构建时通过 `git tag --points-at HEAD` 解析版本号，并注入到 `build-args: VERSION`、OCI label `org.opencontainers.image.version` 以及镜像标签 `vX.Y.Z`/`X.Y.Z`。若 tag 晚于 main 到达远程，CI 解析不到版本：镜像只会打 `latest`/`main`/`<sha>` 标签，且二进制内 `buildinfo.Version` 是短 sha 而非版本号，selfupdate 的版本对比会误判。
 
+## 发版收尾：确认 latest 指向版本镜像，收尾后不要再 push main
+
+`latest`/`main` 是可变标签，只表示"main 最新构建"——**任何** main push（哪怕纯 docs）都会重新产出并把 `latest` 覆盖掉。因此：
+
+- **收尾后禁止再 push main**：tag 版本镜像产出完成之前（含 rerun 恢复期间），不要往 main 推任何 commit，否则后到的 run 会把 `latest` 覆盖为无版本号的 sha 镜像。2026-10-09 的 v1.5.1 即因此翻车：rerun 产出 v1.5.1 版本镜像后，又推了一个 docs commit，其 CI 把 `latest` 覆盖成 `cd5f476` 的 sha 镜像，线上实例此时点"更新"拉到的就是 sha 版（面板版本显示为短 sha、selfupdate 版本对比退化）。
+- **恢复方法**：selfupdate 支持精确版本目标（`1.5.1`/`v1.5.1`，strict 校验）。用管理 token 调 `POST /api/v1/admin/system/update`，body `{"target":"1.5.1"}`，蓝绿切换即回到带版本号的镜像。
+- **收尾验证**：版本镜像产出后，确认之后没有别的 main run 抢跑；若不确定，对比最后一个成功 run 的 head sha 是否就是 tag 指向的 commit。线上验证以面板"当前版本"显示 `X.Y.Z`（而非短 sha）为准。
+
+## 发版：push 前本地先过 gofmt（CI 第一关）
+
 **事故恢复**：tag 补推后，对当次 run 执行 `gh run rerun <run-id>` 重跑即可正确打标（2026-10-08 的 v1.3.2、2026-10-09 的 v1.4.1 均曾因此返工）。注意 rerun 只能在 run **完全结束**后执行（运行中会报 "already running"），首轮 image job 已按无版本号方式发布到 `latest`/`main`/`<sha>` 属预期，rerun 后的产物才带版本标签。
 
 ## 发版：打 tag 前必须先查 GitHub 上的最新版本号
@@ -86,4 +96,5 @@ CI 每次 push main 产出：`X.Y.Z`/`vX.Y.Z`（不可变）、`<short-sha>`（�
 3. **本地过 `gofmt -l .`**（backend 目录，无输出才算过，见上文）；
 4. 一个 commit 只打一个 tag：`git tag -a v1.3.3 -m "release v1.3.3" && git push origin main --follow-tags`；
 5. **push 后立即验证 tag 已到达远程**：`git ls-remote --tags origin | grep v1.3.3`，无输出说明 tag 没上去（大概率是打成了轻量 tag），此时先 `git push origin v1.3.3` 补推再走事故恢复，不要干等 CI；
-6. 打完查看 Actions run 日志，确认 "Resolve release version" 步骤输出了解析到的 tag；若 tag 是补推到旧 commit 上的，用 `gh run rerun` 恢复而非空 commit（见上文）。
+6. 打完查看 Actions run 日志，确认 "Resolve release version" 步骤输出了解析到的 tag；若 tag 是补推到旧 commit 上的，用 `gh run rerun` 恢复而非空 commit（见上文）；
+7. **收尾验证**：版本镜像产出后不要再 push main（见上文 latest 覆盖问题）；线上更新后确认面板"当前版本"显示 `X.Y.Z` 而非短 sha。
