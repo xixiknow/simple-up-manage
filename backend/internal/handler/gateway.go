@@ -1620,17 +1620,17 @@ func (u *usageCapture) Bytes() []byte {
 }
 
 type streamCollector struct {
-	firstEvent     string
-	events         eventDiagnostics
-	strict         bool
-	protocolPath   string
-	sawValid       bool
-	chatFinished   bool
-	responseID     string
-	start          time.Time
-	attemptStart   time.Time
-	firstAt        time.Time
-	ttftMs         int
+	firstEvent   string
+	events       eventDiagnostics
+	strict       bool
+	protocolPath string
+	sawValid     bool
+	chatFinished bool
+	responseID   string
+	start        time.Time
+	attemptStart time.Time
+	firstAt      time.Time
+	ttftMs       int
 	// firstEventMs records the first complete SSE event regardless of content
 	// (message_start, response.created, ping...) — the "first packet" metric
 	// that upstream gateways commonly report as TTFT. 0 means not seen yet.
