@@ -289,7 +289,10 @@ func TestUrgentPredictsFromObservedWindow(t *testing.T) {
 				available = now.Add(-time.Hour)
 			}
 			if mode == "stale" {
-				balanceAt = now.Add(-10 * time.Minute)
+				// currentBalance compares against the real clock, so anchor
+				// the balance time to time.Now: a fixed noon anchor lands in
+				// the future for most of the day and never looks stale.
+				balanceAt = time.Now().UTC().Add(-10 * time.Minute)
 			}
 			put(t, db, &Meta{ID: 1, AvailableFrom: available})
 			balance := 12.0
