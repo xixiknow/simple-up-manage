@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"simple-up-manage/internal/domain"
 )
 
 const DefaultTimeout = 10 * time.Second
@@ -412,6 +414,21 @@ func MergeUsage(dst *TokenUsage, src TokenUsage) {
 	if src.CostUSD != nil {
 		dst.CostUSD = src.CostUSD
 	}
+}
+
+// NormalizeUsage converts a usage struct into the storage convention where
+// InputTokens never includes cached or cache-written tokens. OpenAI reports
+// prompt_tokens inclusive of cached_tokens (and cache_write_tokens when the
+// upstream sends them), so those are subtracted; Anthropic input_tokens is
+// already uncached and passes through untouched. The argument is returned as
+// a normalized copy — callers keep the raw value for cost settlement, whose
+// price table applies its own protocol-aware subtraction.
+func NormalizeUsage(protocol string, u TokenUsage) TokenUsage {
+	if protocol != domain.ProtocolOpenAI {
+		return u
+	}
+	u.InputTokens = max(0, u.InputTokens-u.CacheReadTokens-u.CacheCreationTokens)
+	return u
 }
 
 func ParseUsageJSON(body []byte) TokenUsage {

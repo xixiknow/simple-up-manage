@@ -42,12 +42,15 @@ func (h *Gateway) completeAttempt(ctx context.Context, pk *domain.PlatformKey, u
 		summary, _ := json.Marshal(col.events)
 		a.EventSummary = string(summary)
 		usage = col.usage
-		a.InputTokens, a.CacheReadTokens, a.CacheCreationTokens, a.OutputTokens = usage.InputTokens, usage.CacheReadTokens, usage.CacheCreationTokens, usage.OutputTokens
-		if a.Protocol == domain.ProtocolOpenAI {
-			a.InputTokens = max(0, a.InputTokens-a.CacheReadTokens-a.CacheCreationTokens)
-		}
+		// Cost settlement downstream (emitDashAttempt) needs protocol-native
+		// usage; storage and scheduler observation use the normalized form.
+		normalized := upstream.NormalizeUsage(a.Protocol, usage)
+		a.InputTokens, a.CacheReadTokens, a.CacheCreationTokens, a.OutputTokens = normalized.InputTokens, normalized.CacheReadTokens, normalized.CacheCreationTokens, normalized.OutputTokens
 		if !col.firstAt.IsZero() {
 			a.TTFTMs = max(1, int(col.firstAt.Sub(a.StartedAt).Milliseconds()))
+		}
+		if a.Result == "success" || a.Result == "upstream_failure" {
+			h.observeAttempt(pk, a.Model, a.Result == "success", normalized, a.TTFTMs)
 		}
 	}
 	writeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -59,9 +62,6 @@ func (h *Gateway) completeAttempt(ctx context.Context, pk *domain.PlatformKey, u
 		} else if res.RowsAffected == 0 {
 			return
 		}
-	}
-	if a.Result == "success" || a.Result == "upstream_failure" {
-		h.observeAttempt(pk, a.Model, a.Result == "success", usage, a.TTFTMs)
 	}
 	h.emitDashAttempt(pk, up, a, usage, lg, httpSent)
 }

@@ -1,6 +1,10 @@
 package upstream
 
-import "math"
+import (
+	"math"
+
+	"simple-up-manage/internal/domain"
+)
 
 const (
 	cacheReadFactor  = 0.1
@@ -9,15 +13,18 @@ const (
 
 // EstimateCostUSD prices a request from catalog $/1M-token rates.
 // Upstream-reported CostUSD is left untouched by callers; this only fills gaps.
+// protocol selects the cache-accounting convention (see NormalizeUsage); the
+// empty string is treated as Anthropic-style, the historical default.
 //
 // Cache accounting:
-//   - OpenAI-style: input_tokens already includes cached_tokens → subtract before
-//     billing the uncached remainder at full input price.
+//   - OpenAI-style: input_tokens already includes cached_tokens → subtract
+//     cached and cache-written before billing the uncached remainder at full
+//     input price.
 //   - Anthropic-style: input_tokens is uncached → keep it, add cache tokens.
 //
 // Cache read is billed at 10% of input; cache write at 125% (Anthropic / common
 // aggregator convention). rate is the platform key multiplier (0.08 = 8%).
-func EstimateCostUSD(inputPerMillion, outputPerMillion, rate float64, u TokenUsage) *float64 {
+func EstimateCostUSD(protocol string, inputPerMillion, outputPerMillion, rate float64, u TokenUsage) *float64 {
 	if inputPerMillion == 0 && outputPerMillion == 0 {
 		return nil
 	}
@@ -28,8 +35,8 @@ func EstimateCostUSD(inputPerMillion, outputPerMillion, rate float64, u TokenUsa
 		rate = 1
 	}
 	uncached := u.InputTokens
-	if u.CacheReadTokens > 0 && uncached >= u.CacheReadTokens {
-		uncached -= u.CacheReadTokens
+	if protocol == domain.ProtocolOpenAI {
+		uncached = max(0, uncached-u.CacheReadTokens-u.CacheCreationTokens)
 	}
 	usd := (float64(uncached)*inputPerMillion +
 		float64(u.CacheReadTokens)*inputPerMillion*cacheReadFactor +

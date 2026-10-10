@@ -191,6 +191,27 @@ func TestKeyCacheRates(t *testing.T) {
 	}
 }
 
+// RequestLog stores normalized tokens (InputTokens excludes cached/written,
+// see gateway logUpdates), so the OpenAI row here reads 3 uncached + 5 cached
+// and the rate is 5/8 — not 5/13, which would double-count the cached tokens.
+func TestKeyCacheRatesOpenAINormalizedInput(t *testing.T) {
+	db := testDB(t)
+	keyID := uint(10)
+	_ = db.Create(&domain.RequestLog{
+		PlatformKeyID:       &keyID,
+		Protocol:            domain.ProtocolOpenAI,
+		InputTokens:         3,
+		CacheReadTokens:     5,
+		CacheCreationTokens: 0,
+		CreatedAt:           time.Now(),
+	}).Error
+	rates := (&Service{DB: db}).KeyCacheRates(context.Background(), []uint{keyID})
+	c := rates[keyID]
+	if c.Samples != 1 || c.Rate < 0.61 || c.Rate > 0.64 {
+		t.Fatalf("cache %+v", c)
+	}
+}
+
 func TestLastProbeAtIgnoresBalance(t *testing.T) {
 	db := testDB(t)
 	keyID := uint(8)
