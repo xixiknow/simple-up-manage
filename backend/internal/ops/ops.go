@@ -1103,7 +1103,7 @@ func (s *Service) KeyCacheRates(ctx context.Context, keyIDs []uint) map[uint]Key
 	}
 	var rows []domain.RequestLog
 	_ = s.DB.WithContext(ctx).
-		Select("platform_key_id, input_tokens, cache_read_tokens, cache_creation_tokens").
+		Select("platform_key_id, protocol, input_tokens, cache_read_tokens, cache_creation_tokens").
 		Where("platform_key_id IN ? AND created_at >= ? AND in_flight = ?", keyIDs, time.Now().Add(-CacheWindow), false).
 		Find(&rows).Error
 	type acc struct {
@@ -1120,9 +1120,13 @@ func (s *Service) KeyCacheRates(ctx context.Context, keyIDs []uint) map[uint]Key
 			a = &acc{}
 			byKey[*r.PlatformKeyID] = a
 		}
-		a.in += r.InputTokens
-		a.cr += r.CacheReadTokens
-		a.cc += r.CacheCreationTokens
+		// RequestLog keeps protocol-native usage (OpenAI prompt_tokens include
+		// cached tokens); normalize before aggregating so the cached tokens are
+		// not counted twice in the denominator.
+		n := upstream.NormalizeUsage(r.Protocol, upstream.TokenUsage{InputTokens: r.InputTokens, CacheReadTokens: r.CacheReadTokens, CacheCreationTokens: r.CacheCreationTokens})
+		a.in += n.InputTokens
+		a.cr += n.CacheReadTokens
+		a.cc += n.CacheCreationTokens
 		a.n++
 	}
 	for id, a := range byKey {

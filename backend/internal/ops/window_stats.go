@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"simple-up-manage/internal/domain"
+	"simple-up-manage/internal/upstream"
 )
 
 // KeyWindowStats is the list-side observation window for channel scoring.
@@ -40,7 +41,7 @@ func (s *Service) KeyWindowStatsMap(ctx context.Context, keyIDs []uint, window t
 
 	var reqs []domain.RequestLog
 	_ = s.DB.WithContext(ctx).
-		Select("platform_key_id, success, ttft_ms, duration_ms, input_tokens, cache_read_tokens, cache_creation_tokens, created_at").
+		Select("platform_key_id, protocol, success, ttft_ms, duration_ms, input_tokens, cache_read_tokens, cache_creation_tokens, created_at").
 		Where("platform_key_id IN ? AND created_at >= ? AND in_flight = ?", keyIDs, since, false).
 		Find(&reqs).Error
 	for _, r := range reqs {
@@ -51,10 +52,14 @@ func (s *Service) KeyWindowStatsMap(ctx context.Context, keyIDs []uint, window t
 		if lat <= 0 {
 			lat = r.DurationMs
 		}
-		tok := r.InputTokens + r.CacheReadTokens + r.CacheCreationTokens
+		// RequestLog keeps protocol-native usage (OpenAI prompt_tokens include
+		// cached tokens); normalize before aggregating so the cached tokens are
+		// not counted twice in the cache-rate denominator.
+		n := upstream.NormalizeUsage(r.Protocol, upstream.TokenUsage{InputTokens: r.InputTokens, CacheReadTokens: r.CacheReadTokens, CacheCreationTokens: r.CacheCreationTokens})
+		tok := n.InputTokens + n.CacheReadTokens + n.CacheCreationTokens
 		byKey[*r.PlatformKeyID] = append(byKey[*r.PlatformKeyID], windowEvent{
 			at: r.CreatedAt, success: r.Success, latency: lat,
-			in: r.InputTokens, cr: r.CacheReadTokens, cc: r.CacheCreationTokens,
+			in: n.InputTokens, cr: n.CacheReadTokens, cc: n.CacheCreationTokens,
 			hasTok: tok > 0,
 		})
 	}

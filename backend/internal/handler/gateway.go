@@ -1272,9 +1272,6 @@ func (h *Gateway) finishLog(lg *liveLog, ck *domain.ConsumerKey, pk *domain.Plat
 	if s, ok := updates["cost_detail"].(string); ok {
 		detailJSON = s
 	}
-	// Same normalization as logUpdates for the insert-new-row path; cost and
-	// dash emitters below keep the raw usage.
-	logUsage := upstream.NormalizeUsage(protocol, usage)
 	if lg == nil || lg.id == 0 {
 		row := domain.RequestLog{
 			RequestID:           reqID,
@@ -1284,10 +1281,10 @@ func (h *Gateway) finishLog(lg *liveLog, ck *domain.ConsumerKey, pk *domain.Plat
 			ClientIP:            clientIP,
 			StatusCode:          status,
 			Success:             success,
-			InputTokens:         logUsage.InputTokens,
-			OutputTokens:        logUsage.OutputTokens,
-			CacheReadTokens:     logUsage.CacheReadTokens,
-			CacheCreationTokens: logUsage.CacheCreationTokens,
+			InputTokens:         usage.InputTokens,
+			OutputTokens:        usage.OutputTokens,
+			CacheReadTokens:     usage.CacheReadTokens,
+			CacheCreationTokens: usage.CacheCreationTokens,
 			TTFTMs:              ttft,
 			TTFTStatus:          updates["ttft_status"].(string),
 			TTFTEvent:           snap.TTFTEvent,
@@ -1354,11 +1351,11 @@ func logUpdates(ids ckIDs, protocol, model, path, reqID, clientIP string, status
 			ttftStatus = "interrupted"
 		}
 	}
-	// RequestLog stores normalized tokens (InputTokens excludes cached and
-	// cache-written) so cache-rate aggregation over the log table matches the
-	// attempt table. Cost paths receive the raw usage and normalize inside the
-	// price table, so the caller's copy stays untouched.
-	usage = upstream.NormalizeUsage(protocol, usage)
+	// RequestLog stores protocol-native usage: OpenAI prompt_tokens includes
+	// cached tokens, Anthropic input_tokens does not. Consumers that need the
+	// uncached-only convention (cache-rate aggregation) normalize via
+	// upstream.NormalizeUsage; the frontend and cost receipts rely on the raw
+	// values. The caller's copy stays untouched either way.
 	updates := map[string]any{
 		"ttft_status":           ttftStatus,
 		"protocol":              protocol,

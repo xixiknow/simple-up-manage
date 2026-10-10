@@ -44,3 +44,22 @@ func TestKeyWindowStatsCacheFromRequests(t *testing.T) {
 		t.Fatalf("latency %+v", st)
 	}
 }
+
+// OpenAI RequestLog rows carry protocol-native prompt_tokens (8 = 3 uncached
+// + 5 cached); the window aggregation must normalize before computing the
+// cache rate, giving 5/8 rather than 5/13.
+func TestKeyWindowStatsCacheOpenAINormalized(t *testing.T) {
+	db := testDB(t)
+	keyID := uint(5)
+	id := keyID
+	_ = db.Create(&domain.RequestLog{
+		PlatformKeyID: &id, Protocol: domain.ProtocolOpenAI, Success: true,
+		InputTokens: 8, CacheReadTokens: 5,
+		TTFTMs: 300, DurationMs: 800, CreatedAt: time.Now(),
+	}).Error
+	s := &Service{DB: db}
+	st := s.KeyWindowStatsMap(context.Background(), []uint{keyID}, 15*time.Minute, 50)[keyID]
+	if !st.HasCache || st.Cache < 0.61 || st.Cache > 0.64 {
+		t.Fatalf("cache %+v", st)
+	}
+}

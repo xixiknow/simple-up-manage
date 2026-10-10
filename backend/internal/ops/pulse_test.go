@@ -191,16 +191,17 @@ func TestKeyCacheRates(t *testing.T) {
 	}
 }
 
-// RequestLog stores normalized tokens (InputTokens excludes cached/written,
-// see gateway logUpdates), so the OpenAI row here reads 3 uncached + 5 cached
-// and the rate is 5/8 — not 5/13, which would double-count the cached tokens.
+// RequestLog stores protocol-native usage (OpenAI prompt_tokens include
+// cached tokens, 8 total with 5 cached); KeyCacheRates normalizes before
+// aggregating, so the rate is 5/8 — not 5/13, which would double-count the
+// cached tokens in the denominator.
 func TestKeyCacheRatesOpenAINormalizedInput(t *testing.T) {
 	db := testDB(t)
 	keyID := uint(10)
 	_ = db.Create(&domain.RequestLog{
 		PlatformKeyID:       &keyID,
 		Protocol:            domain.ProtocolOpenAI,
-		InputTokens:         3,
+		InputTokens:         8,
 		CacheReadTokens:     5,
 		CacheCreationTokens: 0,
 		CreatedAt:           time.Now(),
