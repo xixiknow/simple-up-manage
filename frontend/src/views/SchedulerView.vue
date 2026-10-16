@@ -71,6 +71,7 @@ const CIRCUIT_LABEL: Record<string, string> = {
   cooldown_key: '认证失败',
   credential_disabled: '凭据停用或分组删除',
   key_quota_exhausted: 'Key 额度不足',
+  quota_rate_limited: '额度受限限流',
   capability_unsupported: '模型或接口不支持',
 }
 

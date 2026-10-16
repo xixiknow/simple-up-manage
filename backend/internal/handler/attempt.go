@@ -12,6 +12,18 @@ import (
 	"simple-up-manage/internal/upstream"
 )
 
+// shouldCountScore reports whether an attempt outcome belongs in score
+// windows. Successes always count; availability failures (arrears, disabled
+// credential, quota-capped rate limit) do not — they are billing/credential
+// state, punished by circuits and cooldowns and released on recharge. Plain
+// authentication and quality failures still count: a broken key must look bad.
+func shouldCountScore(result, failureAction string) bool {
+	if result == "success" {
+		return true
+	}
+	return !domain.IsAvailabilityFailureAction(failureAction)
+}
+
 func (h *Gateway) completeAttempt(ctx context.Context, pk *domain.PlatformKey, up *domain.Upstream, a *domain.RequestAttempt, col *streamCollector, out forwardOutcome, lg *liveLog) {
 	httpSent := !a.StartedAt.IsZero()
 	a.CompletedAt = time.Now()
@@ -50,7 +62,9 @@ func (h *Gateway) completeAttempt(ctx context.Context, pk *domain.PlatformKey, u
 			a.TTFTMs = max(1, int(col.firstAt.Sub(a.StartedAt).Milliseconds()))
 		}
 		if a.Result == "success" || a.Result == "upstream_failure" {
-			h.observeAttempt(pk, a.Model, a.Result == "success", normalized, a.TTFTMs)
+			if shouldCountScore(a.Result, a.FailureAction) {
+				h.observeAttempt(pk, a.Model, a.Result == "success", normalized, a.TTFTMs)
+			}
 		}
 	}
 	writeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

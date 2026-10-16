@@ -6,6 +6,34 @@ import "time"
 // the first-token wait. They are weighted heavier in circuit accounting.
 const FailureFirstTokenTimeout = "first_token_timeout"
 
+// Availability failure actions: the key was unreachable because of billing or
+// credential state (arrears, disabled key, quota-capped rate limit), not
+// because of upstream quality. Circuits and cooldowns already punish these
+// and release them on recharge; score windows must not count them, or a
+// previously good key stays unpickable long after the balance is restored.
+const (
+	ActionKeyQuotaExhausted  = "key_quota_exhausted"
+	ActionCredentialDisabled = "credential_disabled"
+	ActionQuotaRateLimited   = "quota_rate_limited"
+)
+
+// IsAvailabilityFailureAction reports whether a failure action is a billing or
+// credential state rather than a quality signal. Plain authentication
+// failures (cooldown_key) are deliberately excluded: a broken key must look
+// bad in the score.
+func IsAvailabilityFailureAction(action string) bool {
+	switch action {
+	case ActionKeyQuotaExhausted, ActionCredentialDisabled, ActionQuotaRateLimited:
+		return true
+	}
+	return false
+}
+
+// AvailabilityFailureActions lists every excluded action, for SQL filters.
+func AvailabilityFailureActions() []string {
+	return []string{ActionKeyQuotaExhausted, ActionCredentialDisabled, ActionQuotaRateLimited}
+}
+
 // RoutingCircuit is independent of diagnostic probe health. Scope is either a
 // key-wide authentication/legacy gate or a single business request dimension.
 type RoutingCircuit struct {

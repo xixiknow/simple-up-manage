@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"simple-up-manage/internal/domain"
 )
 
 func TestPeekStream(t *testing.T) {
@@ -108,6 +109,7 @@ func TestClassifyHTTPFailure(t *testing.T) {
 		{name: "quota forbidden", code: 403, body: quota, failover: true, scope: failureScopeKey, action: "key_quota_exhausted"},
 		{name: "not found", code: 404, failover: true, scope: failureScopeKeyModel, action: "request_scope_failure"},
 		{name: "rate limit", code: 429, failover: true, scope: failureScopeKeyModel, action: "cooldown_key_model"},
+		{name: "quota rate limited", code: 429, body: []byte(`{"error":{"type":"usage_limit_reached"}}`), failover: true, scope: failureScopeKeyModel, action: "quota_rate_limited"},
 		{name: "server error", code: 500, failover: true, scope: failureScopeKeyModel, action: "request_scope_failure"},
 		{name: "overloaded", code: 529, failover: true, scope: failureScopeKeyModel, action: "request_scope_failure"},
 	}
@@ -329,5 +331,26 @@ func TestStreamCollectorFirstEventMs(t *testing.T) {
 	nonStream.noteBytes(64)
 	if nonStream.ttftMs == 0 || nonStream.firstEventMs != 0 {
 		t.Fatalf("binary path: ttft=%d first_event_ms=%d, want ttft>0 first_event_ms=0", nonStream.ttftMs, nonStream.firstEventMs)
+	}
+}
+
+func TestShouldCountScore(t *testing.T) {
+	cases := []struct {
+		result, action string
+		want           bool
+	}{
+		{"success", "", true},
+		{"success", domain.ActionKeyQuotaExhausted, true},
+		{"upstream_failure", "", true},
+		{"upstream_failure", "request_scope_failure", true},
+		{"upstream_failure", "cooldown_key", true},
+		{"upstream_failure", domain.ActionKeyQuotaExhausted, false},
+		{"upstream_failure", domain.ActionCredentialDisabled, false},
+		{"upstream_failure", domain.ActionQuotaRateLimited, false},
+	}
+	for _, tc := range cases {
+		if got := shouldCountScore(tc.result, tc.action); got != tc.want {
+			t.Fatalf("shouldCountScore(%q, %q) = %v, want %v", tc.result, tc.action, got, tc.want)
+		}
 	}
 }

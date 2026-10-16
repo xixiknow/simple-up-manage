@@ -220,7 +220,51 @@ func (p *BandPicker) evaluate(ctx context.Context, req Request) ([]Candidate, er
 		out[band[0]].Selected = true
 		out[band[0]].AffinityHit = mode == "cache_affinity" && strings.TrimSpace(req.Session) != ""
 	}
+	// Exploration: band ranking otherwise starves out-of-band keys — a window
+	// wiped by an outage (or a fresh key) never re-enters the band because no
+	// traffic means no samples. On a granted slot, sessionless requests may
+	// instead try the coldest eligible candidate outside the band, mirroring
+	// stable_latency's exploration.
+	if req.ExplorationSlot && cfg.ExplorationRatio > 0 && strings.TrimSpace(req.Session) == "" {
+		if explore := coldestOutBand(out, band); explore >= 0 {
+			for _, idx := range band {
+				out[idx].Selected = false
+				out[idx].AffinityHit = false
+			}
+			out[explore].Selected = true
+			out[explore].DecisionReason = "exploration"
+			out[explore].RankingMode = mode
+		}
+	}
 	return out, nil
+}
+
+// coldestOutBand picks the eligible candidate outside the band with the
+// fewest window samples (0-sample keys first, lowest id on ties). Known-bad
+// records (>=3 samples under 80% success) are skipped: exploration must not
+// feed genuinely bad keys.
+func coldestOutBand(cands []Candidate, band []int) int {
+	inBand := make(map[int]struct{}, len(band))
+	for _, idx := range band {
+		inBand[idx] = struct{}{}
+	}
+	explore := -1
+	for i := range cands {
+		c := &cands[i]
+		if !c.Eligible {
+			continue
+		}
+		if _, ok := inBand[i]; ok {
+			continue
+		}
+		if c.Samples >= 3 && c.SuccessRate < 0.8 {
+			continue
+		}
+		if explore < 0 || c.Samples < cands[explore].Samples || (c.Samples == cands[explore].Samples && c.KeyID < cands[explore].KeyID) {
+			explore = i
+		}
+	}
+	return explore
 }
 
 func (p *BandPicker) inspect(ctx context.Context, key *domain.PlatformKey, req Request, cfg domain.SchedulerSettings, excluded, excludedProviders, excludedKeyModels map[uint]struct{}, modelCooldowns map[uint]struct{}) Candidate {
@@ -430,7 +474,11 @@ func (p *BandPicker) backfillOnce(ctx context.Context, keyID uint, model string,
 	since := time.Now().Add(-time.Duration(cfg.WindowMinutes) * time.Minute)
 	q := p.db.WithContext(ctx).Where("platform_key_id = ? AND created_at >= ? AND in_flight = ?", keyID, since, false)
 	neutralActions := []string{"request_rejected", "client_cancelled", "exclude_busy_resource"}
-	q = q.Where("failure_action IS NULL OR failure_action NOT IN ?", neutralActions)
+	// Availability failures (arrears etc.) are billing state, not quality: they
+	// must not be backfilled as score samples either, or a recharged key keeps
+	// its polluted window after every cold start.
+	excludedActions := append(neutralActions, domain.AvailabilityFailureActions()...)
+	q = q.Where("failure_action IS NULL OR failure_action NOT IN ?", excludedActions)
 	if strings.TrimSpace(model) != "" {
 		q = q.Where("model = ?", model)
 	}
@@ -441,7 +489,7 @@ func (p *BandPicker) backfillOnce(ctx context.Context, keyID uint, model string,
 		}
 		if err := p.db.WithContext(ctx).
 			Where("platform_key_id = ? AND created_at >= ? AND in_flight = ?", keyID, since, false).
-			Where("failure_action IS NULL OR failure_action NOT IN ?", neutralActions).
+			Where("failure_action IS NULL OR failure_action NOT IN ?", excludedActions).
 			Order("id DESC").Limit(limit).Find(&logs).Error; err != nil || len(logs) == 0 {
 			return
 		}

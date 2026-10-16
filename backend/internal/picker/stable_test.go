@@ -286,3 +286,65 @@ func TestStableEmptyPreview(t *testing.T) {
 		}
 	}
 }
+
+// Arrears failures (key_quota_exhausted etc.) are billing state, not quality:
+// they must stay out of score windows so a recharged key re-enters the
+// reliable pool immediately instead of waiting for the window to age.
+func TestStableAvailabilityFailuresExcludedFromScore(t *testing.T) {
+	p, keys, req := stableFixture(t)
+	ctx := context.Background()
+	now := time.Now()
+	// keys[0]: healthy history polluted by a burst of arrears failures.
+	samples(t, p, req, keys[0].ID, true, 4000, 6, now)
+	samples(t, p, req, keys[1].ID, true, 4000, 6, now)
+	quotaSamples(t, p, req, keys[0].ID, domain.ActionKeyQuotaExhausted, 10, now)
+	cands := scoredCandidates(t, p, req, ctx)
+	for _, c := range cands {
+		if c.KeyID == keys[0].ID && (c.Samples != 6 || c.SuccessRate != 1) {
+			t.Fatalf("quota failures counted: %+v", c)
+		}
+		if c.KeyID == keys[1].ID && c.Samples != 6 {
+			t.Fatalf("control key samples=%d", c.Samples)
+		}
+	}
+	// A quota-capped 429 failure is equally excluded.
+	quotaSamples(t, p, req, keys[0].ID, domain.ActionQuotaRateLimited, 3, now)
+	cands = scoredCandidates(t, p, req, ctx)
+	for _, c := range cands {
+		if c.KeyID == keys[0].ID && c.Samples != 6 {
+			t.Fatalf("quota_rate_limited counted: %+v", c)
+		}
+	}
+	// Plain quality failures (request_scope_failure) still count.
+	quotaSamples(t, p, req, keys[1].ID, "request_scope_failure", 2, now)
+	cands = scoredCandidates(t, p, req, ctx)
+	for _, c := range cands {
+		if c.KeyID == keys[1].ID && (c.Samples != 8 || c.SuccessRate >= 1) {
+			t.Fatalf("quality failure not counted: %+v", c)
+		}
+	}
+}
+
+// scoredCandidates evaluates and scores candidates the way stableDecision
+// does: metrics live on the candidate slice attemptCandidates filled in.
+func scoredCandidates(t *testing.T, p *BandPicker, req Request, ctx context.Context) []Candidate {
+	t.Helper()
+	cands, err := p.evaluate(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.attemptCandidates(ctx, req, cands); err != nil {
+		t.Fatal(err)
+	}
+	return cands
+}
+
+func quotaSamples(t *testing.T, p *BandPicker, req Request, key uint, action string, n int, at time.Time) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		a := domain.RequestAttempt{ID: uuid.NewString(), PlatformKeyID: key, Protocol: req.Protocol, Model: req.Model, Path: req.Path, Stream: req.Stream, StatsVersion: 2, Result: "upstream_failure", FailureAction: action, CompletedAt: at, StartedAt: at.Add(-time.Second)}
+		if err := p.db.Create(&a).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+}

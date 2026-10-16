@@ -180,3 +180,60 @@ func TestBandKeyModelCooldown(t *testing.T) {
 		t.Fatalf("expired cooldown did not recover: %+v err=%v", candidates[0], err)
 	}
 }
+
+// Legacy band ranking starves out-of-band keys: without samples they never
+// re-enter the band. On a granted exploration slot a sessionless request must
+// instead try the coldest eligible candidate outside the band.
+func TestBandExplorationSlotFeedsColdestOutOfBandKey(t *testing.T) {
+	p, _, keys := testBandPicker(t)
+	ctx := context.Background()
+	cfg := p.Settings()
+	cfg.RankingMode = "adaptive"
+	cfg.ExplorationRatio = 0.05
+	p.cfg = cfg
+
+	// key-a: healthy history via backfill from request logs.
+	for i := 0; i < 8; i++ {
+		if err := p.db.Create(&domain.RequestLog{
+			PlatformKeyID: &keys[0].ID, Protocol: domain.ProtocolOpenAI, Model: "gpt-test",
+			Success: true, TTFTMs: 300, DurationMs: 800, InFlight: false, CreatedAt: time.Now(),
+		}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	// key-b: nothing — a fresh or window-wiped key outside the band.
+	req := Request{Protocol: domain.ProtocolOpenAI, Model: "gpt-test", ExplorationSlot: true, BudgetReady: true}
+	cands, err := p.Explain(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := selectedKey(cands); got != keys[1].ID {
+		t.Fatalf("exploration slot selected %d, want cold key %d", got, keys[1].ID)
+	}
+	for _, c := range cands {
+		if c.Selected && c.DecisionReason != "exploration" {
+			t.Fatalf("selected reason=%q, want exploration", c.DecisionReason)
+		}
+	}
+
+	// Without a slot the band winner stays selected.
+	req.ExplorationSlot = false
+	cands, err = p.Explain(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := selectedKey(cands); got != keys[0].ID {
+		t.Fatalf("no-slot selected %d, want band winner %d", got, keys[0].ID)
+	}
+
+	// Session requests never explore (they would break stickiness).
+	req.ExplorationSlot = true
+	req.Session = "s"
+	cands, err = p.Explain(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := selectedKey(cands); got != keys[0].ID {
+		t.Fatalf("session request explored to %d, want band winner %d", got, keys[0].ID)
+	}
+}

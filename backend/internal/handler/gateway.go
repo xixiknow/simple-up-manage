@@ -979,11 +979,15 @@ func isQuotaExhaustedBody(body []byte) bool {
 func classifyHTTPFailure(code int, body []byte) forwardOutcome {
 	switch {
 	case (code == 401 || code == 403) && upstream.ParseError(body).Kind() == "credential_disabled":
-		return forwardOutcome{failOver: true, status: code, scope: failureScopeKey, action: "credential_disabled", retryAfter: time.Hour}
+		return forwardOutcome{failOver: true, status: code, scope: failureScopeKey, action: domain.ActionCredentialDisabled, retryAfter: time.Hour}
 	case code == http.StatusPaymentRequired || code == http.StatusForbidden && isQuotaExhaustedBody(body):
-		return forwardOutcome{failOver: true, status: code, scope: failureScopeKey, action: "key_quota_exhausted", retryAfter: 15 * time.Minute}
+		return forwardOutcome{failOver: true, status: code, scope: failureScopeKey, action: domain.ActionKeyQuotaExhausted, retryAfter: 15 * time.Minute}
 	case code == http.StatusUnauthorized || code == http.StatusForbidden && authenticationFailure(body):
 		return forwardOutcome{failOver: true, status: code, scope: failureScopeKey, action: "cooldown_key"}
+	case code == http.StatusTooManyRequests && isQuotaExhaustedBody(body):
+		// Quota-shaped 429 (usage_limit_reached etc.) is a billing state, not a
+		// quality failure: cooldown still applies, but score windows skip it.
+		return forwardOutcome{failOver: true, status: code, scope: failureScopeKeyModel, action: domain.ActionQuotaRateLimited}
 	case code == http.StatusTooManyRequests:
 		return forwardOutcome{failOver: true, status: code, scope: failureScopeKeyModel, action: "cooldown_key_model"}
 	case (code == 400 || code == 404 || code == 503) && unsupportedCapability(body):

@@ -155,9 +155,15 @@ func (p *BandPicker) attemptCandidates(ctx context.Context, req Request, cands [
 		return byKey, nil
 	}
 	cfg := p.Settings()
+	// Availability failures (arrears / disabled credential / quota-capped
+	// rate limit) say nothing about quality: circuits and cooldowns punish
+	// them and release on recharge; counting them here would starve a good
+	// key of traffic long after the balance is restored.
+	scored := "(result = 'success' OR failure_action IS NULL OR failure_action NOT IN ?)"
 	q := p.db.WithContext(ctx).Model(&domain.RequestAttempt{}).
 		Select("*, ROW_NUMBER() OVER (PARTITION BY platform_key_id ORDER BY completed_at DESC, id DESC) AS sample_rank").
-		Where("platform_key_id IN ? AND protocol = ? AND model = ? AND path = ? AND stream = ? AND stats_version = ? AND completed_at > ? AND result IN ?", ids, req.Protocol, req.Model, req.Path, req.Stream, domain.AttemptStatsVersion, time.Now().Add(-time.Duration(cfg.WindowMinutes)*time.Minute), []string{"success", "upstream_failure"})
+		Where("platform_key_id IN ? AND protocol = ? AND model = ? AND path = ? AND stream = ? AND stats_version = ? AND completed_at > ? AND result IN ? AND "+scored,
+			ids, req.Protocol, req.Model, req.Path, req.Stream, domain.AttemptStatsVersion, time.Now().Add(-time.Duration(cfg.WindowMinutes)*time.Minute), []string{"success", "upstream_failure"}, domain.AvailabilityFailureActions())
 	var rows []domain.RequestAttempt
 	if err := p.db.WithContext(ctx).Table("(?) AS recent", q).Where("sample_rank <= ?", cfg.WindowMaxSamples).Order("completed_at DESC, id DESC").Find(&rows).Error; err != nil {
 		return nil, err
@@ -178,8 +184,8 @@ func (p *BandPicker) attemptCandidates(ctx context.Context, req Request, cands [
 		cut := time.Now().Add(-time.Duration(cfg.WindowMinutes) * time.Minute)
 		kq := p.db.WithContext(ctx).Model(&domain.RequestAttempt{}).
 			Select("*, ROW_NUMBER() OVER (PARTITION BY platform_key_id ORDER BY completed_at DESC, id DESC) AS sample_rank").
-			Where("platform_key_id IN ? AND protocol = ? AND path = ? AND stream = ? AND stats_version = ? AND completed_at > ? AND result IN ?",
-				deficient, req.Protocol, req.Path, req.Stream, domain.AttemptStatsVersion, cut, []string{"success", "upstream_failure"})
+			Where("platform_key_id IN ? AND protocol = ? AND path = ? AND stream = ? AND stats_version = ? AND completed_at > ? AND result IN ? AND "+scored,
+				deficient, req.Protocol, req.Path, req.Stream, domain.AttemptStatsVersion, cut, []string{"success", "upstream_failure"}, domain.AvailabilityFailureActions())
 		var krows []domain.RequestAttempt
 		if err := p.db.WithContext(ctx).Table("(?) AS recent", kq).Where("sample_rank <= ?", cfg.WindowMaxSamples).Order("completed_at DESC, id DESC").Find(&krows).Error; err != nil {
 			return nil, err

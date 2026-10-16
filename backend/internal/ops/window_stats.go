@@ -2,6 +2,7 @@ package ops
 
 import (
 	"context"
+	"net/http"
 	"sort"
 	"time"
 
@@ -41,8 +42,8 @@ func (s *Service) KeyWindowStatsMap(ctx context.Context, keyIDs []uint, window t
 
 	var reqs []domain.RequestLog
 	_ = s.DB.WithContext(ctx).
-		Select("platform_key_id, protocol, success, ttft_ms, duration_ms, input_tokens, cache_read_tokens, cache_creation_tokens, created_at").
-		Where("platform_key_id IN ? AND created_at >= ? AND in_flight = ?", keyIDs, since, false).
+		Select("platform_key_id, protocol, success, failure_action, ttft_ms, duration_ms, input_tokens, cache_read_tokens, cache_creation_tokens, created_at").
+		Where("platform_key_id IN ? AND created_at >= ? AND in_flight = ? AND (success = ? OR failure_action IS NULL OR failure_action NOT IN ?)", keyIDs, since, false, true, domain.AvailabilityFailureActions()).
 		Find(&reqs).Error
 	for _, r := range reqs {
 		if r.PlatformKeyID == nil {
@@ -66,10 +67,16 @@ func (s *Service) KeyWindowStatsMap(ctx context.Context, keyIDs []uint, window t
 
 	var probes []domain.ProbeLog
 	_ = s.DB.WithContext(ctx).
-		Select("platform_key_id, success, latency_ms, created_at").
+		Select("platform_key_id, success, status_code, error_message, latency_ms, created_at").
 		Where("platform_key_id IN ? AND created_at >= ? AND kind IN ?", keyIDs, since, []string{domain.ProbeLight, domain.ProbeDeep}).
 		Find(&probes).Error
 	for _, p := range probes {
+		if !p.Success && availabilityProbeFailure(p.StatusCode, p.ErrorMessage) {
+			// Arrears/credential probe failures are availability state, not
+			// quality: leave them out so a recharged key's console score
+			// recovers immediately.
+			continue
+		}
 		byKey[p.PlatformKeyID] = append(byKey[p.PlatformKeyID], windowEvent{
 			at: p.CreatedAt, success: p.Success, latency: p.LatencyMs,
 		})
@@ -87,6 +94,20 @@ func (s *Service) KeyWindowStatsMap(ctx context.Context, keyIDs []uint, window t
 		out[id] = summarizeWindow(events)
 	}
 	return out
+}
+
+// availabilityProbeFailure reports whether a failed probe row is a billing or
+// credential state rather than a quality signal: an explicit 402, or a
+// quota-classified error body on the auth/quota status codes. Unparseable
+// bodies stay counted (conservative: timeouts and 5xx keep punishing).
+func availabilityProbeFailure(statusCode int, errorMessage string) bool {
+	if statusCode == http.StatusPaymentRequired {
+		return true
+	}
+	if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden || statusCode == http.StatusTooManyRequests {
+		return upstream.ParseError([]byte(errorMessage)).Kind() == "quota"
+	}
+	return false
 }
 
 func summarizeWindow(events []windowEvent) KeyWindowStats {
